@@ -8,7 +8,7 @@ The workflow uses the standard GitHub-hosted Apple Silicon `xcode-27` runner. St
 
 Inputs are fetched from the public [CrossDarwin/macOS-ForSheng CI run 41008552166](https://github.com/CrossDarwin/macOS-ForSheng/actions/runs/41008552166), source commit `a200d204230846bb640b715086d8c627405ba2df`, artifact `12956372647`. The full ZIP and both ARM64E objects are pinned by SHA256 in the script. Only `NativeVirtioBlock.o` and `NativeUfs.o` are extracted. The latter contains the GOP companion.
 
-Upstream Actions artifacts expire. If downloading fails or the archive is gone, this workflow fails rather than silently using a different build. A future immutable input release needs separate provenance verification. No personal token is required; the job uses its short-lived read-only `GITHUB_TOKEN`.
+Upstream Actions artifacts expire. If downloading fails or the archive is gone, this workflow fails rather than silently using a different build. A future immutable input release needs separate provenance verification. The job attempts the public artifact download with its short-lived read-only `GITHUB_TOKEN`; cross-repository access must be confirmed by an actual run. It does not request or store a personal token.
 
 Three probes link the original VirtIO object, original UFS/GOP object, and both together. In a copy of the UFS object, the unique external `_kmod_info` definition is renamed to equal-length `_ufs_kmod_` within the Mach-O string table. All other bytes remain unchanged; the script rejects shared suffixes or unexpected symbols. The combined probe keeps the VirtIO module entry.
 

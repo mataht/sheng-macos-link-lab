@@ -59,7 +59,12 @@ class SymbolRewriteTests(unittest.TestCase):
             probe.rename_kmod(bytes(data))
 
     def test_wrong_archive_hash_rejected_before_extraction(self):
-        with tempfile.TemporaryDirectory() as folder:
+        root = Path(__file__).resolve().parents[1]
+        scratch = root / "scratch" / "test-tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
+        scratch.resolve().relative_to(root)
+        with tempfile.TemporaryDirectory(dir=scratch) as folder:
+            Path(folder).resolve().relative_to(root)
             path = Path(folder) / "bad.zip"
             path.write_bytes(b"not the pinned artifact")
             with self.assertRaisesRegex(ValueError, "artifact SHA256 mismatch"):
