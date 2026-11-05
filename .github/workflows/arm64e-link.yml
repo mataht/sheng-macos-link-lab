@@ -3,10 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main, 'ci/**']
-    paths: ['scripts/**', 'tests/**', '.github/workflows/arm64e-link.yml']
+    paths: ['inputs/**', 'scripts/**', 'tests/**', '.github/workflows/arm64e-link.yml']
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: arm64e-link-${{ github.ref }}
   cancel-in-progress: false
@@ -20,16 +19,8 @@ jobs:
           persist-credentials: false
       - name: Check symbol rewrite boundaries
         run: python3 -m unittest discover -s tests -v
-      - name: Download pinned public upstream artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p scratch
-          gh api repos/CrossDarwin/macOS-ForSheng/actions/artifacts/12956372647/zip > scratch/upstream.zip
       - name: Verify inputs and link original and combined drivers
-        run: python3 scripts/link_probe.py --artifact scratch/upstream.zip --output out
+        run: python3 scripts/link_probe.py --artifact inputs/driver-objects-a200d204.zip --output out
       - name: Save link results and diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

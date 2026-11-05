@@ -15,11 +15,53 @@ REPO = "CrossDarwin/macOS-ForSheng"
 COMMIT = "a200d204230846bb640b715086d8c627405ba2df"
 RUN = 41008552166
 ARTIFACT = 12956372647
-ZIP_SHA = "bdc4acdc0f34c6d3a85a4e53e120a4f1113a78143bb13447a665077b94b5453f"
+ORIGINAL_ZIP_SHA = "bdc4acdc0f34c6d3a85a4e53e120a4f1113a78143bb13447a665077b94b5453f"
+BUNDLE_SHA = "6db20d3a711308cdbd8ca312ee198d8ebac7792dd423bb071c50413fc5d37e8c"
+LICENSE_SHA = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
 OBJECTS = {
     "storage-driver/NativeVirtioBlock.o": "ff34755c0846fc3017cc3a47054a645f335c3c31efdc50e161f9c7e2426d7235",
     "ufs-driver/NativeUfs.o": "e3fea376496dc240ddc9e70982a788d267fea37a409d32a9c552c3441950e8ef",
 }
+WRAPPERS = {
+    "storage-driver/NativeVirtioBlock.cpp": "68119d284e492dbe255153038740ce008dedf6d5f3cf28376c6ee723fb98705e",
+    "ufs-driver/NativeUfs.cpp": "ea750d45600d05495fddfbaa7d0e9f6265f70bb924bdb9952a68621844b7c85d",
+}
+SOURCE_NOTE = """# Driver object provenance
+
+These two third-party upstream ARM64E objects and generated wrapper sources were extracted unchanged
+from the public CrossDarwin/macOS-ForSheng CI artifact 12956372647, run
+41008552166, source commit a200d204230846bb640b715086d8c627405ba2df.
+NativeUfs.o includes the GOP companion. It also retains UFS code.
+
+Original project source, build scripts, license, and patches:
+https://github.com/CrossDarwin/macOS-ForSheng/tree/a200d204230846bb640b715086d8c627405ba2df
+Dependency pins:
+https://github.com/CrossDarwin/macOS-ForSheng/blob/a200d204230846bb640b715086d8c627405ba2df/sources.lock.json
+UniXNU patches applied by that project:
+https://github.com/CrossDarwin/macOS-ForSheng/tree/a200d204230846bb640b715086d8c627405ba2df/patches/UniXNU
+Pinned UniXNU base source:
+https://github.com/UniXNU/UniXNU/tree/fb6aad6ab1f50199a4d99d2da1d0ca403b067633
+
+The generated wrappers retain their original public CI runner include paths.
+They are provenance aids, not self-contained driver source or a rebuild SDK.
+Follow the pinned source lock and patch series to obtain the matching source.
+The GPL license is copied unchanged from the pinned project's LICENSE.
+Original authors retain their copyrights; this lab does not claim authorship
+of the drivers. No Apple firmware, BootKC, BaseSystem, KDK, device dump,
+credential, or full upstream artifact ZIP is included.
+
+This bundle only preserves inputs for a linker experiment. It is not a driver
+installation package and does not establish runtime or hardware compatibility.
+"""
+
+
+def original_artifact():
+    return {"repository": REPO, "source_commit": COMMIT, "run_id": RUN,
+            "artifact_id": ARTIFACT, "sha256": ORIGINAL_ZIP_SHA, "bytes": 44377627}
+
+
+def json_bytes(value):
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def sha(data):
@@ -32,6 +74,72 @@ def file_sha(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def read_pinned_member(bundle, name, expected):
+    if bundle.namelist().count(name) != 1:
+        raise ValueError(f"missing or duplicate member: {name}")
+    item = bundle.getinfo(name)
+    if item.file_size > 2 * 1024 * 1024:
+        raise ValueError("oversized member")
+    data = bundle.read(item)
+    if sha(data) != expected:
+        raise ValueError(f"member SHA256 mismatch: {name}")
+    return data
+
+
+def make_input_bundle(archive, destination):
+    """Preserve only allowlisted public driver inputs, with deterministic ZIP metadata."""
+    if file_sha(archive) != ORIGINAL_ZIP_SHA:
+        raise ValueError("original artifact SHA256 mismatch")
+    if destination.exists():
+        raise ValueError("bundle destination must not already exist")
+    files = {}
+    with zipfile.ZipFile(archive) as original:
+        for name, digest in {**OBJECTS, **WRAPPERS}.items():
+            files[name] = read_pinned_member(original, name, digest)
+            if name in OBJECTS:
+                commands(files[name], 1)
+    license_data = (Path(__file__).resolve().parents[1] / "LICENSE").read_bytes()
+    if sha(license_data) != LICENSE_SHA:
+        raise ValueError("GPL license SHA256 mismatch")
+    files["LICENSE"] = license_data
+    files["SOURCE.md"] = SOURCE_NOTE.encode("utf-8")
+    manifest = {
+        "format": 1, "kind": "persistent_driver_objects",
+        "original_artifact": original_artifact(),
+        "packing": {"compression": "ZIP_STORED", "timestamp": "1980-01-01T00:00:00", "mode": "0100644", "entry_order": "lexicographic"},
+        "members": {name: {"sha256": sha(data), "bytes": len(data)} for name, data in files.items()},
+    }
+    files["provenance.json"] = json_bytes(manifest)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_STORED) as packaged:
+        for name in sorted(files):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            info.compress_type = zipfile.ZIP_STORED
+            info.extra = b""
+            info.comment = b""
+            packaged.writestr(info, files[name])
+    return {"path": str(destination), "sha256": file_sha(destination), "bytes": destination.stat().st_size}
+
+
+def validate_persistent_bundle(bundle):
+    expected_names = set(OBJECTS) | set(WRAPPERS) | {"LICENSE", "SOURCE.md", "provenance.json"}
+    if len(bundle.namelist()) != len(expected_names) or set(bundle.namelist()) != expected_names:
+        raise ValueError("persistent bundle member allowlist mismatch")
+    manifest = json.loads(bundle.read("provenance.json"))
+    if manifest.get("format") != 1 or manifest.get("kind") != "persistent_driver_objects" or manifest.get("original_artifact") != original_artifact():
+        raise ValueError("persistent bundle provenance mismatch")
+    if set(manifest.get("members", {})) != expected_names - {"provenance.json"}:
+        raise ValueError("persistent bundle manifest member mismatch")
+    pins = {**OBJECTS, **WRAPPERS, "LICENSE": LICENSE_SHA, "SOURCE.md": sha(SOURCE_NOTE.encode("utf-8"))}
+    for name, digest in pins.items():
+        data = read_pinned_member(bundle, name, digest)
+        if manifest["members"][name] != {"sha256": digest, "bytes": len(data)}:
+            raise ValueError(f"persistent bundle manifest mismatch: {name}")
+    return manifest
 
 
 def commands(data, filetype):
@@ -97,21 +205,17 @@ def rename_kmod(data):
 
 def prepare(archive, output):
     digest = file_sha(archive)
-    if digest != ZIP_SHA:
+    if digest not in (ORIGINAL_ZIP_SHA, BUNDLE_SHA):
         raise ValueError(f"artifact SHA256 mismatch: {digest}")
+    kind = "original_ci_artifact" if digest == ORIGINAL_ZIP_SHA else "persistent_driver_objects"
     inputs = output / "inputs"
     inputs.mkdir(parents=True, exist_ok=True)
-    record = {"repository": REPO, "source_commit": COMMIT, "run_id": RUN, "artifact_id": ARTIFACT, "artifact_sha256": digest, "objects": {}}
+    record = {"original_artifact": original_artifact(), "input_archive": {"kind": kind, "sha256": digest, "bytes": archive.stat().st_size}, "objects": {}}
     with zipfile.ZipFile(archive) as bundle:
+        if kind == "persistent_driver_objects":
+            record["bundle_manifest"] = validate_persistent_bundle(bundle)
         for name, expected in OBJECTS.items():
-            if bundle.namelist().count(name) != 1:
-                raise ValueError(f"missing or duplicate object: {name}")
-            item = bundle.getinfo(name)
-            if item.file_size > 2 * 1024 * 1024:
-                raise ValueError("oversized object")
-            data = bundle.read(item)
-            if sha(data) != expected:
-                raise ValueError(f"object SHA256 mismatch: {name}")
+            data = read_pinned_member(bundle, name, expected)
             commands(data, 1)
             (inputs / Path(name).name).write_bytes(data)
             record["objects"][name] = {"sha256": sha(data), "bytes": len(data)}
@@ -166,9 +270,16 @@ def link(output, provenance):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output", type=Path)
+    destination.add_argument("--make-input-bundle", type=Path, help="repackage the pinned original ZIP using a strict allowlist")
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
+    if args.make_input_bundle:
+        if args.prepare_only:
+            parser.error("--prepare-only cannot be combined with --make-input-bundle")
+        print(json.dumps(make_input_bundle(args.artifact, args.make_input_bundle), indent=2))
+        return
     args.output.mkdir(parents=True, exist_ok=True)
     if any(args.output.iterdir()):
         raise ValueError("output directory must be empty")

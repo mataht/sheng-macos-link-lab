@@ -1,9 +1,12 @@
 """Boundary tests for the narrow Mach-O symbol rewrite, without Apple tools."""
 import importlib.util
+import io
+import json
 from pathlib import Path
 import struct
 import tempfile
 import unittest
+import zipfile
 
 spec = importlib.util.spec_from_file_location("link_probe", Path(__file__).parents[1] / "scripts" / "link_probe.py")
 probe = importlib.util.module_from_spec(spec)
@@ -70,6 +73,43 @@ class SymbolRewriteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "artifact SHA256 mismatch"):
                 probe.prepare(path, Path(folder) / "output")
             self.assertFalse((Path(folder) / "output").exists())
+
+
+class PersistentInputTests(unittest.TestCase):
+    root = Path(__file__).resolve().parents[1]
+    bundle = root / "inputs" / "driver-objects-a200d204.zip"
+
+    def test_pinned_bundle_payload_and_metadata(self):
+        self.assertEqual(probe.file_sha(self.bundle), probe.BUNDLE_SHA)
+        with zipfile.ZipFile(self.bundle) as packaged:
+            manifest = probe.validate_persistent_bundle(packaged)
+            self.assertEqual(manifest["original_artifact"]["sha256"], probe.ORIGINAL_ZIP_SHA)
+            self.assertNotEqual(probe.BUNDLE_SHA, probe.ORIGINAL_ZIP_SHA)
+            self.assertEqual(packaged.namelist(), sorted(packaged.namelist()))
+            for item in packaged.infolist():
+                self.assertEqual(item.date_time, (1980, 1, 1, 0, 0, 0))
+                self.assertEqual(item.compress_type, zipfile.ZIP_STORED)
+                self.assertEqual(item.external_attr >> 16, 0o100644)
+
+    def test_modified_provenance_rejected(self):
+        with zipfile.ZipFile(self.bundle) as packaged:
+            members = {name: packaged.read(name) for name in packaged.namelist()}
+        manifest = json.loads(members["provenance.json"])
+        manifest["original_artifact"]["sha256"] = probe.BUNDLE_SHA
+        members["provenance.json"] = probe.json_bytes(manifest)
+        altered = io.BytesIO()
+        with zipfile.ZipFile(altered, "w") as output:
+            for name, data in members.items():
+                output.writestr(name, data)
+        with zipfile.ZipFile(altered) as packaged, self.assertRaisesRegex(ValueError, "provenance mismatch"):
+            probe.validate_persistent_bundle(packaged)
+
+    def test_unexpected_member_rejected(self):
+        altered = io.BytesIO(self.bundle.read_bytes())
+        with zipfile.ZipFile(altered, "a") as output:
+            output.writestr("unexpected.bin", b"not allowed")
+        with zipfile.ZipFile(altered) as packaged, self.assertRaisesRegex(ValueError, "allowlist mismatch"):
+            probe.validate_persistent_bundle(packaged)
 
 
 if __name__ == "__main__":
