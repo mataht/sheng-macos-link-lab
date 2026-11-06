@@ -19,9 +19,9 @@
     "combined_module_sha256": "667aad23e734153445267b6408212aea62607efcda058036615575404d138578"
   },
   "overlay": {
-    "display/0001-native-gop-display.patch": "dc36f8411f876d0bd7ac38c72c853d7a1b202085077e324ca01e0972b6acb070",
+    "display/0001-native-gop-display.patch": "fcb283d657c6f15e25f5829de411852e3c6f4f5e18eee61966e86dae64f8dc10",
     "display/gop_scanout.h": "65f31d0597f77975df933c86f0acd729a223d50e44323fd0d0f7b80d857179c9",
-    "display/NativeGOPDisplay.cpp": "4884677e6a39c0be6c5b58497a5ad1e6aa93b5825b3e1f55f295b538bba10bec",
+    "display/NativeGOPDisplay.cpp": "d5c31fd87d26a1c6755af85a59f950fc532b8b363f97650f1c27e90eb9b26339",
     "original/gop_layers.h": "6c6aada53457c44ea1fa591a2b97a1634370837bc96104e8018d2c958ad5a406",
     "tests/native_gop_blit.cpp": "fb7b3b5ffb064d4f6286cfb8092b0b806b3bc9ab7f80b64aa8286cce4e283c44",
     "tests/native_gop_scanout_upstream.cpp": "2d2260a265edbec182931f10e39ef3b8be154cd5ec1e7a5f5e4de91fdf0e1ec3",
@@ -29,7 +29,7 @@
     "tests/source_lease_regression.cpp": "842db9f88b9d14577c6e1183f387085e7d4d19d308000087bc20f0a48d00a725",
     "tests/run_source_lease_regression.py": "cb9c83122dcef7fb825c737df00c30f401365af257b9582b62392311a8498698"
   },
-  "stage15_display_source_sha256": "4884677e6a39c0be6c5b58497a5ad1e6aa93b5825b3e1f55f295b538bba10bec",
+  "stage15_display_source_sha256": "d5c31fd87d26a1c6755af85a59f950fc532b8b363f97650f1c27e90eb9b26339",
   "stage15b": {
     "previous_ci_commit": "b5d0787d27b561766fe1c6e5d967e641a52a238a",
     "previous_ci_run": "42152971660",
@@ -41,5 +41,16 @@
     "output_schema_note": "Existing stage15_* keys and link-stage15 paths retained for build-script compatibility",
     "runtime_tested": false,
     "hardware_loadable": false
+  },
+  "stage18b": {
+    "previous_ci_commit": "04e7a234c767cb65f34d0969608e36ebf63e775d",
+    "previous_ci_run": "42162877058",
+    "boot_argument": "native-gop-vm-keep-awake=1",
+    "change": "Default-off VMM-only 30-second original PM requestUserActive calls; no power override or fake HID",
+    "class_declaration_changed": false,
+    "runtime_tested": false,
+    "hardware_loadable": false,
+    "source_sha256": "d5c31fd87d26a1c6755af85a59f950fc532b8b363f97650f1c27e90eb9b26339",
+    "retained_scanout_sha256": "65f31d0597f77975df933c86f0acd729a223d50e44323fd0d0f7b80d857179c9"
   }
 }

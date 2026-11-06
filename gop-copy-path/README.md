@@ -1,38 +1,9 @@
-# Stage15B: stage source rows before the framebuffer lease
+# Stage18B VM display-activity candidate
 
-Stage15's same-size BGRA fast path first read its IOSurface mapping after acquiring the
-framebuffer pixel lease, which masks interrupts. A local QEMU run panicked on a source
-load with a level-3 translation fault. This revision stages the complete source row into
-the existing scratch buffer before entering the lease. It does not change source-map
-caching, dirty-row detection, destination writes, the class declaration, or the paired ABI.
+Stage18's existing language trace observed 42 system languages and 42 table rows, but the display was already idle-off before those objects were created. This candidate adds an explicit, default-off `native-gop-vm-keep-awake=1` policy guarded by the native VMM flag. It periodically sends the original ARM64 PM `requestUserActive` message from the common swap/timer path using an absolute 30-second deadline.
 
-`display/gop_scanout.h` is the only changed driver source relative to successful build
-commit `b5d0787d27b561766fe1c6e5d967e641a52a238a` (Actions run `42152971660`).
-The previous header is retained under `original/stage15-gop_scanout.h` only as a negative
-host-test input; it is not installed into the rebuilt driver.
+This is an unattended-VM observation workaround, not input emulation, GPU acceleration, a power-return override, or a proven fix for the earlier empty rows. A submitted void request is not proof that power management consumed it. The new runtime must show the display still on beyond the prior idle threshold and inspect the actual Language Chooser screen.
 
-The source/lease regression uses a cross-page row and protects the source with
-`mprotect(PROT_NONE)` when the lease begins. An isolated original-header child must fault;
-the fixed header must complete and preserve pixels, shadow and unchanged-row skipping.
-Darwin maps this existing-mapping protection failure to SIGBUS; Linux uses SIGSEGV.
-The test uses the exact expected signal for each OS. This tests access ordering, not XNU
-paging or device-memory correctness. Existing host pixel/layout tests still use ASan/UBSan.
+The NativeGOPDisplay class, 473-slot framebuffer ABI, scanout staging fix, swap_wait, queue completion and power-state implementation are unchanged. File-local singleton ownership is suspended before base stop and released afterward. A request already in flight is drained by the existing work-loop/base-stop lifecycle; atomic state alone is not a synchronous cancellation.
 
-The workflow remains based on pinned `CrossDarwin/macOS-ForSheng` commit
-`a200d204230846bb640b715086d8c627405ba2df`, its sources and patches, the paired 25F71 KDK,
-and the successful `xcode-27` build environment. The unmodified original kernel/driver
-build establishes generated headers and a recorded compile command; then the unchanged
-`scripts/rebuild_gop_driver.py` rebuilds the overlaid NativeUfs object and combines it
-with the same pinned VirtIO object. Local experiments adopt only the new driver artifacts
-and retain their original native XNU kernel. No new kernel build is claimed to be runtime-qualified.
-
-For compatibility with the unchanged build script, artifact records retain `stage15_*`
-keys and the `out/rebuild/link-stage15/` path; `expected.json.stage15b`, workflow identity,
-commit/run ID and hashes distinguish this revision. Build artifacts are named
-`gop-source-staging-stage15b-<run_id>`.
-
-A successful CI run proves compilation/linking and host tests only. It does not prove
-ABI/PAC admission, a working macOS frame, input, hardware loading or GPU acceleration.
-Fresh local admission and a fresh bounded QEMU run are required. No Apple firmware,
-KDK, BootKC, system image or device data is committed. Upstream copyrights and licenses
-remain applicable; this is a build experiment, not an installation or flashing package.
+CI rebuilds an unchanged upstream control and this source variant using the same pinned Apple build environment. It does not access devices or start a VM. New object/link/PAC/layout admission and a separate bounded local VM run remain required. Existing stage15_* artifact keys are retained for script compatibility.
