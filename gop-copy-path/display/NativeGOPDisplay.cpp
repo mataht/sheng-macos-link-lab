@@ -6,6 +6,9 @@
 #include "IOMobileFramebufferABI.h"
 #include <pexpert/pexpert.h>
 #include <machine/machine_routines.h>
+#include <mach/mach_time.h>
+// Exact paired pexpert.h XNU_KERNEL_PRIVATE declaration; VM opt-in only.
+extern "C" uint32_t PE_vmm_present;
 extern "C" volatile uint64_t sheng_panel_ready, sheng_status_pixels;
 #include <IOKit/IOLib.h>
 #include "gop_scanout.h"
@@ -173,6 +176,54 @@ private:
 
 OSDefineMetaClassAndStructors(NativeGOPDisplay, IOMobileFramebufferLegacy)
 
+// Explicit VM diagnostic policy. These are requests to the original PM
+// user-activity consumer, not HID events, a display assertion, or power overrides.
+// State is file-local so the paired NativeGOPDisplay class/virtual ABI is unchanged.
+static IOService *gVMKeepAwakeOwner = nullptr;
+static uint64_t gVMKeepAwakeDeadline = UINT64_MAX;
+
+static bool nativeGopStartVMKeepAwake(IOService *owner)
+{
+    IOPMrootDomain *root = IOService::getPMRootDomain();
+    if (!root) {
+        IOLog("NativeGOPDisplay: VM keep-awake root domain not ready\n");
+        return false;
+    }
+    IOService *expected = nullptr;
+    if (!__atomic_compare_exchange_n(&gVMKeepAwakeOwner, &expected, owner, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        IOLog("NativeGOPDisplay: VM keep-awake already has an owner\n");
+        return false;
+    }
+    uint64_t deadline;
+    clock_interval_to_deadline(30, kSecondScale, &deadline);
+    __atomic_store_n(&gVMKeepAwakeDeadline, deadline, __ATOMIC_RELEASE);
+    root->requestUserActive(owner, "sheng-qemu-display-observation");
+    IOLog("NativeGOPDisplay: VM requestUserActive submitted (start)\n");
+    return true;
+}
+
+static void nativeGopVMKeepAwakeTick(IOService *owner)
+{
+    if (__atomic_load_n(&gVMKeepAwakeOwner, __ATOMIC_ACQUIRE) != owner)
+        return;
+    uint64_t deadline = __atomic_load_n(&gVMKeepAwakeDeadline, __ATOMIC_ACQUIRE);
+    if (deadline == UINT64_MAX || mach_absolute_time() < deadline)
+        return;
+    uint64_t next;
+    clock_interval_to_deadline(30, kSecondScale, &next);
+    if (!__atomic_compare_exchange_n(&gVMKeepAwakeDeadline, &deadline, next, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return;
+    IOPMrootDomain *root = IOService::getPMRootDomain();
+    if (!root) {
+        IOLog("NativeGOPDisplay: VM keep-awake root domain unavailable; no request\n");
+        return;
+    }
+    root->requestUserActive(owner, "sheng-qemu-display-observation");
+    IOLog("NativeGOPDisplay: VM requestUserActive submitted (periodic)\n");
+}
+
 static IOPMPowerState gPowerStates[2] = {   // AppleParavirtDisplay's gPowerState
     {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
     {1, kIOPMDeviceUsable, kIOPMPowerOn, kIOPMPowerOn, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -180,7 +231,12 @@ static IOPMPowerState gPowerStates[2] = {   // AppleParavirtDisplay's gPowerStat
 
 bool NativeGOPDisplay::start(IOService *provider)
 {
-    unsigned enabled = 0, cpus = 0;
+    unsigned enabled = 0, cpus = 0, vmKeepAwake = 0;
+    PE_parse_boot_argn("native-gop-vm-keep-awake", &vmKeepAwake, sizeof(vmKeepAwake));
+    if (vmKeepAwake > 1 || (vmKeepAwake == 1 && PE_vmm_present != 1)) {
+        IOLog("NativeGOPDisplay: VM keep-awake requires explicit VMM opt-in\n");
+        return false;
+    }
     PE_parse_boot_argn("native-gop-display", &enabled, sizeof(enabled));
     PE_parse_boot_argn("cpus", &cpus, sizeof(cpus));
     if (enabled != 1 || (cpus != 1 && cpus != 2 && cpus != 4 && cpus != 8) || !provider)
@@ -210,13 +266,24 @@ bool NativeGOPDisplay::start(IOService *provider)
         OSSafeReleaseNULL(fScanoutMap);
         return false;
     }
+    if (vmKeepAwake == 1 && !nativeGopStartVMKeepAwake(this)) {
+        stop(provider);
+        return false;
+    }
     IOLog("NativeGOPDisplay: started, display %ux%u\n", display_width(), display_height());
     return true;
 }
 
 void NativeGOPDisplay::stop(IOService *provider)
 {
+    // Suspend before the base stops/removes the existing timer; release the
+    // owner only after base stop has completed, so a new owner cannot race it.
+    if (__atomic_load_n(&gVMKeepAwakeOwner, __ATOMIC_ACQUIRE) == this)
+        __atomic_store_n(&gVMKeepAwakeDeadline, UINT64_MAX, __ATOMIC_RELEASE);
     IOMobileFramebufferLegacy::stop(provider);
+    IOService *expected = this;
+    __atomic_compare_exchange_n(&gVMKeepAwakeOwner, &expected, nullptr, false,
+                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
     if (fHalfToByte)
         IOFree(fHalfToByte, 65536);
     if (fRow)
@@ -292,6 +359,9 @@ IOReturn NativeGOPDisplay::swap_begin_gated()
 {
     if (!fVBL)
         return kIOReturnNotReady;
+    // Both submitted swaps and the timer enter here. Submit activity can
+    // otherwise continually re-arm the 16ms timer and starve its callback.
+    nativeGopVMKeepAwakeTick(this);
     fVBL->cancelTimeout();
     while (clean_queue_gated()) {
         IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kSwapQueueFirst);
