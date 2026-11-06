@@ -11,7 +11,12 @@ import subprocess
 import uuid
 
 from create_log_partition import geometry
-from repartition_macos26_root import BLOCK, WINDOW, Device
+from native_log_file import LAYOUT
+if LAYOUT['name'] == 'sheng-cn-1tb-lun0':
+    # CN 1 TB unit: the plan comes from repartition_sheng_cn_1tb.py, whose Device checks this LUN0 and Recovery.
+    from repartition_sheng_cn_1tb import BLOCK, WINDOW, Device
+else:
+    from repartition_macos26_root import BLOCK, WINDOW, Device
 
 
 PARTITION = '/dev/block/by-name/macosroot'
