@@ -24,7 +24,14 @@ jobs:
       - run: python3 scripts/sources.py fetch --group core
       - run: python3 scripts/apply_patches.py
       - run: python3 scripts/sources.py verify --group core
+      - name: Install FAT tools for the macoslog file tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dosfstools mtools
+          g++ --version | head -1; command -v mkfs.fat mcopy mdir
       - name: Tests for the changes on this branch (must pass)
+        env:
+          SHENG_REQUIRE_HOST_TOOLS: '1'
         run: |
           for t in test_native_log_file test_native_log_persistence test_repartition_sheng_cn_1tb \
                    test_native_gop_keep_awake test_native_gop_scanout test_prepare_macos26_gop \
