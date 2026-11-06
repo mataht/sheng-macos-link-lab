@@ -12,6 +12,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import struct
@@ -163,6 +164,23 @@ class Device:
             self.shell('rm -f ' + shlex.quote(remote))
 
 
+def make_fat16(image):
+    """Format the macoslog image. ADB reaches the tablet only from Windows, where dosfstools runs in WSL."""
+    command = ['mkfs.fat', '-F', '16', '-S', str(BLOCK), '-s', '1', '-n', 'MACOSLOG']
+    if os.name == 'nt':
+        # wslpath prints UTF-8; the Windows console code page (e.g. GBK) cannot decode non-ASCII paths.
+        linux = subprocess.check_output(['wsl.exe', '-e', 'wslpath', '-a', str(image.resolve())]).decode('utf-8').strip()
+        # wsl.exe -e does not search /usr/sbin, where dosfstools installs mkfs.fat.
+        command = ['wsl.exe', '-e', '/usr/sbin/mkfs.fat', *command[1:], linux]
+    else:
+        command.append(str(image))
+    subprocess.run(command, check=True, capture_output=True)
+    data = image.read_bytes()
+    if (len(data) != LOG_BLOCKS * BLOCK or data[510:512] != b'\x55\xaa' or data[54:62] != b'FAT16   '
+            or data[43:54] != b'MACOSLOG   ' or struct.unpack_from('<H', data, 11)[0] != BLOCK or data[13] != 1):
+        raise ValueError('macoslog image is not the expected 4 KiB-sector FAT16 volume')
+
+
 def prepare(device, directory, baseline):
     """Read-only: compare against a backup_device.py baseline, then save before/after copies and the plan."""
     manifest = json.loads((baseline / 'manifest.json').read_text())['gpt']['sda']
@@ -179,8 +197,7 @@ def prepare(device, directory, baseline):
     image = directory / 'macoslog-fat16.img'
     with image.open('xb') as stream:
         stream.truncate(LOG_BLOCKS * BLOCK)
-    subprocess.run(['mkfs.fat', '-F', '16', '-S', str(BLOCK), '-s', '1', '-n', 'MACOSLOG', str(image)],
-                   check=True, capture_output=True)
+    make_fat16(image)
     record.update(serial=device.serial, baseline=str(baseline), prepared_at=datetime.now(timezone.utc).isoformat(),
                   before=dict(primary=sha(primary), secondary=sha(secondary)),
                   macoslog_filesystem_image_sha256=sha(image.read_bytes()))
