@@ -16,28 +16,30 @@ static bool mlRunning;
 static volatile uint32_t mlStop;
 
 static bool mlRead(uint64_t lba, unsigned blocks, uint8_t *out) {
-    IOReturn status = hostRead4k(4, lba, blocks, out);
+    IOReturn status = hostRead4k(NATIVE_MACOSLOG_LUN, lba, blocks, out);
     if (status != kIOReturnSuccess) native_macoslog_error = static_cast<uint32_t>(status);
     return status == kIOReturnSuccess;
 }
 static bool mlOpen(uint8_t *scratch, uint64_t &first, uint64_t &generation) {
     native_macoslog_phase = 1;
     uint8_t *other = scratch + kDataMax;
-    if (!mlRead(1, 1, scratch) || !mlRead(521215, 1, other) ||
+    if (!mlRead(1, 1, scratch) || !mlRead(NATIVE_MACOSLOG_DISK_LAST, 1, other) ||
         !mlGptHeader(scratch, false) || !mlGptHeader(other, true) ||
         memcmp(scratch + 40, other + 40, 32) || ml32(scratch + 88) != ml32(other + 88)) return false;
     uint32_t crc = ml32(scratch + 88);
+    const uint64_t backupEntries = ml64(other + 72);  /* bounded by mlGptHeader(backup) above */
     uint8_t header[92]; memcpy(header, scratch, sizeof(header));
-    if (!mlRead(2, 3, scratch) || mlCrc(scratch, 96*128) != crc ||
+    if (!mlRead(2, NATIVE_MACOSLOG_ENTRY_BLOCKS, scratch) || mlCrc(scratch, NATIVE_MACOSLOG_ENTRY_COUNT*128) != crc ||
         !mlGptEntries(scratch, header, mlPartitionId, mlTypeId) ||
-        !mlRead(521211, 3, other) || memcmp(scratch, other, 96*128)) return false;
+        !mlRead(backupEntries, NATIVE_MACOSLOG_ENTRY_BLOCKS, other) ||
+        memcmp(scratch, other, NATIVE_MACOSLOG_ENTRY_COUNT*128)) return false;
     native_macoslog_phase = 2;
     MlFat geometry;
-    if (!mlRead(448512, 1, scratch) || !mlFatGeometry(scratch, geometry) ||
-        !mlRead(448512 + geometry.reserved, geometry.fatBlocks, scratch) ||
-        !mlRead(448512 + geometry.reserved + geometry.fatBlocks, geometry.fatBlocks, other) ||
+    if (!mlRead(NATIVE_MACOSLOG_FIRST, 1, scratch) || !mlFatGeometry(scratch, geometry) ||
+        !mlRead(NATIVE_MACOSLOG_FIRST + geometry.reserved, geometry.fatBlocks, scratch) ||
+        !mlRead(NATIVE_MACOSLOG_FIRST + geometry.reserved + geometry.fatBlocks, geometry.fatBlocks, other) ||
         memcmp(scratch, other, geometry.fatBlocks*4096) ||
-        !mlRead(448512 + geometry.rootFirst, geometry.rootBlocks, other) ||
+        !mlRead(NATIVE_MACOSLOG_FIRST + geometry.rootFirst, geometry.rootBlocks, other) ||
         !mlFile(geometry, scratch, other, first)) return false;
     native_macoslog_phase = 3;
     if (!mlRead(first + 511, 1, other) || !mlGuard(other, first, mlFileId, mlPartitionId)) return false;
@@ -82,7 +84,7 @@ static void mlThread(void *argument, wait_result_t) {
             native_macoslog_phase = 4;
             struct Ops {
                 bool write(uint64_t lba, unsigned blocks, const void *data) {
-                    IOReturn r = hostWrite4k(4, lba, blocks, data);
+                    IOReturn r = hostWrite4k(NATIVE_MACOSLOG_LUN, lba, blocks, data);
                     if (r != kIOReturnSuccess) native_macoslog_error = static_cast<uint32_t>(r);
                     return r == kIOReturnSuccess;
                 }

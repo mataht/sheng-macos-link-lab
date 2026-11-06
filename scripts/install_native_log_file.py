@@ -10,11 +10,15 @@ import subprocess
 import uuid
 
 from create_log_partition import Recovery
-from native_log_file import BLOCK, CONTRACT, FILE_BYTES, guard, locate, preserve_allocations
+from native_log_file import BLOCK, CONTRACT, FILE_BYTES, LAYOUT, guard, locate, preserve_allocations
 
 ROOT = Path(__file__).resolve().parents[1]
-PARTITION = '/dev/block/sde78'
+PARTITION = LAYOUT['device']
+DISK = '/dev/block/' + LAYOUT['disk']
 LENGTH = CONTRACT['partition_blocks']*BLOCK
+# Verified GPT copies of the disk that holds macoslog, saved when the partition was created.
+PRESERVED = {'sheng-lun4-upstream': 'private/backups/20261024-macoslog-partition',
+             'sheng-cn-1tb-lun0': 'private/backups/sheng-cn-1tb-lun0-layout'}[LAYOUT['name']]
 
 
 def sha(data: bytes) -> str:
@@ -24,7 +28,7 @@ def sha(data: bytes) -> str:
 def identity(device: Recovery) -> dict[str, bytes]:
     if device.lbas != CONTRACT['disk_blocks']:
         raise ValueError('LUN capacity differs')
-    observed = device.shell('readlink -f /dev/block/by-name/macoslog; blockdev --getsize64 /dev/block/sde78').splitlines()
+    observed = device.shell(f'readlink -f /dev/block/by-name/macoslog; blockdev --getsize64 {PARTITION}').splitlines()
     if observed != [PARTITION, str(LENGTH)]:
         raise ValueError('macoslog node or size differs')
     major, minor = (int(n, 16) for n in device.shell(f'stat -c %t:%T {PARTITION}').split(':'))
@@ -35,23 +39,23 @@ def identity(device: Recovery) -> dict[str, bytes]:
     copies = {}
     for name, start in (('primary', 0), ('secondary', device.lbas-256)):
         raw = device.read(start, 256)
-        expected = (ROOT/'private/backups/20261024-macoslog-partition'/f'verified-{name}.bin').read_bytes()
+        expected = (ROOT/PRESERVED/f'verified-{name}.bin').read_bytes()
         if raw != expected:
-            raise ValueError('current LUN4 GPT differs from the preserved macoslog layout')
+            raise ValueError(f'current {LAYOUT["disk"]} GPT differs from the preserved macoslog layout')
         copies[name] = raw
     # Full-copy equality above also preserves every other GPT entry.
     h = copies['primary'][BLOCK:2*BLOCK]
     entries, count, stride = struct.unpack_from('<QII', h, 72)
     at = entries*BLOCK+(CONTRACT['partition_index']-1)*stride
     e = copies['primary'][at:at+stride]
-    if (count != 96 or stride != 128 or str(uuid.UUID(bytes_le=e[16:32])) != CONTRACT['partition_uuid']
-            or struct.unpack_from('<QQ', e, 32) != (448512, 464895)):
+    if (count != LAYOUT['entry_count'] or stride != 128 or str(uuid.UUID(bytes_le=e[16:32])) != CONTRACT['partition_uuid']
+            or struct.unpack_from('<QQ', e, 32) != (LAYOUT['partition_first'], LAYOUT['partition_last'])):
         raise ValueError('macoslog identity differs')
     return copies
 
 
 def flush(device: Recovery) -> None:
-    device.shell(f'blockdev --flushbufs {PARTITION} && blockdev --flushbufs /dev/block/sde')
+    device.shell(f'blockdev --flushbufs {PARTITION} && blockdev --flushbufs {DISK}')
 
 
 def read_image(device: Recovery) -> bytes:
@@ -132,7 +136,7 @@ def main() -> None:
         parser.error('--output must stay in local private/')
     if args.action == 'install' and not args.candidate:
         parser.error('install requires --candidate')
-    device = Recovery(args.serial)
+    device = Recovery(args.serial, LAYOUT['disk'])
     result = backup(device, args.output) if args.action == 'backup' else install(device, args.candidate, args.output)
     print(json.dumps(result, indent=2))
 

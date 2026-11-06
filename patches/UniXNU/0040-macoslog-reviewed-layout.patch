@@ -1,0 +1,54 @@
+--- a/drivers/NativeUfs/RootCommands.h
++++ b/drivers/NativeUfs/RootCommands.h
+@@ -258,15 +258,19 @@
+ 
+ // ---- Persistent store and log windows ------------------------------------------------------------------------------
+ // All media writes pass through this guard. Legacy LUN 0 store/log windows retain their policy.
+-// The optional LUN 4 path owns only preallocated macoslog file data, excluding its immutable guard.
++// The optional macoslog path owns only preallocated file data on its reviewed LUN, excluding its immutable guard.
+ // Each caller proves ownership before opening a window; every write is bounded again here.
+ static bool gStoreOpen = false, gLogOpen = false;
+ #if defined(NATIVE_MACOSLOG) && NATIVE_MACOSLOG
++#if !defined(NATIVE_MACOSLOG_LUN) || !defined(NATIVE_MACOSLOG_FIRST) || !defined(NATIVE_MACOSLOG_BLOCKS)
++#error "macoslog write window requires the reviewed layout macros"
++#endif
+ static bool gMacosLogOpen = false;
+ static uint64_t gMacosLogFirst, gMacosLogBlocks;
+-// Dedicated FAT file data on LUN 4; the final immutable guard block is excluded.
++// Dedicated FAT file data on the reviewed macoslog LUN; the final immutable guard block is excluded.
+ static bool hostMacosLogOpen(uint64_t first, uint64_t blocks) {
+-  if (gMacosLogOpen || blocks != 511 || first <= 448512 || first > 464896 - 512) return false;
++  if (gMacosLogOpen || blocks != 511 || first <= NATIVE_MACOSLOG_FIRST ||
++      first > NATIVE_MACOSLOG_FIRST + NATIVE_MACOSLOG_BLOCKS - 512) return false;
+   gMacosLogFirst = first; gMacosLogBlocks = blocks; gMacosLogOpen = true; return true;
+ }
+ #endif
+@@ -303,8 +307,8 @@
+ {
+   bool allowed = lun == 0 && hostInWindow(lba, blocks);
+ #if defined(NATIVE_MACOSLOG) && NATIVE_MACOSLOG
+-  if (lun == 4 && gMacosLogOpen && lba >= gMacosLogFirst && lba - gMacosLogFirst < gMacosLogBlocks)
+-    allowed = blocks <= gMacosLogBlocks - (lba - gMacosLogFirst);
++  if (lun == NATIVE_MACOSLOG_LUN && gMacosLogOpen && lba >= gMacosLogFirst && lba - gMacosLogFirst < gMacosLogBlocks)
++    allowed = allowed || blocks <= gMacosLogBlocks - (lba - gMacosLogFirst);
+ #endif
+   if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || !allowed) {
+     return kIOReturnBadArgument;
+@@ -341,7 +345,7 @@
+   for (unsigned attempt = 0; attempt < 4; attempt++) {
+     IOLockLock(gHost.lock);
+     uint8_t cdb[6] = {}; uint32_t scsi = 0;
+-    status = hostScsi(4, cdb, 6, false, 0, 200000, &scsi);
++    status = hostScsi(NATIVE_MACOSLOG_LUN, cdb, 6, false, 0, 200000, &scsi);
+     uint32_t sense = (gRootDiagnostic.sense >> 16) & 15;
+     IOLockUnlock(gHost.lock);
+     if (status == kIOReturnSuccess) return status;
+@@ -354,7 +358,7 @@
+   if (!gHost.ready || !gMacosLogOpen) return kIOReturnNotReady;
+   IOLockLock(gHost.lock);
+   uint8_t cdb[10] = {0x35}; uint32_t scsi = 0;
+-  IOReturn status = hostScsiDir(4, cdb, 10, 0, 0, 10000000, &scsi);
++  IOReturn status = hostScsiDir(NATIVE_MACOSLOG_LUN, cdb, 10, 0, 0, 10000000, &scsi);
+   IOLockUnlock(gHost.lock);
+   return status;
+ }

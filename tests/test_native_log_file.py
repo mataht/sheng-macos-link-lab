@@ -16,11 +16,24 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
-from native_log_file import BLOCK, CONTRACT, FILE_BYTES, SLOT_BYTES, SNAPSHOT_BYTES, decode, guard, locate
+from native_log_file import (BLOCK, CONTRACT, FILE_BYTES, LAYOUT, LAYOUTS, SLOT_BYTES, SNAPSHOT_BYTES, decode,
+                             geometry_defines, guard, layout_of, locate)
 from prepare_native_log_file import prepare
 
 
+def fixture_backup_entries(layout):
+    # Upstream keeps its historical array; the LUN0 fixture uses the ptool convention (disk last - 4).
+    return 521211 if layout['name'] == 'sheng-lun4-upstream' else layout['disk_blocks'] - 5
+
+
+def compile_defines(layout):
+    return ['-D'+name+'='+value for name, value in geometry_defines(layout).items()] + [
+        f'-DTEST_BACKUP_ENTRIES={fixture_backup_entries(layout)}ULL']
+
+
 class NativeLogFile(unittest.TestCase):
+    layout = LAYOUT
+
     @classmethod
     def setUpClass(cls):
         cls.work = tempfile.TemporaryDirectory()
@@ -29,7 +42,7 @@ class NativeLogFile(unittest.TestCase):
         if not compiler or not all(shutil.which(tool) for tool in ('mkfs.fat', 'mcopy', 'mdir')):
             raise unittest.SkipTest('requires a host C++ compiler, dosfstools and mtools')
         library = cls.path/'bridge.so'
-        subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', '-shared', '-fPIC',
+        subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', '-shared', '-fPIC', *compile_defines(cls.layout),
                         str(ROOT/'tests/macoslog_bridge.cpp'), '-o', str(library)], check=True)
         cls.lib = ctypes.CDLL(str(library))
         cls.lib.check_fat.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)]
@@ -46,7 +59,7 @@ class NativeLogFile(unittest.TestCase):
         defines = ['-DNATIVE_MACOSLOG_'+key+'_ID={'+','.join(map(str, value))+'}'
                    for key, value in (('FILE', cls.fid), ('PARTITION', cls.pid), ('TYPE', cls.tid))]
         subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', '-Wno-attributes',
-                        '-Wno-address', '-shared', '-fPIC', *defines,
+                        '-Wno-address', '-shared', '-fPIC', *defines, *compile_defines(cls.layout),
                         str(ROOT/'tests/macoslog_worker_bridge.cpp'), '-o', str(worker)], check=True)
         cls.worker = ctypes.CDLL(str(worker))
         cls.worker.run_worker.argtypes = [ctypes.c_void_p]*5 + [ctypes.c_uint]*2 + [ctypes.c_void_p]
@@ -65,6 +78,11 @@ class NativeLogFile(unittest.TestCase):
         cls.record = prepare(image, cls.path/'prepared')
         cls.image = (cls.path/'prepared/macoslog.img').read_bytes()
         cls.offset = locate(cls.image)
+        cls.first = cls.layout['partition_first'] + cls.offset//BLOCK
+        # The guard block names the file's absolute LBA; rebuild it for the layout under test.
+        image = bytearray(cls.image)
+        image[cls.offset+FILE_BYTES-BLOCK:cls.offset+FILE_BYTES] = guard(cls.first)
+        cls.image = bytes(image)
 
     @classmethod
     def tearDownClass(cls):
@@ -73,7 +91,7 @@ class NativeLogFile(unittest.TestCase):
     def test_real_fat_file_and_existing_files_preserved(self):
         first = ctypes.c_uint64()
         self.assertTrue(self.lib.check_fat(self.image, ctypes.byref(first)))
-        self.assertEqual(first.value, CONTRACT['partition_first'] + self.offset//BLOCK)
+        self.assertEqual(first.value, self.first)
         marker = self.image[self.offset+FILE_BYTES-BLOCK:self.offset+FILE_BYTES]
         self.assertTrue(self.lib.check_guard(marker, first.value, self.fid, self.pid))
         self.assertFalse(self.lib.check_guard(marker, first.value+1, self.fid, self.pid))
@@ -86,7 +104,8 @@ class NativeLogFile(unittest.TestCase):
     def test_real_command_write_window(self):
         executable = self.path/'commands'
         subprocess.run([shutil.which('g++'), '-std=c++23', '-Wall', '-Wextra', '-Werror',
-            '-Wno-unused-function', '-fsanitize=address,undefined', str(ROOT/'tests/macoslog_commands.cpp'),
+            '-Wno-unused-function', '-fsanitize=address,undefined', *compile_defines(self.layout),
+            str(ROOT/'tests/macoslog_commands.cpp'),
             '-o', str(executable)], check=True)
         subprocess.run([str(executable)], check=True, timeout=15)
 
@@ -116,20 +135,29 @@ class NativeLogFile(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     locate(bytes(raw))
 
+    def gpt_fixture(self, array=None, backup=False, backup_entries=None):
+        layout = self.layout
+        disk_last, count = layout['disk_blocks'] - 1, layout['entry_count']
+        if array is None:
+            array = bytearray(count*128)
+            at = (layout['partition_index'] - 1)*128
+            array[at:at+16], array[at+16:at+32] = self.tid, self.pid
+            struct.pack_into('<QQ', array, at+32, layout['partition_first'], layout['partition_last'])
+            array[at+56:at+72] = 'macoslog'.encode('utf-16-le')
+        entries_lba = (fixture_backup_entries(layout) if backup_entries is None else backup_entries) if backup else 2
+        raw = bytearray(4096)
+        struct.pack_into('<8s4I4Q16sQ3I', raw, 0, b'EFI PART', 0x10000, 92, 0, 0,
+            disk_last if backup else 1, 1 if backup else disk_last, 6, disk_last - 5, bytes(16),
+            entries_lba, count, 128, zlib.crc32(array))
+        struct.pack_into('<I', raw, 16, zlib.crc32(raw[:92]))
+        return bytes(raw), array
+
     def test_gpt_identity_crc_and_overlap(self):
-        entries = bytearray(96*128)
-        at = 77*128
-        entries[at:at+16], entries[at+16:at+32] = self.tid, self.pid
-        struct.pack_into('<QQ', entries, at+32, 448512, 464895)
-        entries[at+56:at+72] = 'macoslog'.encode('utf-16-le')
+        _, entries = self.gpt_fixture()
+        at = (self.layout['partition_index'] - 1)*128
 
         def header(array, backup=False):
-            raw = bytearray(4096)
-            struct.pack_into('<8s4I4Q16sQ3I', raw, 0, b'EFI PART', 0x10000, 92, 0, 0,
-                521215 if backup else 1, 1 if backup else 521215, 6, 521210, bytes(16),
-                521211 if backup else 2, 96, 128, zlib.crc32(array))
-            struct.pack_into('<I', raw, 16, zlib.crc32(raw[:92]))
-            return bytes(raw)
+            return self.gpt_fixture(array, backup)[0]
 
         for backup in (False, True):
             self.assertTrue(self.lib.check_gpt(header(entries, backup), bytes(entries), self.pid, self.tid, backup))
@@ -146,9 +174,20 @@ class NativeLogFile(unittest.TestCase):
                 h = header(bad)
             else:
                 bad[:16] = self.tid
-                struct.pack_into('<QQ', bad, 32, 448511, 448512)
+                first = self.layout['partition_first']
+                struct.pack_into('<QQ', bad, 32, first - 1, first)
                 h = header(bad)
             self.assertFalse(self.lib.check_gpt(h, bytes(bad), self.pid, self.tid, False), mode)
+        # The backup array must sit after the last usable block and before the backup header.
+        disk_last = self.layout['disk_blocks'] - 1
+        blocks = self.layout['entry_count']*128//BLOCK
+        for where in (disk_last - 5, disk_last - blocks + 1, 2):
+            h = self.gpt_fixture(entries, True, where)[0]
+            self.assertFalse(self.lib.check_gpt(h, bytes(entries), self.pid, self.tid, True), where)
+        accepted = self.lib.check_gpt(self.gpt_fixture(entries, True, disk_last - blocks)[0], bytes(entries),
+                                      self.pid, self.tid, True)
+        # Upstream keeps the exact historical array (disk last - 4); the reviewed LUN0 layout accepts any in-bound one.
+        self.assertEqual(accepted, self.layout['name'] != 'sheng-lun4-upstream' or blocks == 4)
 
     def test_commit_order_and_recovery_from_each_interruption(self):
         identity = '12345678-1234-5678-9012-345678901234'
@@ -190,19 +229,8 @@ class NativeLogFile(unittest.TestCase):
             decode(bytes(initial), identity)
 
     def test_worker_default_off_readonly_commit_restart_and_error_stop(self):
-        array = bytearray(96*128)
-        at = 77*128
-        array[at:at+16], array[at+16:at+32] = self.tid, self.pid
-        struct.pack_into('<QQ', array, at+32, 448512, 464895)
-        array[at+56:at+72] = 'macoslog'.encode('utf-16-le')
-        headers = []
-        for backup in (False, True):
-            h = bytearray(4096)
-            struct.pack_into('<8s4I4Q16sQ3I', h, 0, b'EFI PART', 0x10000, 92, 0, 0,
-                521215 if backup else 1, 1 if backup else 521215, 6, 521210, bytes(16),
-                521211 if backup else 2, 96, 128, zlib.crc32(array))
-            struct.pack_into('<I', h, 16, zlib.crc32(h[:92]))
-            headers.append(bytes(h))
+        _, array = self.gpt_fixture()
+        headers = [self.gpt_fixture(array, backup)[0] for backup in (False, True)]
         identity = '12345678-1234-5678-9012-345678901234'
         payload = struct.pack('<8s4I2Q2I8Q16s', b'SHNLOG01', 1, 128, 16384, 65536,
                               5, 0, 0, 0, *([0]*8), uuid.UUID(identity).bytes) + b'boot\n' + bytes(SNAPSHOT_BYTES-133)
@@ -219,7 +247,7 @@ class NativeLogFile(unittest.TestCase):
         self.assertEqual(volume, self.image)
         self.assertEqual(run(volume, 2), [3, 0, 4, 1, 1, 2, 2])
         capture = bytes(volume[self.offset:self.offset+FILE_BYTES])
-        self.assertEqual(decode(capture, identity)[1]['console_text'], 'boot\n')
+        self.assertEqual(decode(capture, identity, self.layout)[1]['console_text'], 'boot\n')
         # All partition bytes outside the owned snapshot file remain unchanged.
         self.assertEqual(volume[:self.offset], self.image[:self.offset])
         self.assertEqual(volume[self.offset+FILE_BYTES:], self.image[self.offset+FILE_BYTES:])
@@ -227,7 +255,7 @@ class NativeLogFile(unittest.TestCase):
                          self.image[self.offset+FILE_BYTES-BLOCK:self.offset+FILE_BYTES])
         self.assertEqual(run(volume, 2)[3], 2)
         self.assertEqual(run(volume, 2, 1), [5, 1, 4, 0, 0, 1, 0])
-        self.assertEqual(decode(bytes(volume[self.offset:self.offset+FILE_BYTES]), identity)[1]['generation'], 2)
+        self.assertEqual(decode(bytes(volume[self.offset:self.offset+FILE_BYTES]), identity, self.layout)[1]['generation'], 2)
         volume[self.offset+FILE_BYTES-1] ^= 1
         self.assertEqual(run(volume, 2), [5, 0, 3, 0, 0, 0, 0])
 
@@ -244,7 +272,7 @@ class NativeLogFile(unittest.TestCase):
             source_sha256={name: hashlib.sha256((ROOT/'platform/sheng/macos26/storage'/name).read_bytes()).hexdigest()
                            for name in ('macoslog_layout.h', 'macoslog_worker.h')})
         (build/'security-relink.json').write_text(json.dumps(dict(storage_driver=dict(build=dict(macoslog=metadata)))))
-        deployed = dict(status='verified', partition='/dev/block/sde78', file_first_lba=first,
+        deployed = dict(status='verified', partition=LAYOUT['device'], file_first_lba=first,
             gpt_writes=False, gpt_unchanged=True, existing_allocations_preserved=True,
             image_sha256='seed', readback_sha256='seed')
         deployment = base/'deployment.json'
@@ -298,7 +326,7 @@ class NativeLogFile(unittest.TestCase):
             def transfer(command, *, stdin, **kwargs):
                 nonlocal current
                 attempts.append(command)
-                self.assertIn('of=/dev/block/sde78', command[-1])
+                self.assertIn('of='+LAYOUT['device'], command[-1])
                 self.assertIn('count=67108864 iflag=count_bytes', command[-1])
                 current = stdin.read()
                 if state == 'timeout':
@@ -322,6 +350,17 @@ class NativeLogFile(unittest.TestCase):
             self.assertEqual(len(attempts), 0 if state == 'stale' else 1)
             if state == 'timeout':
                 self.assertEqual(json.loads((output/'deployment.json').read_text())['status'], 'write-outcome-unknown')
+
+
+class NativeLogFileUpstreamLayout(NativeLogFile):
+    """The same production kernel checks compiled for the upstream LUN4 layout must behave exactly as before."""
+    layout = layout_of(dict(LAYOUTS['sheng-lun4-upstream'], file_uuid=CONTRACT['file_uuid']))
+
+    def test_package_requires_both_modes_current_sources_and_matching_readback(self):
+        self.skipTest('packaging qualifies the active layout only')
+
+    def test_installer_stale_source_single_transfer_and_uncertain_outcome(self):
+        self.skipTest('the installer targets the active layout only')
 
 
 if __name__ == '__main__':

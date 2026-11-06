@@ -1,12 +1,15 @@
 {
-  "schema": "sheng-macoslog-v1",
-  "lun": 4,
+  "schema": "sheng-macoslog-v2",
+  "layout": "sheng-cn-1tb-lun0",
+  "lun": 0,
+  "disk": "sda",
   "block_bytes": 4096,
-  "disk_blocks": 521216,
-  "partition_index": 78,
-  "partition_first": 448512,
+  "disk_blocks": 257745920,
+  "entry_count": 32,
+  "partition_index": 30,
+  "partition_first": 36649216,
   "partition_blocks": 16384,
-  "partition_uuid": "4cd2ed34-2142-4ea4-abf2-ec6c51d117d7",
+  "partition_uuid": "993de482-5dc8-4be4-b8e3-bf525232abd1",
   "partition_type": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",
   "partition_name": "macoslog",
   "fat_label": "MACOSLOG",
@@ -15,5 +18,5 @@
   "slot_bytes": 1048576,
   "snapshot_bytes": 82048,
   "period_ms": 2000,
-  "file_uuid": "f84556a4-4249-578c-90d2-1484122f7a56"
+  "file_uuid": "1dd729c7-f17a-4e03-97bc-15219f5d99b5"
 }

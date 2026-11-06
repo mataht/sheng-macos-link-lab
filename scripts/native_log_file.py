@@ -12,20 +12,62 @@ CONTRACT = json.loads((ROOT / 'config/macoslog.json').read_text())
 BLOCK, FILE_BYTES, SLOT_BYTES, SNAPSHOT_BYTES = 4096, 2 << 20, 1 << 20, 82048
 
 
+# Reviewed device layouts. A contract must match one of them exactly; nothing is derived or relaxed.
+# partition_index is the 1-based GPT entry (and the Linux partition number); the kernel checks index - 1.
+COMMON = dict(block_bytes=BLOCK, partition_name='macoslog', fat_label='MACOSLOG', filename='SHENGLOG.BIN',
+              file_bytes=FILE_BYTES, slot_bytes=SLOT_BYTES, snapshot_bytes=SNAPSHOT_BYTES, period_ms=2000,
+              partition_type='ebd0a0a2-b9e5-4433-87c0-68b6b72699c7', partition_blocks=16384)
+LAYOUTS = {
+    # Upstream author's unit: free tail of UFS LUN4 (sde), 96-entry GPT.
+    'sheng-lun4-upstream': dict(COMMON, schema='sheng-macoslog-v1', lun=4, disk='sde', disk_blocks=521216,
+        entry_count=96, partition_index=78, partition_first=448512,
+        partition_uuid='4cd2ed34-2142-4ea4-abf2-ec6c51d117d7'),
+    # CN OS3.0.306 / 16 GB / 1 TB unit: LUN4 is full (xbl_sc_logs fills its tail), so the log lives on
+    # LUN0 (sda) right after a 128 GiB userdata, as entry 30, before the 32 GiB macosroot (2026-11-06 plan).
+    'sheng-cn-1tb-lun0': dict(COMMON, schema='sheng-macoslog-v2', layout='sheng-cn-1tb-lun0', lun=0, disk='sda',
+        disk_blocks=257745920, entry_count=32, partition_index=30, partition_first=36649216,
+        partition_uuid='993de482-5dc8-4be4-b8e3-bf525232abd1'),
+}
+
+
+def layout_of(contract: dict) -> dict:
+    name = contract.get('layout', 'sheng-lun4-upstream')
+    expected = LAYOUTS.get(name)
+    if expected is None or any(contract.get(key) != value for key, value in expected.items()
+                               if key not in ('disk', 'entry_count') or name != 'sheng-lun4-upstream'):
+        raise ValueError('macoslog contract differs from every reviewed kernel layout')
+    if set(contract) - set(expected) - {'file_uuid'}:
+        raise ValueError('macoslog contract carries unreviewed fields')
+    layout = dict(expected, name=name, partition_last=expected['partition_first'] + expected['partition_blocks'] - 1,
+                  device=f"/dev/block/{expected['disk']}{expected['partition_index']}",
+                  entry_blocks=expected['entry_count'] * 128 // BLOCK)
+    if layout['partition_last'] >= layout['disk_blocks'] - 1 - layout['entry_blocks']:
+        raise ValueError('macoslog partition overlaps the backup GPT')
+    return layout
+
+
+def geometry_defines(layout: dict) -> dict[str, str]:
+    """Every layout macro the kernel guard, worker and tests consume; all are always emitted together."""
+    defines = dict(NATIVE_MACOSLOG_LUN=str(layout['lun']),
+                   NATIVE_MACOSLOG_DISK_LAST=f"{layout['disk_blocks'] - 1}ULL",
+                   NATIVE_MACOSLOG_ENTRY_COUNT=f"{layout['entry_count']}U",
+                   NATIVE_MACOSLOG_ENTRY_INDEX=f"{layout['partition_index'] - 1}U",
+                   NATIVE_MACOSLOG_FIRST=f"{layout['partition_first']}ULL",
+                   NATIVE_MACOSLOG_BLOCKS=f"{layout['partition_blocks']}ULL")
+    # The upstream layout keeps its exact historical backup-array check; others bound it from the header.
+    if layout['name'] == 'sheng-lun4-upstream':
+        defines['NATIVE_MACOSLOG_BACKUP_ENTRIES'] = '521211ULL'
+    return defines
+
+
 def validate_contract(contract: dict) -> None:
-    expected = dict(schema='sheng-macoslog-v1', lun=4, block_bytes=BLOCK, disk_blocks=521216,
-        partition_index=78, partition_first=448512, partition_blocks=16384,
-        partition_name='macoslog', fat_label='MACOSLOG', filename='SHENGLOG.BIN',
-        file_bytes=FILE_BYTES, slot_bytes=SLOT_BYTES, snapshot_bytes=SNAPSHOT_BYTES, period_ms=2000,
-        partition_uuid='4cd2ed34-2142-4ea4-abf2-ec6c51d117d7',
-        partition_type='ebd0a0a2-b9e5-4433-87c0-68b6b72699c7')
-    if any(contract.get(key) != value for key, value in expected.items()):
-        raise ValueError('macoslog contract differs from the fixed kernel layout')
+    layout_of(contract)
     if uuid.UUID(contract['file_uuid']).int == 0:
         raise ValueError('macoslog file identity must be nonzero')
 
 
 validate_contract(CONTRACT)
+LAYOUT = layout_of(CONTRACT)
 
 
 def contiguous_empty_file(original: bytes, allocated: bytes) -> bytes:
@@ -186,13 +228,14 @@ def guard(first_lba: int) -> bytes:
     return bytes(data)
 
 
-def decode(data: bytes, expected_uuid: str) -> tuple[bytes, dict]:
+def decode(data: bytes, expected_uuid: str, layout: dict | None = None) -> tuple[bytes, dict]:
     from decode_native_log import decode as decode_snapshot
+    layout = layout or LAYOUT
     if len(data) != FILE_BYTES:
         raise ValueError('fixed log file is truncated')
     marker = data[-BLOCK:]
     first = struct.unpack_from('<Q', marker, 48)[0]
-    if (not CONTRACT['partition_first'] < first <= CONTRACT['partition_first'] + CONTRACT['partition_blocks'] - FILE_BYTES//BLOCK
+    if (not layout['partition_first'] < first <= layout['partition_first'] + layout['partition_blocks'] - FILE_BYTES//BLOCK
             or marker != guard(first)):
         raise ValueError('fixed log file ownership guard differs')
     snapshots, errors = [], []

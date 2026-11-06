@@ -4,6 +4,18 @@
 #include <stddef.h>
 #include <string.h>
 
+/* Reviewed device geometry, emitted as one set by build_macos26_storage.py (scripts/native_log_file.py). */
+#if !defined(NATIVE_MACOSLOG_LUN) || !defined(NATIVE_MACOSLOG_DISK_LAST) || !defined(NATIVE_MACOSLOG_ENTRY_COUNT) || \
+    !defined(NATIVE_MACOSLOG_ENTRY_INDEX) || !defined(NATIVE_MACOSLOG_FIRST) || !defined(NATIVE_MACOSLOG_BLOCKS)
+#error "macoslog requires the complete reviewed layout macro set"
+#endif
+#define NATIVE_MACOSLOG_LAST (NATIVE_MACOSLOG_FIRST + NATIVE_MACOSLOG_BLOCKS - 1)
+#define NATIVE_MACOSLOG_ENTRY_BLOCKS (NATIVE_MACOSLOG_ENTRY_COUNT * 128U / 4096U)
+static_assert(NATIVE_MACOSLOG_BLOCKS == 16384, "macoslog is a fixed 64 MiB FAT16 volume");
+static_assert(NATIVE_MACOSLOG_ENTRY_COUNT % 32 == 0 && NATIVE_MACOSLOG_ENTRY_BLOCKS >= 1 && NATIVE_MACOSLOG_ENTRY_BLOCKS <= 4,
+              "bounded GPT entry array");
+static_assert(NATIVE_MACOSLOG_ENTRY_INDEX < NATIVE_MACOSLOG_ENTRY_COUNT, "macoslog entry inside the array");
+static_assert(NATIVE_MACOSLOG_LAST + 1 + NATIVE_MACOSLOG_ENTRY_BLOCKS < NATIVE_MACOSLOG_DISK_LAST, "clear of the backup GPT");
 static inline uint16_t ml16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 static inline uint32_t ml32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static inline uint64_t ml64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
@@ -14,20 +26,31 @@ static inline uint32_t mlCrc(const uint8_t *p, size_t n) {
     while (n--) { crc ^= *p++; for (unsigned i = 0; i < 8; i++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1))); }
     return ~crc;
 }
+/* The backup array must lie after the last usable block and end before the backup header. */
+static inline bool mlBackupEntriesLba(const uint8_t *p) {
+#if defined(NATIVE_MACOSLOG_BACKUP_ENTRIES)
+    return ml64(p + 72) == NATIVE_MACOSLOG_BACKUP_ENTRIES;
+#else
+    return ml64(p + 72) > ml64(p + 48) &&
+        ml64(p + 72) + NATIVE_MACOSLOG_ENTRY_BLOCKS <= NATIVE_MACOSLOG_DISK_LAST;
+#endif
+}
 static inline bool mlGptHeader(const uint8_t *p, bool backup) {
     if (memcmp(p, "EFI PART", 8) || ml32(p + 8) != 0x10000 || ml32(p + 12) != 92 ||
-        ml32(p + 20) || ml64(p + 24) != (backup ? 521215u : 1u) ||
-        ml64(p + 32) != (backup ? 1u : 521215u) || ml32(p + 80) != 96 || ml32(p + 84) != 128 ||
-        ml64(p + 40) > 448512 || ml64(p + 48) < 464895 || ml64(p + 48) >= 521215 ||
-        ml64(p + 72) != (backup ? 521211u : 2u)) return false;
+        ml32(p + 20) || ml64(p + 24) != (backup ? NATIVE_MACOSLOG_DISK_LAST : 1u) ||
+        ml64(p + 32) != (backup ? 1u : NATIVE_MACOSLOG_DISK_LAST) ||
+        ml32(p + 80) != NATIVE_MACOSLOG_ENTRY_COUNT || ml32(p + 84) != 128 ||
+        ml64(p + 40) > NATIVE_MACOSLOG_FIRST || ml64(p + 48) < NATIVE_MACOSLOG_LAST ||
+        ml64(p + 48) >= NATIVE_MACOSLOG_DISK_LAST ||
+        (backup ? !mlBackupEntriesLba(p) : ml64(p + 72) != 2u)) return false;
     uint8_t copy[92]; memcpy(copy, p, sizeof(copy)); memset(copy + 16, 0, 4);
     return ml32(p + 16) == mlCrc(copy, sizeof(copy));
 }
 static inline bool mlGptEntries(const uint8_t *p, const uint8_t *header,
                               const uint8_t *partitionId, const uint8_t *typeId) {
-    if (mlCrc(p, 96 * 128) != ml32(header + 88)) return false;
+    if (mlCrc(p, NATIVE_MACOSLOG_ENTRY_COUNT * 128) != ml32(header + 88)) return false;
     unsigned matches = 0;
-    for (unsigned i = 0; i < 96; i++) {
+    for (unsigned i = 0; i < NATIVE_MACOSLOG_ENTRY_COUNT; i++) {
         const uint8_t *e = p + i * 128;
         uint8_t used = 0; for (unsigned j = 0; j < 16; j++) used |= e[j];
         if (!used) continue;
@@ -35,10 +58,10 @@ static inline bool mlGptEntries(const uint8_t *p, const uint8_t *header,
         if (low > high || low < ml64(header + 40) || high > ml64(header + 48)) return false;
         if (!memcmp(e + 16, partitionId, 16)) {
             static const uint16_t name[36] = {'m','a','c','o','s','l','o','g',0};
-            if (i != 77 || memcmp(e, typeId, 16) || low != 448512 || high != 464895 ||
-                memcmp(e + 56, name, sizeof(name))) return false;
+            if (i != NATIVE_MACOSLOG_ENTRY_INDEX || memcmp(e, typeId, 16) || low != NATIVE_MACOSLOG_FIRST ||
+                high != NATIVE_MACOSLOG_LAST || memcmp(e + 56, name, sizeof(name))) return false;
             matches++;
-        } else if (low <= 464895 && high >= 448512) return false;
+        } else if (low <= NATIVE_MACOSLOG_LAST && high >= NATIVE_MACOSLOG_FIRST) return false;
     }
     return matches == 1;
 }
@@ -87,8 +110,8 @@ static inline bool mlFile(const MlFat &g, const uint8_t *fat, const uint8_t *roo
         uint32_t other = ml16(e + 26);
         if (other >= cluster && other < cluster + count) return false;
     }
-    first = 448512 + g.dataFirst + (cluster - 2) * g.clusterBlocks;
-    return first > 448512 && first + 512 <= 464896;
+    first = NATIVE_MACOSLOG_FIRST + g.dataFirst + (cluster - 2) * g.clusterBlocks;
+    return first > NATIVE_MACOSLOG_FIRST && first + 512 <= NATIVE_MACOSLOG_FIRST + NATIVE_MACOSLOG_BLOCKS;
 }
 static inline bool mlGuard(const uint8_t *p, uint64_t first, const uint8_t *fileId, const uint8_t *partitionId) {
     return !memcmp(p, "SHNGSLOT", 8) && ml32(p + 8) == 1 && ml32(p + 12) == 4096 &&

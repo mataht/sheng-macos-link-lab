@@ -27,23 +27,26 @@ def digest(data):
 
 
 class Recovery:
-    def __init__(self, serial):
+    def __init__(self, serial, disk='sde'):
+        if disk not in ('sda', 'sde'):
+            raise ValueError('unreviewed disk')
         self.adb = ['adb', '-s', serial]
+        self.disk = disk
         state = subprocess.check_output(self.adb + ['get-state'], text=True, timeout=10).strip()
         if state != 'recovery' or self.shell('id -u') != '0' or self.shell('getprop ro.product.device') != 'sheng':
             raise ValueError('requires root ADB in sheng recovery')
-        if int(self.shell('cat /sys/block/sde/queue/logical_block_size')) != BLOCK:
+        if int(self.shell(f'cat /sys/block/{disk}/queue/logical_block_size')) != BLOCK:
             raise ValueError('unexpected logical block size')
-        self.lbas = int(self.shell('cat /sys/block/sde/size')) * 512 // BLOCK
+        self.lbas = int(self.shell(f'cat /sys/block/{disk}/size')) * 512 // BLOCK
 
     def shell(self, command):
         return subprocess.check_output(self.adb + ['shell', command], text=True, timeout=30).strip()
 
     def read(self, start, count):
         data = subprocess.check_output(self.adb + ['exec-out', 'sh', '-c',
-            f'dd if=/dev/block/sde bs={BLOCK} skip={start} count={count} 2>/dev/null'], timeout=120)
+            f'dd if=/dev/block/{self.disk} bs={BLOCK} skip={start} count={count} 2>/dev/null'], timeout=120)
         if len(data) != count * BLOCK:
-            raise ValueError('incomplete sde read')
+            raise ValueError(f'incomplete {self.disk} read')
         return data
 
     def write(self, path, start, count):
@@ -53,9 +56,9 @@ class Recovery:
         subprocess.run(self.adb + ['push', str(path), remote], check=True, timeout=120,
                        stdout=subprocess.DEVNULL)
         try:
-            self.shell(f'dd if={shlex.quote(remote)} of=/dev/block/sde bs={BLOCK} seek={start} count={count} conv=notrunc && sync')
+            self.shell(f'dd if={shlex.quote(remote)} of=/dev/block/{self.disk} bs={BLOCK} seek={start} count={count} conv=notrunc && sync')
             if self.read(start, count) != path.read_bytes():
-                raise ValueError('sde write readback differs')
+                raise ValueError(f'{self.disk} write readback differs')
         finally:
             self.shell('rm -f ' + shlex.quote(remote))
 
@@ -89,6 +92,9 @@ def update(data, lbas, start, slot, entry):
 
 
 def prepare(device, directory):
+    from native_log_file import LAYOUT
+    if LAYOUT['name'] != 'sheng-lun4-upstream' or device.disk != 'sde':
+        raise ValueError('free-tail creation is only for the upstream LUN4 layout; the LUN0 log is part of the combined repartition')
     if directory.exists():
         raise ValueError('choose a new backup directory; existing rollback material is preserved')
     old = json.loads((ROOT / 'private/backups/20261023-gpt-boot/manifest.json').read_text())['gpt']['sde']
