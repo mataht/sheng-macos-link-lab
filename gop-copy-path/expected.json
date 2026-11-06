@@ -1,0 +1,24 @@
+{
+  "upstream": {
+    "repository": "CrossDarwin/macOS-ForSheng",
+    "commit": "a200d204230846bb640b715086d8c627405ba2df",
+    "build_flags": ["--arch", "arm64e", "--link-kernel", "--build-ufs-driver", "--build-gop-display"]
+  },
+  "original": {
+    "display_patch_sha256": "504aa8bfae72589524c30ade73dd808ca19a6aa7d88e3c628f24931df9f7a3dc",
+    "display_source_sha256": "65ee233f61b8e50bd0b0f11e4f311c48931536d62827b15d34563eb084ec9122",
+    "scanout_header_sha256": "dd6717f6711ca6cb632e79934b5aa4b816e579c0ff9a6a5eda88cf00492230ec",
+    "framebuffer_header_sha256": "afbbad7bedccc74371d45922036535ae71cbe81025d805f38b78c5ccada05a72",
+    "ufs_object_sha256": "e3fea376496dc240ddc9e70982a788d267fea37a409d32a9c552c3441950e8ef",
+    "combined_module_sha256": "667aad23e734153445267b6408212aea62607efcda058036615575404d138578"
+  },
+  "overlay": {
+    "display/0001-native-gop-display.patch": "dc36f8411f876d0bd7ac38c72c853d7a1b202085077e324ca01e0972b6acb070",
+    "display/gop_scanout.h": "9d5c6f1c2182feaa95fc8186b104ff440e1e4c1c6ef01486e971f66f9aa9cae7",
+    "display/NativeGOPDisplay.cpp": "4884677e6a39c0be6c5b58497a5ad1e6aa93b5825b3e1f55f295b538bba10bec",
+    "original/gop_layers.h": "6c6aada53457c44ea1fa591a2b97a1634370837bc96104e8018d2c958ad5a406",
+    "tests/native_gop_blit.cpp": "fb7b3b5ffb064d4f6286cfb8092b0b806b3bc9ab7f80b64aa8286cce4e283c44",
+    "tests/native_gop_scanout_upstream.cpp": "2d2260a265edbec182931f10e39ef3b8be154cd5ec1e7a5f5e4de91fdf0e1ec3"
+  },
+  "stage15_display_source_sha256": "4884677e6a39c0be6c5b58497a5ad1e6aa93b5825b3e1f55f295b538bba10bec"
+}
