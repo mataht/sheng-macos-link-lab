@@ -9,6 +9,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 
@@ -17,6 +18,17 @@ from observe_macos26_kernel import identify
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'UniXNU/scripts/qemu-entry'))
 from gdb_packets import Packets
+
+# Physical kernel placement chosen by DarwinBoot's AllocateWindow: the first EfiConventionalMemory run, in map
+# order, that holds the window from its 32 MiB-aligned start plus the kernel's 32 MiB offset (0x1004000).
+PLACEMENTS = {
+    # Upstream author's 8 GB unit: run at 0x880000000, 512 MiB window (historical default).
+    'upstream-8gb': (0x881004000, 0x20000000),
+    # CN 16 GB unit (uefi-sheng 0004): runs below 0x8C0000000 are < 1 GiB, so the 12 GiB window
+    # (package_macos26_ufs.OWNED_MEMORY) lands in the 13 GiB run at 0x8C0000000.
+    'cn-16gb-12gib': (0x8C1004000, 0x300000000),
+}
+QEMU_RAM_BASE = 0x40000000  # QEMU virt
 
 
 def main() -> None:
@@ -31,13 +43,15 @@ def main() -> None:
                         help='Accept only an actual EL2 trap on OSLAR_EL1 as the regression control')
     parser.add_argument('--framebuffer-trace', action='store_true',
                         help='Provide sheng framebuffer geometry in guest RAM and require real post-MMU pixels')
+    parser.add_argument('--placement', choices=sorted(PLACEMENTS), default='upstream-8gb',
+                        help='physical kernel placement and owned window to reproduce')
     args = parser.parse_args()
     if args.expect_debug_trap and not args.trap_debug_unlock:
         parser.error('--expect-debug-trap requires --trap-debug-unlock')
     kernel, symbols, identity = identify(args.kernel_build.resolve())
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    base, window = 0x881004000, 0x20000000
+    base, window = PLACEMENTS[args.placement]
     va = 0xfffffe0007004000
     # Match DarwinBoot's ALIGN_VALUE(Address + Kernel.End - Kernel.Base, SIZE_16KB).
     end = max(segment['va'] + segment['size'] for segment in identity['segments'] if segment['size'])
@@ -96,8 +110,15 @@ def main() -> None:
         listener.bind(('127.0.0.1', 0))
         port = listener.getsockname()[1]
     virtualization = 'on' if args.trap_debug_unlock else 'off'
-    command = [str(args.qemu.resolve()), '-M', f'virt,virtualization={virtualization},secure=off,gic-version=3',
-               '-cpu', 'cortex-a710', '-m', '34816', '-nodefaults', '-display', 'none',
+    # Guest RAM must reach the kernel, boot arguments and their page; it covers the 0xB8000000 framebuffer too.
+    ram_mib = max(34816, ((args_pa + 0x100000 - QEMU_RAM_BASE + (1 << 20) - 1) >> 20) + 64)
+    # A sparse file backs that RAM so only pages the guest touches use host memory; the guest layout is unchanged.
+    ram_file = tempfile.NamedTemporaryFile(prefix='sheng-bootstrap-ram-', dir='/var/tmp')
+    ram_file.truncate(ram_mib << 20)
+    command = [str(args.qemu.resolve()), '-M', f'virt,virtualization={virtualization},secure=off,gic-version=3,memory-backend=ram0',
+               '-cpu', 'cortex-a710', '-m', str(ram_mib),
+               '-object', f'memory-backend-file,id=ram0,size={ram_mib}M,mem-path={ram_file.name},share=on',
+               '-nodefaults', '-display', 'none',
                '-serial', 'none', '-monitor', 'none', '-no-reboot',
                '-device', f'loader,file={out}/entry.elf,cpu-num=0',
                '-device', f'loader,file={flat},addr={base:#x},force-raw=on',
@@ -136,6 +157,8 @@ def main() -> None:
                 registers = bytes.fromhex(request('g'))
                 core = struct.unpack('<33Q', registers[:264])
                 result = dict(uuid=identity['uuid'], kernel_sha256=identity['kernel_sha256'],
+                              placement=args.placement, owned_window_bytes=hex(window),
+                              qemu_ram_mib=ram_mib, qemu_ram_backend='sparse-file',
                               kernel_pa=hex(base), boot_args_pa=hex(args_pa),
                               pc=hex(core[32]), sp=hex(core[31]), x0=hex(core[0]),
                               el2_debug_trap_policy_enabled=args.trap_debug_unlock,
@@ -214,6 +237,7 @@ def main() -> None:
                 proc.wait()
             # Flat files and the stub are reproducible; retain only diagnostic evidence.
             flat.unlink(missing_ok=True)
+            ram_file.close()
 
 
 if __name__ == '__main__':

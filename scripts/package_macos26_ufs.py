@@ -63,7 +63,9 @@ def qualify(build, observation, bootstrap, default_off, installed, plan, root_bu
             or traced.get('reached_c_entry') is not True or traced.get('instruction_and_args_match') is not True
             or traced.get('bootstrap_stage') != '0xf'
             or traced.get('post_mmu_framebuffer_mapping_ready') is not True
-            or traced.get('actual_stage_pixels') != ['0xff00ff00'] * 16):
+            or traced.get('actual_stage_pixels') != ['0xff00ff00'] * 16
+            # The trace must reproduce this candidate's physical placement for the packaged 12 GiB window.
+            or traced.get('placement') != 'cn-16gb-12gib' or traced.get('owned_window_bytes') != hex(OWNED_MEMORY)):
         raise ValueError('requires matching sheng physical-placement and framebuffer bootstrap execution')
     driver = relink['storage_driver']
     recovery = json.loads((ROOT / 'config/macos26-recovery-root.json').read_text())

@@ -38,12 +38,20 @@ PY
 build -p out/native-loader.dsc -a AARCH64 -b RELEASE -t CLANGPDB -n "${JOBS:-4}" \
   > out/logs/native-loader-build.log 2>&1
 python3 - <<'PY'
-import hashlib, json
+import hashlib, json, sys
 from pathlib import Path
+sys.path.insert(0, 'scripts')
+from native_log_file import LAYOUT
 p = Path('out/native-loader/RELEASE_CLANGPDB/AARCH64/DarwinBoot.efi')
+saver = Path('UniXNU/drivers/DarwinBoot/DarwinBootPkg/Driver/NativeLogSave.h').read_text()
+# The saver's compiled partition identity must be the active layout's (UniXNU 0042 for the CN LUN0 layout).
+if f"#define NATIVE_LOG_PARTITION_FIRST {LAYOUT['partition_first']}ULL" not in saver:
+    raise SystemExit('DarwinBoot log saver does not match the active macoslog layout')
 record = dict(file=str(p), sha256=hashlib.sha256(p.read_bytes()).hexdigest(),
               native_arm64e_supported=True,
-              retained_log_persistence=True, retained_log_partition="4cd2ed34-2142-4ea4-abf2-ec6c51d117d7",
+              retained_log_persistence=True, retained_log_partition=LAYOUT['partition_uuid'],
+              retained_log_layout=LAYOUT['name'],
+              window_size_source_sha256=hashlib.sha256(Path('UniXNU/drivers/DarwinBoot/DarwinBootPkg/Driver/WindowSize.h').read_bytes()).hexdigest(),
               retained_log_hardware_qualified=False,
               log_save_source_sha256=hashlib.sha256(Path("UniXNU/drivers/DarwinBoot/DarwinBootPkg/Driver/NativeLogSave.h").read_bytes()).hexdigest(),
               handoff_panic_address_visible=True,

@@ -1,0 +1,71 @@
+--- a/scripts/qemu-entry/gdb_packets.py
++++ b/scripts/qemu-entry/gdb_packets.py
+@@ -1,5 +1,7 @@
+ """Buffered packet reception for the bounded QEMU GDB observer."""
+ 
++import re
++
+ 
+ class Packets:
+     def __init__(self, connection):
+@@ -7,6 +9,26 @@
+         self.pending = bytearray()
+ 
+     def request(self, value):
++        # QEMU 8.2 accepts at most 2048 bytes per memory-read response.
++        # Keep logical requests intact while collecting real bounded reads.
++        memory = re.fullmatch(r'm([0-9a-fA-F]+),([0-9a-fA-F]+)', value or '')
++        if memory and int(memory[2], 16) > 1024:
++            address, length = (int(part, 16) for part in memory.groups())
++            if address + length > 1 << 64 or length > 1024 * 1024:
++                raise RuntimeError('GDB memory read exceeds observer bounds')
++            chunks = []
++            for offset in range(0, length, 1024):
++                size = min(1024, length - offset)
++                raw = self._request(f'm{address + offset:x},{size:x}')
++                if re.fullmatch(r'E[0-9a-fA-F]{2}', raw):
++                    return raw  # Preserve the actual error; never pad partial data.
++                if len(raw) != size * 2 or not re.fullmatch(r'[0-9a-fA-F]+', raw):
++                    raise RuntimeError('Incomplete GDB memory-read chunk')
++                chunks.append(raw)
++            return ''.join(chunks)
++        return self._request(value)
++
++    def _request(self, value):
+         if value is None:
+             self.connection.settimeout(3)
+             self.connection.sendall(b'\x03')
+--- a/scripts/qemu-entry/test_gdb_packets.py
++++ b/scripts/qemu-entry/test_gdb_packets.py
+@@ -48,11 +48,29 @@
+         self.assertEqual(connection.sent[-2:], [b'\x03', b'+'])
+ 
+     def test_large_memory_reply_is_read_in_chunks(self):
+-        data = b'ab' * 16384
++        # A large reply that arrives in one socket read is still reassembled.
++        data = b'ab' * 512
+         connection = Socket([frame(data)])
+-        self.assertEqual(Packets(connection).request('m1000,4000'), data.decode())
++        self.assertEqual(Packets(connection).request('m1000,400'), data.decode())
+         self.assertEqual(connection.reads, 1)
+ 
++    def test_reads_above_1024_bytes_are_split_for_qemu(self):
++        # QEMU 8.2 answers E22 to memory reads above 2048 bytes; split into 1 KiB requests.
++        replies = [frame(bytes([0x30 + index % 10]) * 2048) for index in range(16)]
++        connection = Socket(replies)
++        result = Packets(connection).request('m1000,4000')
++        self.assertEqual(result, ''.join(chr(0x30 + index % 10) * 2048 for index in range(16)))
++        requests = [packet[1:packet.index(b'#')].decode() for packet in connection.sent if packet.startswith(b'$')]
++        self.assertEqual(requests, [f'm{0x1000 + offset:x},400' for offset in range(0, 0x4000, 0x400)])
++
++    def test_failed_chunk_returns_the_real_error(self):
++        connection = Socket([frame(b'00' * 1024), frame(b'E22')])
++        self.assertEqual(Packets(connection).request('m1000,800'), 'E22')
++        with self.assertRaisesRegex(RuntimeError, 'Incomplete'):
++            Packets(Socket([frame(b'00' * 1023)])).request('m1000,800')
++        with self.assertRaisesRegex(RuntimeError, 'bounds'):
++            Packets(Socket([])).request('m1000,100001')
++
+     def test_corruption_and_truncation_are_rejected(self):
+         with self.assertRaisesRegex(RuntimeError, 'checksum'):
+             Packets(Socket([b'$1234#00'])).request('m1000,2')
