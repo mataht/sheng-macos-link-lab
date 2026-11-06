@@ -264,6 +264,40 @@ def qualify_boot_progress(build):
                 progress_is_not_percent=True, silence_is_not_deadlock=True)
 
 
+# CN sheng cores as read from the tablet (MIDR parts 0xd46/0xd4d/0xd47/0xd4e, MPIDR Affinity1 0x000..0x700).
+SMP_CPU_REGS = ('0', '0x100', '0x200', '0x300', '0x400', '0x500', '0x600', '0x700')
+SMP_CPU_COMPATIBLE = ('arm,cortex-a510',) * 3 + ('arm,cortex-a715',) * 2 + ('arm,cortex-a710',) * 2 + ('arm,cortex-x3',)
+
+
+def hardware_smp_boot_args(boot_args: str) -> str:
+    """Eight cores on the tablet: ArmCpu pends SPI 1008+core for IPIs (ICC_SGI1R_EL1 raises nothing on sheng)."""
+    arguments = boot_args.split()
+    if [item for item in arguments if item.startswith('cpus=')] != ['cpus=1']:
+        raise ValueError('requires the single-CPU baseline boot arguments')
+    arguments[arguments.index('cpus=1')] = 'cpus=8'
+    return ' '.join(arguments + ['sheng-smp=1', 'armcpu-spi-ipi=1'])
+
+
+def qualify_smp(build, observation, identity) -> dict:
+    """The exact kernel must start all seven secondaries in QEMU; QEMU delivers IPIs as SGIs, not the board's SPIs."""
+    from native_smp import configure
+    compiled = json.loads((build / 'build.json').read_text())
+    configure(compiled, 8, False, NATIVE_BOOT_ARGS)  # compiled secondary PAC key and reset-affinity fixes
+    observed = json.loads((observation / 'result.json').read_text())
+    runtime = observed.get('smp_runtime', {})
+    if (observed.get('kernel_sha256') != identity['kernel_sha256'] or observed.get('uuid') != identity['uuid']
+            or observed.get('reached') is not True or observed.get('smp_observation', {}).get('cpu_count') != 8
+            or runtime.get('running_secondaries') != 7 or runtime.get('secondary_init_complete') is not True
+            or runtime.get('failures') != [0] * 8 or runtime.get('psci') != [0] * 8
+            or runtime.get('all_cores_received_ipi') is not True):
+        raise ValueError('requires this exact kernel with all eight cores started in QEMU')
+    return dict(cpu_count=8, cpu_regs=list(SMP_CPU_REGS), cpu_compatible=list(SMP_CPU_COMPATIBLE),
+                psci_method='smc', hardware_ipi='software-pended SPI 1008+core (armcpu-spi-ipi=1)',
+                qemu_ipi=observed['smp_observation'].get('ipi'), qemu_checkpoint=observed.get('checkpoint'),
+                qemu_all_cores_received_timer=runtime.get('all_cores_received_timer'),
+                hardware_qualified=False, scheduler_migration_qualified=False)
+
+
 def qualify_display_keep_awake() -> dict:
     """The derived hardware switch must describe the exact display patch that qualify_language_selector binds."""
     display = ROOT / 'platform/sheng/macos26/display'
@@ -305,6 +339,8 @@ def main():
                         help='audited same-kernel QEMU language selector and real input fixture')
     parser.add_argument('--boot-progress', action='store_true',
                         help='enable observed milestone footer, service events and bounded WindowServer output')
+    parser.add_argument('--smp-observation', type=Path,
+                        help='QEMU --smp 8 observation of this exact kernel; packages all eight sheng cores')
     parser.add_argument('--display-keep-awake', action='store_true',
                         help='send the original PM user-activity request every 30 s (native-gop-keep-awake=1); '
                              'the tablet has no input driver yet, so the display would otherwise idle off')
@@ -380,6 +416,12 @@ def main():
     if args.recovery_ui_observation:
         ui_qualification = qualify_language_selector(args.kernel_build, args.recovery_ui_observation, identity)
         boot_args += ' native-gop-display=1 sheng-recovery-ui=1'
+    smp_qualification = None
+    cpu_regs, cpu_compatible = ['0'], ['arm,cortex-a510']
+    if args.smp_observation:
+        smp_qualification = qualify_smp(args.kernel_build, args.smp_observation, identity)
+        boot_args = hardware_smp_boot_args(boot_args)
+        cpu_regs, cpu_compatible = list(SMP_CPU_REGS), list(SMP_CPU_COMPATIBLE)
     keep_awake = None
     if args.display_keep_awake:
         keep_awake = qualify_display_keep_awake()
@@ -398,8 +440,9 @@ def main():
             shutil.copy2(kernel, files / 'kernel.macho')
             subprocess.run(['python3', ROOT / 'UniXNU-sheng/scripts/make-sheng-adt.py',
                 '--output', files / 'kernel.macho.adt', '--dram-size', '0x200000000',
-                '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', '0',
-                '--cpu-compatible', 'arm,cortex-a510', '--random-seed-bytes', '256',
+                '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', ','.join(cpu_regs),
+                *[part for compatible in cpu_compatible for part in ('--cpu-compatible', compatible)],
+                '--random-seed-bytes', '256',
                 '--os-environment', 'recoveryos',
                 '--root-match-volume-uuid', str(args.root_volume_uuid)], check=True)
             configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
@@ -460,7 +503,7 @@ def main():
                 isc_overlay_persistent=False, isc_overlay_limit_bytes=(64 << 20) if args.isc_overlay else 0,
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=bool(ui_qualification),
-                display_keep_awake=keep_awake,
+                display_keep_awake=keep_awake, smp=smp_qualification,
                 boot_progress=progress_qualification,
                 native_recovery_input=False, physical_input_qualified=False,
                 dyld_observation=str(args.dyld_observation.resolve()) if args.dyld_observation else None,
