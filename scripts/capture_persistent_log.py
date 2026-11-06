@@ -18,8 +18,9 @@ from observe_macos26_kernel import identify
 
 PARTITION = CONTRACT['partition_uuid']
 DISK = '/dev/block/' + LAYOUT['disk']
-# Use the firmware recovery tool's sheng RAM map and preserve the unreadable gap between its ranges.
-RAM_RANGES = ((0x880000000, 0x8bb300000), (0x8c0000000, 0xa00000000))
+# Same [first, end) RAM ranges as the UEFI saver (UniXNU 0042) and the CN 16 GB uefi-sheng map (0004);
+# the firmware-owned holes between them stay unreadable.
+RAM_RANGES = ((0x880000000, 0x8b8700000), (0x8b8900000, 0x8ba700000), (0x8c0000000, 0xc00000000))
 
 
 def request(data: bytes) -> dict:

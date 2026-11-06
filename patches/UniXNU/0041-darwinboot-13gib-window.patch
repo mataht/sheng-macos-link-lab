@@ -1,0 +1,42 @@
+--- a/drivers/DarwinBoot/DarwinBootPkg/Driver/WindowSize.h
++++ b/drivers/DarwinBoot/DarwinBootPkg/Driver/WindowSize.h
+@@ -3,7 +3,8 @@
+ #define DARWINBOOT_WINDOW_SIZE_H
+ // Allocation still requires one real conventional-memory run. This is a
+ // parser bound, never a declaration of available RAM or an allocation fallback.
++// 13 GiB: the largest contiguous run on the CN 16 GB sheng (0x8C0000000..0xC00000000).
+ static inline int DarwinWindowSizeValid(unsigned long long size) {
+-  return size >= 0x10000000ULL && size <= 0x200000000ULL && !(size & 0x1fffffULL);
++  return size >= 0x10000000ULL && size <= 0x340000000ULL && !(size & 0x1fffffULL);
+ }
+ #endif
+--- a/drivers/DarwinBoot/Test/window-size.c
++++ b/drivers/DarwinBoot/Test/window-size.c
+@@ -2,8 +2,8 @@
+ #include <assert.h>
+ #include "../DarwinBootPkg/Driver/WindowSize.h"
+ int main(void) {
+- const unsigned long long yes[]={0x10000000ULL,0xe0000000ULL,0x100000000ULL,0x130000000ULL,0x200000000ULL};
+- const unsigned long long no[]={0,0xfffffffULL,0x10000001ULL,0x130001000ULL,0x200200000ULL,~0ULL};
++ const unsigned long long yes[]={0x10000000ULL,0xe0000000ULL,0x100000000ULL,0x130000000ULL,0x200000000ULL,0x200200000ULL,0x300000000ULL,0x340000000ULL};
++ const unsigned long long no[]={0,0xfffffffULL,0x10000001ULL,0x130001000ULL,0x340200000ULL,0x400000000ULL,~0ULL};
+  for(unsigned i=0;i<sizeof(yes)/sizeof(yes[0]);++i)assert(DarwinWindowSizeValid(yes[i]));
+  for(unsigned i=0;i<sizeof(no)/sizeof(no[0]);++i)assert(!DarwinWindowSizeValid(no[i]));
+ }
+--- a/scripts/check-darwinboot-window-parser.py
++++ b/scripts/check-darwinboot-window-parser.py
+@@ -34,12 +34,12 @@
+ '''
+ code=prelude+s[start:end]+'\nint main(void){\n'
+ checks=[]
+-for value in [0,0xfffffff,0x10000000,0xe0000000,0x100000000,0x130000000,0x200000000,0x200200000,0x130001000,0xffffffffffffffff]:
++for value in [0,0xfffffff,0x10000000,0xe0000000,0x100000000,0x130000000,0x200000000,0x200200000,0x300000000,0x340000000,0x340200000,0x130001000,0xffffffffffffffff]:
+  for variant in ['chosen','duplicate','misplaced']:
+   props=[('darwinboot-memory-size',struct.pack('<Q',value))]
+   if variant=='duplicate':props*=2
+   tree=m.node('device-tree',props,[m.node('chosen')]) if variant=='misplaced' else m.node('device-tree',children=[m.node('chosen',props)])
+-  yes=0x10000000<=value<=0x200000000 and value%0x200000==0 and variant=='chosen'
++  yes=0x10000000<=value<=0x340000000 and value%0x200000==0 and variant=='chosen'
+   code+='{unsigned char b[]={'+','.join(str(v) for v in tree)+'};UINTN at=0,r=MAX_UINTN,t=MAX_UINTN;UINT64 w=0;BOOLEAN packed=FALSE;'
+   code+=f'assert(AdtNode(b,sizeof(b),&at,0,3,&r,&t,&w,&packed)=={int(yes)});'
+   if yes:code+=f'assert(w=={value}ULL && at==sizeof(b));'

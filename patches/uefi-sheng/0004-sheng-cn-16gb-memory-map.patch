@@ -1,0 +1,29 @@
+--- a/Platforms/Xiaomi/shengPkg/Library/MemoryMapLib/MemoryMapLib.c
++++ b/Platforms/Xiaomi/shengPkg/Library/MemoryMapLib/MemoryMapLib.c
+@@ -54,15 +54,23 @@
+   // DRAM between the carveouts above and the Linux reserved-memory table (reservations.json), inside
+   // 0x80000000..0x100000000, which the SMEM RAM partition table lists as SDRAM. UEFI accepted these on hardware.
+   {"DRAM gap 0xC7CC0000", 0xC7CC0000, 0x05040000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+-  {"DRAM gap 0xCCF80000", 0xCCF80000, 0x0B080000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+-  {"DRAM gap 0xE671D000", 0xE671D000, 0x190E3000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
++  // CN OS3.0.306 16 GB unit (read-only live DT and /proc/iomem, 2026-11-06): mpss_dsm_region (no-map)
++  // occupies 0xD4D00000..0xD8000000, and /memory omits 0xE671D000..0xE7CB0000; neither is given to UEFI.
++  {"DRAM gap 0xCCF80000", 0xCCF80000, 0x07D80000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
++  {"DRAM gap 0xE7CB0000", 0xE7CB0000, 0x17B50000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+   // Second DRAM bank from the SMEM usable-RAM partition table read on the tablet (entries 5 and 6:
+   // 0x880000000 + 1 GiB and 0x8C0000000 + 5 GiB, category SDRAM). DxeCore got a synchronous external abort
+   // clearing memory at 0x8BB300000, so the top of the first entry (to 0x8C0000000) is not given to UEFI.
+-  {"DRAM bank 1 low", 0x880000000, 0x3B300000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
++  // CN 16 GB unit: /memory lists 0x880000000+0x38700000 and 0x8B8900000+0x1E00000 here; the holes at
++  // 0x8B8700000 and from 0x8BA700000 are firmware-owned and are not given to UEFI.
++  {"DRAM bank 1 low", 0x880000000, 0x38700000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
++  {"DRAM bank 1 low b", 0x8B8900000, 0x01E00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+   // Full five-GiB extent reported by the hardware SMEM partition table.
+   // First four GiB reached userland; the added last GiB needs hardware validation.
+   {"DRAM bank 1 high", 0x8C0000000, 0x140000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
++  // CN 16 GB unit: /memory continues with 0xA00000000+0x200000000, adjacent to bank 1 high, so DarwinBoot can
++  // take one ~13 GiB run (0x8C0000000..0xC00000000). Needs hardware validation like the bank above.
++  {"DRAM bank 2", 0xA00000000, 0x200000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+   {"IMEM Base", 0x14680000, 0x0002A000, NoHob, MMAP_IO, INITIALIZED, Conv, NS_DEVICE},
+   {"IMEM Cookie Base", 0x146AA000, 0x00016000, AddDev, MMAP_IO, INITIALIZED, Conv, NS_DEVICE},
+   {"IPC_ROUTER_TOP", 0x00400000, 0x00100000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},

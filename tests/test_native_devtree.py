@@ -201,7 +201,7 @@ class NativeTree(unittest.TestCase):
         if not generator.exists():
             self.skipTest('requires the pinned hardware tree generator')
         subprocess.run([sys.executable, str(generator), '--output', str(self.path),
-                        '--dram-size', '0x200000000', '--owned-memory-size', '0xc0000000',
+                        '--dram-size', '0x200000000', '--owned-memory-size', '0x300000000',
                         '--os-environment', 'recoveryos', '--panic-log',
                         '--root-match-volume-uuid', str(self.root)],
                        check=True, capture_output=True, timeout=10)
@@ -210,7 +210,7 @@ class NativeTree(unittest.TestCase):
         tree = read_tree(self.path.read_bytes())
         chosen = tree[('device-tree', 'chosen')]
         self.assertEqual(chosen['osenvironment'], b'recoveryos\0')
-        self.assertEqual(chosen['darwinboot-memory-size'], struct.pack('<Q', 0xc0000000))
+        self.assertEqual(chosen['darwinboot-memory-size'], struct.pack('<Q', 0x300000000))
         self.assertEqual(chosen['embedded-panic-log-size'], struct.pack('<I', 0x80000))
         self.assertEqual(chosen['boot-uuid'], str(self.root).upper().encode() + b'\0')
         self.assertNotIn('platform-uuid', tree[('device-tree', 'options')])

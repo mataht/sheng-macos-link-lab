@@ -50,9 +50,11 @@ def main() -> None:
     source = json.loads(args.source_build.read_text())
     repair = source.get('firmware_log_repair', {})
     patch = ROOT / 'patches/UniXNU/0033-retained-log-high-bank-and-filesystem.patch'
+    layout = ROOT / 'patches/UniXNU/0042-native-log-saver-cn-layout.patch'
     if (source.get('temporary_ram_boot') is not True
             or source.get('partition_images_written') is not False
             or repair.get('patch_sha256') != hashlib.sha256(patch.read_bytes()).hexdigest()
+            or repair.get('layout_patch_sha256') != hashlib.sha256(layout.read_bytes()).hexdigest()
             or repair.get('partition_bound_fat_connect') is not True):
         raise ValueError('requires the packaged loader with the matching retained-log repair')
     image = (args.source_build.parent / 'sheng-macos26-kernel.img').read_bytes()

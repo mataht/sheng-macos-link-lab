@@ -19,6 +19,13 @@ from native_devtree import configure_native_text_state
 from build_macos26_storage import PROTOCOL_CHARACTERISTICS
 from native_log_file import CONTRACT as LOG_CONTRACT, LAYOUT as LOG_LAYOUT, BLOCK as LOG_BLOCK, decode as decode_log_file
 from recovery_ui_evidence import qualify_language_selector
+from capture_persistent_log import RAM_RANGES as LOG_RAM_RANGES
+
+# 12 GiB of the 13 GiB contiguous run 0x8C0000000..0xC00000000 (uefi-sheng 0004 on the CN 16 GB unit); the
+# last GiB is headroom for UEFI's own top-down allocations. DarwinBoot/ADT accept up to 13 GiB (0041/0009).
+OWNED_MEMORY = 0x300000000
+OWNED_MEMORY_FIRMWARE = ('uefi-sheng/0004-sheng-cn-16gb-memory-map', 'UniXNU/0041-darwinboot-13gib-window',
+                         'UniXNU/0042-native-log-saver-cn-layout', 'UniXNU-sheng/0009-adt-13gib-owned-memory')
 
 
 def qualify(build, observation, bootstrap, default_off, installed, plan, root_build, *, with_isc=False):
@@ -308,11 +315,14 @@ def main():
             or hash_evidence.get('raw_disk_sha256') != root['windows'][0]['sha256']):
         raise ValueError('root-hash payload does not belong to the installed BaseSystem')
     firmware = json.loads(args.firmware_build.read_text())
-    required = ('0007-native-16k-bootstrap-congruence', '0011-native-arm64e-loader',
+    required = ['UniXNU/' + name for name in (
+                '0007-native-16k-bootstrap-congruence', '0011-native-arm64e-loader',
                 '0013-native-handoff-progress', '0014-native-handoff-code-coherency',
-                '0015-native-retained-log-persistence', '0033-retained-log-high-bank-and-filesystem')
+                '0015-native-retained-log-persistence', '0033-retained-log-high-bank-and-filesystem')]
+    # The 12 GiB window needs the CN memory map, the raised DarwinBoot/ADT bound and the CN log saver.
+    required += list(OWNED_MEMORY_FIRMWARE)
     for name in required:
-        patch = ROOT / ('patches/UniXNU/' + name + '.patch')
+        patch = ROOT / ('patches/' + name + '.patch')
         if firmware.get('patches_sha256', {}).get(str(patch.relative_to(ROOT))) != hashlib.sha256(patch.read_bytes()).hexdigest():
             raise ValueError('firmware lacks the pinned loader contract: ' + name)
     if firmware.get('preflight_only') is not False or firmware.get('native_el1') or firmware['bootimg']['compression'] != 'none':
@@ -363,7 +373,7 @@ def main():
             shutil.copy2(kernel, files / 'kernel.macho')
             subprocess.run(['python3', ROOT / 'UniXNU-sheng/scripts/make-sheng-adt.py',
                 '--output', files / 'kernel.macho.adt', '--dram-size', '0x200000000',
-                '--owned-memory-size', '0xc0000000', '--panic-log', '--cpu-regs', '0',
+                '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', '0',
                 '--cpu-compatible', 'arm,cortex-a510', '--random-seed-bytes', '256',
                 '--os-environment', 'recoveryos',
                 '--root-match-volume-uuid', str(args.root_volume_uuid)], check=True)
@@ -404,7 +414,7 @@ def main():
                 boot_args=boot_args, temporary_ram_boot=True, partition_images_written=False,
                 root_media_preinstalled=True, root_partition_guid=partition['root_unique_guid'],
                 root_image_sha256=media['sha256'], root_volume_uuid=str(args.root_volume_uuid),
-                owned_memory_bytes=0xc0000000, native_panic_region_bytes=524288,
+                owned_memory_bytes=OWNED_MEMORY, native_panic_region_bytes=524288,
                 source_crypto_post_passed=True, original_interfaces_qemu_registered=True,
                 ufs_vtable_qualified=True, ufs_default_off_qemu_qualified=True,
                 ufs_hardware_read_qualified=False, userland_started=False,
@@ -413,10 +423,11 @@ def main():
                 default_off_observation=str(args.default_off_observation.resolve()),
                 hardware_log_transport_qualified=False, firmware_sha256=firmware['sha256'],
                 log_symbol_va=hex(symbols['_sheng_log_buffer']),
-                firmware_log_partition='4cd2ed34-2142-4ea4-abf2-ec6c51d117d7',
-                firmware_log_repair=dict(high_bank=['0x8c0000000', '0xa00000000'],
+                firmware_log_partition=LOG_CONTRACT['partition_uuid'],
+                firmware_log_repair=dict(ram_ranges=[[hex(a), hex(b)] for a, b in LOG_RAM_RANGES],
                     partition_bound_fat_connect=True, status_files=['ARM.BIN', 'RECOVERY.BIN'],
                     patch_sha256=firmware['patches_sha256']['patches/UniXNU/0033-retained-log-high-bank-and-filesystem.patch'],
+                    layout_patch_sha256=firmware['patches_sha256']['patches/UniXNU/0042-native-log-saver-cn-layout.patch'],
                     warm_reboot_capture_qualified=False),
                 development_root=True, synthetic_vm_identity=False, qemu_only_boot_args=False,
                 development_no_ignition=args.development_no_ignition,
