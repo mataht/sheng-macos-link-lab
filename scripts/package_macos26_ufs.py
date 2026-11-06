@@ -262,6 +262,20 @@ def qualify_boot_progress(build):
                 progress_is_not_percent=True, silence_is_not_deadlock=True)
 
 
+def qualify_display_keep_awake() -> dict:
+    """The derived hardware switch must describe the exact display patch that qualify_language_selector binds."""
+    display = ROOT / 'platform/sheng/macos26/display'
+    record = json.loads((display / 'hw-keep-awake.json').read_text())
+    patch = hashlib.sha256((display / '0001-native-gop-display.patch').read_bytes()).hexdigest()
+    switch = record.get('hardware_switch', {})
+    if (record.get('schema') != 'sheng-hw-display-keep-awake-v1' or record.get('patch_sha256') != patch
+            or switch.get('boot_argument') != 'native-gop-keep-awake=1' or switch.get('default_off') is not True):
+        raise ValueError('display patch lacks the reviewed hardware keep-awake switch')
+    return dict(boot_argument=switch['boot_argument'], patch_sha256=patch, guard=switch['guard'],
+                request='IOPMrootDomain::requestUserActive every 30 s', display_on_qualified=False,
+                system_sleep_policy='ADT sleep-disabled (separate)')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel-build', type=Path, required=True)
@@ -289,7 +303,12 @@ def main():
                         help='audited same-kernel QEMU language selector and real input fixture')
     parser.add_argument('--boot-progress', action='store_true',
                         help='enable observed milestone footer, service events and bounded WindowServer output')
+    parser.add_argument('--display-keep-awake', action='store_true',
+                        help='send the original PM user-activity request every 30 s (native-gop-keep-awake=1); '
+                             'the tablet has no input driver yet, so the display would otherwise idle off')
     args = parser.parse_args()
+    if args.display_keep_awake and not args.recovery_ui_observation:
+        parser.error('--display-keep-awake requires --recovery-ui-observation')
     if args.development_no_ignition != bool(args.dyld_observation):
         parser.error('--development-no-ignition and --dyld-observation must be used together')
     if args.isc_overlay and not args.development_no_ignition:
@@ -359,6 +378,10 @@ def main():
     if args.recovery_ui_observation:
         ui_qualification = qualify_language_selector(args.kernel_build, args.recovery_ui_observation, identity)
         boot_args += ' native-gop-display=1 sheng-recovery-ui=1'
+    keep_awake = None
+    if args.display_keep_awake:
+        keep_awake = qualify_display_keep_awake()
+        boot_args += ' ' + keep_awake['boot_argument']
     progress_qualification = None
     if args.boot_progress:
         progress_qualification = qualify_boot_progress(args.kernel_build)
@@ -435,6 +458,7 @@ def main():
                 isc_overlay_persistent=False, isc_overlay_limit_bytes=(64 << 20) if args.isc_overlay else 0,
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=bool(ui_qualification),
+                display_keep_awake=keep_awake,
                 boot_progress=progress_qualification,
                 native_recovery_input=False, physical_input_qualified=False,
                 dyld_observation=str(args.dyld_observation.resolve()) if args.dyld_observation else None,
