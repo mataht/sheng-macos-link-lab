@@ -107,6 +107,11 @@ def main() -> None:
                         help='follow thread_setentrypoint x1 into actual EL0 and step 16 instructions')
     parser.add_argument('--follow-launchd-main', action='store_true',
                         help='follow the paired launchd LC_MAIN from the actual dyld startup stack')
+    parser.add_argument('--recovery-check-directory', type=Path,
+                        default=ROOT / 'private/apple/macos26/recovery-check',
+                        help='verified Recovery samples paired with the attached root disk')
+    parser.add_argument('--snapshot-kernel-after-main', action='store_true',
+                        help='collect kernel diagnostics at a natural EL1 entry after observing main in EL0')
     parser.add_argument('--continue-after-launchd-main', action='store_true',
                         help='continue normal execution after verified main, within the same deadline')
     parser.add_argument('--trace-init-syscalls', action='store_true',
@@ -118,6 +123,8 @@ def main() -> None:
                         help='enable guest writes only in a new disposable ISC qcow2 overlay')
     parser.add_argument('--process-layout', type=Path,
                         help='matching DWARF process-list layout for read-only snapshots')
+    parser.add_argument('--mount-layout', type=Path,
+                        help='matching DWARF mountlist layout for bounded read-only mount snapshots')
     parser.add_argument('--capture-threads', action='store_true',
                         help='read owned kernel thread frames using the matching process layout')
     parser.add_argument('--root-volume-uuid', type=uuid.UUID, help='match the actual APFS volume UUID')
@@ -137,7 +144,8 @@ def main() -> None:
                         help='actual QEMU RAM; recovery scripts need room for their default tmpfs node budget')
     parser.add_argument('--owned-memory-mib', type=int, choices=(512, 2048, 3072), default=512,
                         help='real contiguous DarwinBoot allocation inside QEMU RAM')
-    parser.add_argument('--timeout', type=int, default=60, metavar='SECONDS')
+    parser.add_argument('--timeout', type=int, default=60, metavar='SECONDS',
+                        help='15..180 seconds, or up to 900 for explicit continued service observation')
     parser.add_argument('--qemu-smp-timeouts', action='store_true',
                         help='record IRQ latency violations and use finite one-second locks for TCG SMP')
     parser.add_argument('--smp', type=int, choices=(1, 2, 4, 8), default=1,
@@ -153,11 +161,14 @@ def main() -> None:
         parser.error('--capture-threads requires --process-layout')
     if args.read_saved_user_register and args.checkpoint != 'handle_pac_fail':
         parser.error('--read-saved-user-register requires the handle_pac_fail checkpoint')
-    if not 15 <= args.timeout <= 180:
-        parser.error('--timeout must be between 15 and 180 seconds')
+    maximum_timeout = 900 if args.continue_after_launchd_main else 180
+    if not 15 <= args.timeout <= maximum_timeout:
+        parser.error(f'--timeout must be between 15 and {maximum_timeout} seconds for this observation')
     if args.kext_log is not None and not 0 <= args.kext_log <= 0xffffffff:
         parser.error('--kext-log must be a 32-bit unsigned filter')
     kernel, addresses, record = identify(args.kernel_build.resolve())
+    record['observation_timeout_seconds'] = args.timeout
+    record['continued_service_observation'] = args.continue_after_launchd_main
     from native_smp import configure as configure_smp
     smp = configure_smp(json.loads((args.kernel_build / 'build.json').read_text()),
                         args.smp, args.native_gop_display, NATIVE_BOOT_ARGS)
@@ -222,12 +233,22 @@ def main() -> None:
     launchd_main = None
     if args.continue_after_launchd_main and not args.follow_launchd_main:
         parser.error('continuing launchd requires actual main observation')
+    if args.snapshot_kernel_after_main and (not args.follow_launchd_main or args.continue_after_launchd_main):
+        parser.error('post-main kernel snapshot requires a bounded main observation without continued service tracing')
     if args.follow_launchd_main:
         if not args.follow_init_entry:
             parser.error('launchd main observation requires --follow-init-entry')
-        directory = ROOT / 'private/apple/macos26/recovery-check'
+        directory = args.recovery_check_directory.resolve()
         launchd = (directory / 'sbin/launchd').read_bytes()
-        recovery = json.loads((directory / 'verification.json').read_text())
+        verification_bytes = (directory / 'verification.json').read_bytes()
+        recovery = json.loads(verification_bytes)
+        if not args.virtio_block_image:
+            parser.error('launchd main observation requires the paired root disk')
+        conversion = json.loads(args.virtio_block_image.with_suffix('.json').read_text())
+        if (recovery['ipsw_build'] != '25F71' or conversion['build'] != '25F71'
+                or conversion['source_dmg_sha256'] != recovery['dmg_sha256']
+                or len(launchd) != recovery['artifacts']['sbin/launchd']['bytes']):
+            raise ValueError('Recovery samples are not paired with the attached root disk')
         expected = recovery['artifacts']['sbin/launchd']['sha256']
         if hashlib.sha256(launchd).hexdigest() != expected:
             raise ValueError('launchd differs from the paired recovery input')
@@ -237,7 +258,10 @@ def main() -> None:
             raise ValueError('requires one original launchd LC_MAIN')
         launchd_main = struct.unpack_from('<Q', launchd, main[0] + 8)[0]
         record['launchd_main_input'] = dict(sha256=expected, entry_offset=launchd_main,
-                                          entry_bytes=launchd[launchd_main:launchd_main + 16].hex())
+                                          entry_bytes=launchd[launchd_main:launchd_main + 16].hex(),
+                                          verification_directory=str(directory),
+                                          verification_sha256=hashlib.sha256(verification_bytes).hexdigest(),
+                                          source_dmg_sha256=recovery['dmg_sha256'])
     root_hash = None
     if args.root_hash_payload:
         if not args.virtio_block_image or not args.root_volume_uuid:
@@ -391,6 +415,8 @@ def main() -> None:
                    '--qemu-memory-mib', str(args.qemu_memory_mib), '--timeout', str(args.timeout),
                    '--system-registers', '--qemu-ramfb']
         command += ['--smp', str(args.smp)]
+        if args.snapshot_kernel_after_main:
+            command += ['--post-main-kernel-address', hex(addresses['_sleh_synchronous'])]
         if args.stream_retained_log:
             command += ['--retained-log-address', hex(addresses['_sheng_log_buffer']),
                         '--retained-log-uuid', record['uuid']]
@@ -438,6 +464,16 @@ def main() -> None:
             command += ['--virtio-extra-block-image', str(args.isc_block_image.resolve())]
         if args.isc_write_overlay:
             command += ['--virtio-extra-block-overlay']
+        if args.mount_layout:
+            mount_plan = json.loads(args.mount_layout.read_text())
+            if (mount_plan.get('schema') != 'native-mount-layout-v1'
+                    or mount_plan['kernel_uuid'] != record['uuid']
+                    or mount_plan['kernel_sha256'] != record['kernel_sha256']
+                    or mount_plan['mountlist'] != addresses['_mountlist']
+                    or mount_plan['read_only'] is not True or mount_plan['kernel_va_bits'] != 47):
+                raise ValueError('mountlist layout does not match the actual kernel')
+            command += ['--native-mount-plan', str(args.mount_layout.resolve()),
+                        '--native-mount-reader', str(ROOT / 'scripts/native_mount_snapshot.py')]
         if args.process_layout:
             layout = json.loads(args.process_layout.read_text())
             if (layout['kernel_uuid'] != record['uuid'] or layout['kernel_sha256'] != record['kernel_sha256']
@@ -463,7 +499,7 @@ def main() -> None:
         command += ['--read-memory', f'{vector_base:x}:800']
         instruction_request = f'{checkpoint:x}:10'
         command += ['--read-memory', instruction_request]
-        for name, count in (('_physmap_base', 8), ('_physmap_end', 8), ('_gPhysBase', 8),
+        for name, count in (('_sheng_framebuffer', 8), ('_physmap_base', 8), ('_physmap_end', 8), ('_gPhysBase', 8),
                             ('_gPhysSize', 8), ('_gIOPlatformUUIDAndSerialDone', 1), ('_segLOWEST', 8), ('_end_kern', 8),
                             ('_ptov_index', 4), ('_ptov_table', 192), ('_const_boot_args', 1152),
                             ('_sheng_corecrypto_status', 4), ('_g_crypto_funcs', 8), ('_prng_ready', 4),
@@ -540,6 +576,17 @@ def main() -> None:
         with (args.output / 'observer.log').open('w') as log:
             subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True)
     snapshot = json.loads((args.output / 'gdb-stop.json').read_text())
+    if args.mount_layout:
+        mounts = snapshot.get('mount_snapshot', {})
+        (args.output / 'mounts.json').write_text(json.dumps(mounts, indent=2) + '\n')
+        record['mount_observation'] = dict(snapshot='mounts.json',
+            complete=mounts.get('complete', False), count=len(mounts.get('mounts', [])),
+            layout_sha256=hashlib.sha256(args.mount_layout.read_bytes()).hexdigest())
+    if args.snapshot_kernel_after_main:
+        post_main = snapshot.get('post_main_kernel_snapshot', {})
+        if post_main.get('observed') is not True:
+            raise ValueError('Required post-main EL1 diagnostics were not observed')
+        record['post_main_kernel_snapshot'] = post_main
     if args.smp > 1:
         from native_smp import capture as capture_smp
         record['smp_runtime'] = capture_smp(snapshot['memory'], addresses, args.smp)
@@ -575,7 +622,7 @@ def main() -> None:
     regs = {name: int(value, 16) for name, value in snapshot['system_registers'].items()}
     tcr = regs['TCR_EL1']
     observed_globals = {}
-    for name, width in (('_gIOPlatformUUIDAndSerialDone', 1), ('_sheng_corecrypto_status', 4), ('_g_crypto_funcs', 8), ('_prng_ready', 4),
+    for name, width in (('_sheng_framebuffer', 8), ('_gIOPlatformUUIDAndSerialDone', 1), ('_sheng_corecrypto_status', 4), ('_g_crypto_funcs', 8), ('_prng_ready', 4),
                         ('_img4if', 8), ('_amfi', 8), ('_libCoreEntitlements', 8),
                         ('_pthread_functions', 8), ('_csr_config', 4), ('_dyld_flags', 8),
                         ('_native_ufs_isc_overlay_enabled', 4), ('_native_ufs_isc_writes', 8),
@@ -628,6 +675,22 @@ def main() -> None:
             if len(value) == width * 2 and not value.startswith('E'):
                 observed_globals[name] = int.from_bytes(bytes.fromhex(value), 'little')
     record['observed_globals'] = {name: hex(value) for name, value in observed_globals.items()}
+    if '_sheng_framebuffer' in observed_globals:
+        state = observed_globals['_sheng_framebuffer']
+        owner, writer = state & 0xffffffff, state >> 32
+        at_el1 = int(snapshot.get('pstate', '0'), 16) & 0xf in (4, 5)
+        record['framebuffer_owner_observation'] = dict(
+            address=hex(addresses['_sheng_framebuffer']), owner=owner, writer=writer,
+            owner_label={0: 'boot', 1: 'gui', 2: 'panic'}.get(owner, 'unknown'),
+            fields_valid=owner in (0, 1, 2) and writer in (0, 1),
+            pstate=snapshot.get('pstate'), read_at_el1=at_el1,
+            read_validated=at_el1 and owner in (0, 1, 2) and writer in (0, 1),
+            read_only=True, proves_completed_frame=False)
+    elif '_sheng_framebuffer' in addresses:
+        record['framebuffer_owner_observation'] = dict(
+            address=hex(addresses['_sheng_framebuffer']), read_validated=False,
+            unavailable=record.get('unavailable_globals', {}).get('_sheng_framebuffer', 'not captured'),
+            read_only=True, proves_completed_frame=False)
     if args.virtio_block_image:
         record['virtio_block_input'] = snapshot['virtio_block_input']
         record['root_volume_uuid'] = str(args.root_volume_uuid) if args.root_volume_uuid else None

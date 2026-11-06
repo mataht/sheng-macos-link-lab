@@ -114,7 +114,7 @@ def chain_blob(segments, relocations):
     return struct.pack('<7I', 0, 28, 0, 0, 0, 0, 0) + starts, writes
 
 
-def emit(native_data, original, native_names, identity, slide, roots=ROOTS, storage_driver=None):
+def emit(native_data, original, native_names, identity, slide, roots=ROOTS, storage_driver=None, *, allow_combined_virtio_gop=False):
     image = macho(native_data, 'arm64e')
     marker = native_names.get('_sheng_security_prelink_version')
     if marker is None or struct.unpack_from('<I', native_data,
@@ -136,7 +136,9 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
         from native_storage_module import prepare
         text_end = align(max(s['va'] + s['size'] for m in modules.values()
                              for s in m['segments'] if s['name'] == '__TEXT')) + slide
-        driver = prepare(storage_driver, text_end, native_names, original, kc, selected, slide)
+        driver = prepare(storage_driver, text_end, native_names, original, kc, selected, slide,
+                         allow_combined_virtio_gop=allow_combined_virtio_gop,
+                         native_data=native_data)
     segments = copy.deepcopy(image['segments'])
     pending = {}
     text_section_start = 0
@@ -441,6 +443,10 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
         if 'display_vtable_abi' in driver:
             report['storage_driver']['display_vtable_abi'] = driver['display_vtable_abi']
             report['storage_driver']['display_private_vtable_bindings'] = driver['display_private_vtable_bindings']
+        if 'retained_vtable_abi' in driver:
+            report['storage_driver']['retained_vtable_abi'] = driver['retained_vtable_abi']
+            report['storage_driver']['combined_metaclass_abi'] = driver['combined_metaclass_abi']
+            report['storage_driver']['combined_initialization_audit'] = driver['combined_initialization_audit']
         if 'input_vtable_abi' in driver:
             report['storage_driver']['input_vtable_abi'] = driver['input_vtable_abi']
     return final_data, report
@@ -460,7 +466,11 @@ def main():
     parser.add_argument('--hid-components', action='store_true',
                         help='include the paired original HID service for Recovery display experiments')
     parser.add_argument('--storage-driver', type=Path, help='standalone ARM64E transport build directory')
+    parser.add_argument('--allow-combined-virtio-gop', action='store_true',
+                        help='explicit QEMU-only opt-in for the fixed two-object VirtIO/GOP probe bundle')
     args = parser.parse_args()
+    if args.allow_combined_virtio_gop and not args.storage_driver:
+        parser.error('--allow-combined-virtio-gop requires --storage-driver and --qemu-only')
     if args.hid_components and not args.recovery_components:
         parser.error('--hid-components requires --recovery-components')
     try:
@@ -484,7 +494,8 @@ def main():
                 raise ValueError('HID component contract differs from the paired native kernel')
             modules += hid_contract['original_modules']
         candidate, report = emit(kernel.read_bytes(), args.bootkc.read_bytes(), names, identity,
-                                 args.slide, (*ROOTS, *modules), args.storage_driver)
+                                 args.slide, (*ROOTS, *modules), args.storage_driver,
+                                 allow_combined_virtio_gop=args.allow_combined_virtio_gop)
         if recovery_contract:
             report['recovery_components'] = recovery_contract
         if hid_contract:
