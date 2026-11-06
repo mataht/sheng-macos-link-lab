@@ -1,0 +1,124 @@
+name: CN 1 TB sheng hardware candidate build
+# Builds the kernel, NativeUfs storage/GOP module and evidence from this branch's own sources (macoslog on LUN0,
+# 12 GiB window contract, Stage18B display with the hardware keep-awake switch). No job touches a device.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/hw-sheng-cn-1tb']
+permissions:
+  contents: read
+concurrency:
+  group: hw-sheng-cn-1tb-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - run: python3 scripts/sources.py fetch --group core
+      - run: python3 scripts/apply_patches.py
+      - run: python3 scripts/sources.py verify --group core
+      - name: Tests for the changes on this branch (must pass)
+        run: |
+          for t in test_native_log_file test_native_log_persistence test_repartition_sheng_cn_1tb \
+                   test_native_gop_keep_awake test_native_gop_scanout test_prepare_macos26_gop \
+                   test_package_macos26_ufs test_native_devtree test_recovery_ui_evidence; do
+            python3 -m unittest discover -s tests -p "$t.py" -v
+          done
+      - name: Full suite (informational; some baseline tests need local-only observers)
+        continue-on-error: true
+        run: python3 -m unittest discover -s tests -v
+
+  kernel:
+    needs: check
+    runs-on: xcode-27
+    timeout-minutes: 180
+    env:
+      NATIVE_ARCH: arm64e
+      NATIVE_OUT: out/macos26-xnu-arm64e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Record toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun clang --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = 27.0
+          git rev-parse HEAD
+      - name: Restore pinned native source checkouts
+        id: native-sources
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            UniXNU/
+            UniXNU-sheng/
+            uefi-sheng/
+            xnu/
+            Snapintosh/
+            q1n1/
+            sources/macos26/
+          key: macos26-sources-v1-${{ hashFiles('sources.lock.json', 'config/macos26-sources.json') }}
+      - run: python3 scripts/sources.py fetch --group core
+      - run: python3 scripts/sources.py fetch --lock config/macos26-sources.json --group macos26
+      - name: Save pristine pinned source checkouts
+        if: steps.native-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            UniXNU/
+            UniXNU-sheng/
+            uefi-sheng/
+            xnu/
+            Snapintosh/
+            q1n1/
+            sources/macos26/
+          key: ${{ steps.native-sources.outputs.cache-primary-key }}
+      - run: python3 scripts/apply_patches.py
+      - run: brew install cmake ninja unifdef
+      - name: Cache the pinned KDK download
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: private/apple/Kernel_Debug_Kit_26.5_build_25F71.dmg
+          key: macos26-kdk-${{ hashFiles('config/macos26.json') }}
+      - name: Select stable KDK staging path
+        run: echo "SHENG_KDK_EXPANDED=$RUNNER_TEMP/sheng-kdk-25F71" >> "$GITHUB_ENV"
+      - run: bash scripts/verify_kdk.sh config/macos26.json
+      # No native build cache is restored: the hardware candidate is compiled from scratch.
+      - name: Link the kernel with the UFS storage module and GOP display
+        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: success()
+        with:
+          name: hw-sheng-cn-1tb-kernel-${{ github.run_id }}
+          path: |
+            ${{ env.NATIVE_OUT }}/build.json
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng.map
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng.dSYM/
+            ${{ env.NATIVE_OUT }}/storage-driver/
+            ${{ env.NATIVE_OUT }}/ufs-driver/
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: hw-sheng-cn-1tb-diagnostics-${{ github.run_id }}
+          path: |
+            out/kdk-verification.json
+            out/logs/kdk-signature.log
+            ${{ env.NATIVE_OUT }}/build.json
+            ${{ env.NATIVE_OUT }}/logs/
+            ${{ env.NATIVE_OUT }}/obj/DEVELOPMENT_ARM64_SHENG/compile_commands.json
+          if-no-files-found: warn
+          retention-days: 7
