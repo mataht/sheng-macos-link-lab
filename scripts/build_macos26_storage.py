@@ -9,7 +9,7 @@ import subprocess
 import uuid
 
 from native_macho import macho
-from native_log_file import validate_contract
+from native_log_file import geometry_defines, layout_of, validate_contract
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -75,6 +75,9 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         log = json.loads((root / 'config/macoslog.json').read_text())
         validate_contract(log)
         recovery_prefix += '#define NATIVE_MACOSLOG 1\n'
+        # One reviewed layout per contract; the write guard, worker and checks share this exact macro set.
+        for name, value in geometry_defines(layout_of(log)).items():
+            recovery_prefix += f'#define {name} {value}\n'
         for name, value in (('FILE', uuid.UUID(log['file_uuid']).bytes),
                             ('PARTITION', uuid.UUID(log['partition_uuid']).bytes_le),
                             ('TYPE', uuid.UUID(log['partition_type']).bytes_le)):
@@ -191,7 +194,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
     if input_driver:
         evidence['native_recovery_input'] = input_driver
     if transport == 'ufs':
-        evidence['macoslog'] = dict(contract=log, default_off=True,
+        evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
+            layout_defines=geometry_defines(layout_of(log)), default_off=True,
             boot_argument='native-ufs-macoslog', read_only_mode=1, write_mode=2,
             writes_confined_to_preallocated_file=True, filesystem_metadata_writes=False,
             source_sha256={name: hashlib.sha256((root / 'platform/sheng/macos26/storage' / name).read_bytes()).hexdigest()

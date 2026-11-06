@@ -13,9 +13,11 @@ import zlib
 from backup_device import parse_gpt
 from decode_native_log import decode, SIZE
 from decode_xnu_panic import save as save_panic
+from native_log_file import CONTRACT, LAYOUT
 from observe_macos26_kernel import identify
 
-PARTITION = '4cd2ed34-2142-4ea4-abf2-ec6c51d117d7'
+PARTITION = CONTRACT['partition_uuid']
+DISK = '/dev/block/' + LAYOUT['disk']
 # Use the firmware recovery tool's sheng RAM map and preserve the unreadable gap between its ranges.
 RAM_RANGES = ((0x880000000, 0x8bb300000), (0x8c0000000, 0xa00000000))
 
@@ -96,24 +98,26 @@ def main() -> None:
     state = [adb('get-state')] + adb('shell', 'id -u; getprop ro.product.device').splitlines()
     if state != ['recovery', '0', 'sheng']:
         raise ValueError(f'root sheng Recovery required, observed {state!r}')
-    probe = adb('shell', 'readlink -f /dev/block/by-name/macoslog; blockdev --getsize64 /dev/block/by-name/macoslog; cat /sys/block/sde/queue/logical_block_size; blockdev --getsize64 /dev/block/sde').splitlines()
-    if probe[:3] != ['/dev/block/sde78', '67108864', '4096'] or len(probe) != 4:
+    probe = adb('shell', 'readlink -f /dev/block/by-name/macoslog; blockdev --getsize64 /dev/block/by-name/macoslog; '
+                f"cat /sys/block/{LAYOUT['disk']}/queue/logical_block_size; blockdev --getsize64 {DISK}").splitlines()
+    if probe[:3] != [LAYOUT['device'], '67108864', '4096'] or len(probe) != 4:
         raise ValueError('macoslog device, extent or logical block size differs')
     disk_lbas = int(probe[3]) // 4096
     def read_block(command: str) -> bytes:
         return subprocess.check_output(['adb', '-s', args.serial, 'exec-out', 'sh', '-c', command], timeout=30)
-    gpt = read_block('dd if=/dev/block/sde bs=4096 count=256 2>/dev/null')
+    gpt = read_block(f'dd if={DISK} bs=4096 count=256 2>/dev/null')
     if len(gpt) != 1048576:
         raise ValueError('short GPT identity read')
     parse_gpt(gpt, 4096, disk_lbas, 0)
     entries, count, stride = struct.unpack_from('<QII', gpt, 4096 + 72)
-    if count <= 77 or stride < 128:
+    index = LAYOUT['partition_index'] - 1
+    if count != LAYOUT['entry_count'] or stride < 128:
         raise ValueError('macoslog GPT entry is absent')
-    at = entries * 4096 + 77 * stride
+    at = entries * 4096 + index * stride
     entry = gpt[at:at + stride]
     if (len(entry) != stride or str(uuid.UUID(bytes_le=entry[16:32])) != PARTITION
             or str(uuid.UUID(bytes_le=entry[:16])) != 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
-            or struct.unpack_from('<QQ', entry, 32) != (448512, 464895)
+            or struct.unpack_from('<QQ', entry, 32) != (LAYOUT['partition_first'], LAYOUT['partition_last'])
             or entry[56:128].decode('utf-16-le').rstrip('\0') != 'macoslog'):
         raise ValueError('macoslog GPT identity differs')
     boot = read_block('dd if=/dev/block/by-name/macoslog bs=4096 count=1 2>/dev/null')

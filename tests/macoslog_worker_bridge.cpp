@@ -14,25 +14,28 @@ static unsigned mode, writeCalls, syncCalls, failWrite, allocated, freed;
 static uint64_t fileFirst;
 static uint8_t *image;
 static const uint8_t *primary, *backup, *entries, *snapshot;
+// Geometry comes from the same reviewed layout macros as production; TEST_BACKUP_ENTRIES is the fixture's array.
+constexpr uint64_t kFirst = NATIVE_MACOSLOG_FIRST, kEnd = NATIVE_MACOSLOG_FIRST + NATIVE_MACOSLOG_BLOCKS;
+constexpr unsigned kEntryBlocks = NATIVE_MACOSLOG_ENTRY_COUNT * 128 / 4096;
 static IOReturn hostRead4k(uint8_t lun, uint64_t lba, unsigned blocks, void *out) {
-    assert(lun == 4 && blocks && blocks <= 32);
+    assert(lun == NATIVE_MACOSLOG_LUN && blocks && blocks <= 32);
     const uint8_t *source = nullptr;
     if (lba == 1 && blocks == 1) source=primary;
-    if (lba == 521215 && blocks == 1) source=backup;
-    if ((lba == 2 || lba == 521211) && blocks == 3) source=entries;
-    if (lba >= 448512 && lba + blocks <= 464896) source=image+(lba-448512)*4096;
+    if (lba == NATIVE_MACOSLOG_DISK_LAST && blocks == 1) source=backup;
+    if ((lba == 2 || lba == TEST_BACKUP_ENTRIES) && blocks == kEntryBlocks) source=entries;
+    if (lba >= kFirst && lba + blocks <= kEnd) source=image+(lba-kFirst)*4096;
     if (!source) return kIOReturnIOError;
     memcpy(out, source, blocks*4096);
     return 0;
 }
 static bool hostMacosLogOpen(uint64_t first, uint64_t blocks) {
-    assert(!gMacosLogOpen && blocks == 511 && first > 448512 && first+512 <= 464896);
+    assert(!gMacosLogOpen && blocks == 511 && first > kFirst && first+512 <= kEnd);
     fileFirst=first; gMacosLogOpen=true; return true;
 }
 static IOReturn hostWrite4k(uint8_t lun, uint64_t lba, unsigned blocks, const void *data) {
-    assert(gMacosLogOpen && lun == 4 && lba >= fileFirst && lba+blocks <= fileFirst+511);
+    assert(gMacosLogOpen && lun == NATIVE_MACOSLOG_LUN && lba >= fileFirst && lba+blocks <= fileFirst+511);
     if (++writeCalls == failWrite) return kIOReturnIOError;
-    memcpy(image+(lba-448512)*4096, data, blocks*4096); return 0;
+    memcpy(image+(lba-kFirst)*4096, data, blocks*4096); return 0;
 }
 static IOReturn hostMacosLogSync() { assert(gMacosLogOpen); syncCalls++; return 0; }
 static IOReturn hostMacosLogReady() { return 0; }

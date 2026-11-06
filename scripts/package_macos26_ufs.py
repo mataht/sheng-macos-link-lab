@@ -17,7 +17,7 @@ from observe_macos26_kernel import identify, ROOT, NATIVE_BOOT_ARGS
 from package_reference_xnu import vendor_dtbs
 from native_devtree import configure_native_text_state
 from build_macos26_storage import PROTOCOL_CHARACTERISTICS
-from native_log_file import CONTRACT as LOG_CONTRACT, BLOCK as LOG_BLOCK, decode as decode_log_file
+from native_log_file import CONTRACT as LOG_CONTRACT, LAYOUT as LOG_LAYOUT, BLOCK as LOG_BLOCK, decode as decode_log_file
 from recovery_ui_evidence import qualify_language_selector
 
 
@@ -187,11 +187,11 @@ def qualify_macoslog(build, observation, readonly, deployment, identity):
                    for name in ('macoslog_layout.h', 'macoslog_worker.h'))):
         raise ValueError('requires the current compiled default-off owned log file worker')
     first = installed.get('file_first_lba', 0)
-    if (installed.get('status') != 'verified' or installed.get('partition') != '/dev/block/sde78'
+    if (installed.get('status') != 'verified' or installed.get('partition') != LOG_LAYOUT['device']
             or installed.get('gpt_writes') is not False or installed.get('gpt_unchanged') is not True
             or installed.get('existing_allocations_preserved') is not True
             or not installed.get('image_sha256') or installed['image_sha256'] != installed.get('readback_sha256')
-            or not LOG_CONTRACT['partition_first'] < first <= 464896-512):
+            or not LOG_LAYOUT['partition_first'] < first <= LOG_LAYOUT['partition_last'] + 1 - 512):
         raise ValueError('requires the verified preallocated macoslog file deployment')
     for folder, state in ((readonly, 2), (observation, 3)):
         observed = json.loads((folder/'result.json').read_text())
