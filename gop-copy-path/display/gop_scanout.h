@@ -68,7 +68,10 @@ static inline NativeGopBlitResult nativeGopBlitRows(uint8_t *scanout, uint64_t s
         const uint8_t *sourceRow = source + (y * sourceHeight / copyHeight) * sourceRowBytes;
         const void *pixels;
         if (identity) {
-            pixels = sourceRow;
+            // A kernel IOSurface mapping can fault on first access. Stage the full row
+            // into owned wired scratch before the pixel lease masks interrupts.
+            __builtin_memcpy(rowScratch, sourceRow, sourceBytes);
+            pixels = rowScratch;
         } else {
             __builtin_memcpy(rowScratch, sourceRow, sourceBytes);
             nativeGopScanoutRowInto(converted, copyWidth, rowScratch, sourceWidth, halfToByte);

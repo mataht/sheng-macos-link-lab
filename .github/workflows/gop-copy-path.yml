@@ -1,8 +1,8 @@
-name: Stage15 GOP copy-path rebuild
+name: Stage15B GOP source-staging rebuild
 on:
   workflow_dispatch:
   push:
-    branches: ['ci/gop-copy-path']
+    branches: ['ci/gop-source-staging-stage15b']
     paths: ['gop-copy-path/**', 'scripts/rebuild_gop_driver.py', 'scripts/link_probe.py', '.github/workflows/gop-copy-path.yml']
 permissions:
   contents: read
@@ -36,6 +36,8 @@ jobs:
           test "$(xcrun --sdk macosx --show-sdk-version)" = 27.0
       - name: Verify the reviewed overlay and run its host tests
         run: python3 scripts/rebuild_gop_driver.py check --output out/check
+      - name: Verify the complete source row is staged before the pixel lease
+        run: python3 gop-copy-path/tests/run_source_lease_regression.py --output out/source-staging
       - name: Fetch pinned upstream sources and apply upstream patches
         working-directory: upstream
         run: |
@@ -56,13 +58,13 @@ jobs:
       - name: Build the unmodified upstream kernel and UFS/GOP driver
         working-directory: upstream
         run: python3 scripts/build_macos26_xnu.py --arch arm64e --link-kernel --build-ufs-driver --build-gop-display --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
-      - name: Rebuild NativeUfs.o with the Stage15 display overlay and link both variants
+      - name: Rebuild NativeUfs.o with the Stage15B source-staging fix and link both variants
         run: python3 scripts/rebuild_gop_driver.py rebuild --upstream upstream --output out/rebuild
       - name: Save results and diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: gop-copy-path-${{ github.run_id }}
+          name: gop-source-staging-stage15b-${{ github.run_id }}
           path: |
             out/
             upstream/out/macos26-xnu-arm64e/build.json
