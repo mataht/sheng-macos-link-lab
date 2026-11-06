@@ -1,0 +1,71 @@
+--- a/drivers/DarwinBoot/DarwinBootPkg/Driver/NativeLogSave.h
++++ b/drivers/DarwinBoot/DarwinBootPkg/Driver/NativeLogSave.h
+@@ -6,10 +6,12 @@
+ 
+ #define NATIVE_LOG_BYTES 82048U
+ #define NATIVE_PANIC_BYTES 524288U
+-#define NATIVE_LOG_FIRST 0x880000000ULL
+-#define NATIVE_LOG_END 0x8bb300000ULL
+-#define NATIVE_LOG_HIGH_FIRST 0x8c0000000ULL
+-#define NATIVE_LOG_HIGH_END 0xa00000000ULL
++// CN 1 TB layout (config/macoslog.json sheng-cn-1tb-lun0): UFS LUN0 entry 30, 4 KiB blocks, 64 MiB.
++#define NATIVE_LOG_PARTITION_FIRST 36649216ULL
++#define NATIVE_LOG_PARTITION_LAST 36665599ULL
++#define NATIVE_LOG_PARTITION_LAST_BLOCK 16383ULL
++STATIC_ASSERT (NATIVE_LOG_PARTITION_LAST - NATIVE_LOG_PARTITION_FIRST == NATIVE_LOG_PARTITION_LAST_BLOCK,
++               "macoslog extent");
+ 
+ #pragma pack(1)
+ typedef struct {
+@@ -29,19 +31,29 @@
+ STATIC_ASSERT (sizeof (NATIVE_LOG_REQUEST) == 80, "native log request ABI");
+ 
+ STATIC CONST EFI_GUID mNativeLogPartition =
+-  {0x4cd2ed34, 0x2142, 0x4ea4, {0xab, 0xf2, 0xec, 0x6c, 0x51, 0xd1, 0x17, 0xd7}};
++  {0x993de482, 0x5dc8, 0x4be4, {0xb8, 0xe3, 0xbf, 0x52, 0x52, 0x32, 0xab, 0xd1}};
+ STATIC CONST EFI_GUID mNativeLogType =
+   {0xebd0a0a2, 0xb9e5, 0x4433, {0x87, 0xc0, 0x68, 0xb6, 0xb7, 0x26, 0x99, 0xc7}};
+ 
++// [first, end) high-bank system RAM given to UEFI by uefi-sheng 0004 on the CN 16 GB unit. The holes at
++// 0x8B8700000 and 0x8BA700000..0x8C0000000 are firmware-owned and stay rejected.
++STATIC CONST UINT64 mNativeLogRam[][2] = {
++  {0x880000000ULL, 0x8b8700000ULL},
++  {0x8b8900000ULL, 0x8ba700000ULL},
++  {0x8c0000000ULL, 0xc00000000ULL},
++};
++
+ STATIC BOOLEAN
+ NativeLogRange (UINT64 Address, UINT32 Bytes)
+ {
+-  // Both ranges come from sheng SMEM and Recovery memory maps; exclude the external-abort gap.
+-  return (Bytes != 0) && ((Address & 0x3fff) == 0) &&
+-         (((Address >= NATIVE_LOG_FIRST) && (Address < NATIVE_LOG_END) &&
+-           (Bytes <= NATIVE_LOG_END - Address)) ||
+-          ((Address >= NATIVE_LOG_HIGH_FIRST) && (Address < NATIVE_LOG_HIGH_END) &&
+-           (Bytes <= NATIVE_LOG_HIGH_END - Address)));
++  UINTN Index;
++
++  if ((Bytes == 0) || ((Address & 0x3fff) != 0)) { return FALSE; }
++  for (Index = 0; Index < ARRAY_SIZE (mNativeLogRam); Index++) {
++    if ((Address >= mNativeLogRam[Index][0]) && (Address < mNativeLogRam[Index][1]) &&
++        (Bytes <= mNativeLogRam[Index][1] - Address)) { return TRUE; }
++  }
++  return FALSE;
+ }
+ 
+ STATIC EFI_STATUS
+@@ -125,11 +137,12 @@
+     Name[36] = 0;
+     if (!CompareGuid (&Id, &mNativeLogPartition) || !CompareGuid (&Type, &mNativeLogType) ||
+         (StrCmp (Name, L"macoslog") != 0) ||
+-        (Info->Info.Gpt.StartingLBA != 448512) || (Info->Info.Gpt.EndingLBA != 464895)) { continue; }
++        (Info->Info.Gpt.StartingLBA != NATIVE_LOG_PARTITION_FIRST) ||
++        (Info->Info.Gpt.EndingLBA != NATIVE_LOG_PARTITION_LAST)) { continue; }
+     Status = gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Block);
+     if (EFI_ERROR (Status)) { break; }
+     if (!Block->Media->LogicalPartition || !Block->Media->MediaPresent || Block->Media->ReadOnly ||
+-        (Block->Media->BlockSize != 4096) || (Block->Media->LastBlock != 16383)) {
++        (Block->Media->BlockSize != 4096) || (Block->Media->LastBlock != NATIVE_LOG_PARTITION_LAST_BLOCK)) {
+       Status = EFI_WRITE_PROTECTED; break;
+     }
+     Status = gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
