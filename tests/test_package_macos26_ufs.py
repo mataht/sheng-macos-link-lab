@@ -10,6 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from package_macos26_ufs import qualify, qualify_development_dyld, qualify_isc_overlay, qualify_boot_progress
+import package_macos26_ufs
 from build_macos26_storage import PROTOCOL_CHARACTERISTICS
 
 
@@ -235,6 +236,26 @@ class DevelopmentDyldPackage(unittest.TestCase):
                 result.write_text(json.dumps(dict(observed, **{field: value})))
                 with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'original launchd main'):
                     qualify_development_dyld(folder, folder, identity, 'volume')
+
+
+class DisplayKeepAwake(unittest.TestCase):
+    def test_switch_is_bound_to_the_exact_display_patch(self):
+        result = package_macos26_ufs.qualify_display_keep_awake()
+        self.assertEqual(result['boot_argument'], 'native-gop-keep-awake=1')
+        self.assertFalse(result['display_on_qualified'])
+        source = package_macos26_ufs.ROOT / 'platform/sheng/macos26/display'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            display = root / 'platform/sheng/macos26/display'
+            display.mkdir(parents=True)
+            for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json'):
+                (display / name).write_bytes((source / name).read_bytes())
+            with patch.object(package_macos26_ufs, 'ROOT', root):
+                self.assertEqual(package_macos26_ufs.qualify_display_keep_awake(), result)
+                (display / '0001-native-gop-display.patch').write_bytes(
+                    (source / '0001-native-gop-display.patch').read_bytes() + b'\n')
+                with self.assertRaisesRegex(ValueError, 'hardware keep-awake'):
+                    package_macos26_ufs.qualify_display_keep_awake()
 
 
 if __name__ == '__main__':

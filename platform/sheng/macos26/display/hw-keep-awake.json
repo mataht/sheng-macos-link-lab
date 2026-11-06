@@ -1,0 +1,47 @@
+{
+  "schema": "sheng-hw-display-keep-awake-v1",
+  "status": "source_only",
+  "compiled": false,
+  "ci_submitted": false,
+  "hardware_run": false,
+  "vm_run": false,
+  "inputs": {
+    "original": {
+      "path": "out/stage15-gop-copy-path/original/DroidVMDisplay.cpp",
+      "sha256": "050ae69eec6f0340c4f3659285dfb16fce13058648a044f9149b89d40344bcac"
+    },
+    "stage18b_source": {
+      "path": "out/stage18b-display-awake/payload/gop-copy-path/display/NativeGOPDisplay.cpp",
+      "sha256": "d5c31fd87d26a1c6755af85a59f950fc532b8b363f97650f1c27e90eb9b26339"
+    },
+    "stage18b_patch": {
+      "path": "out/stage18b-display-awake/payload/gop-copy-path/display/0001-native-gop-display.patch",
+      "sha256": "fcb283d657c6f15e25f5829de411852e3c6f4f5e18eee61966e86dae64f8dc10"
+    },
+    "stage15b_scanout": {
+      "path": "out/stage15b-source-staging/payload/gop-copy-path/display/gop_scanout.h",
+      "sha256": "65f31d0597f77975df933c86f0acd729a223d50e44323fd0d0f7b80d857179c9"
+    }
+  },
+  "stage18b_patch_reproduced": true,
+  "class_declaration_byte_identical": true,
+  "stop_and_hardware_start_unchanged": true,
+  "pixel_copy_and_power_state_unchanged": true,
+  "framebuffer_header_hunk_unchanged": true,
+  "vm_switch": {
+    "boot_argument": "native-gop-vm-keep-awake=1",
+    "guard": "PE_vmm_present == 1",
+    "reason": "sheng-qemu-display-observation",
+    "log_text_unchanged": true
+  },
+  "hardware_switch": {
+    "boot_argument": "native-gop-keep-awake=1",
+    "guard": "PE_vmm_present == 0 and native-gop-vm-keep-awake unset",
+    "reason": "sheng-native-display-keep-awake",
+    "default_off": true
+  },
+  "source_sha256": "8314efba25ce0b3ad532e9991ee8c35ef98d01eeee45b7211f352c3978d52b3c",
+  "patch_sha256": "1e29e7070bbf58aaee1b04cc0c837bd673f0a394a8edbd0bbe133134bd661d8a",
+  "scanout_sha256": "65f31d0597f77975df933c86f0acd729a223d50e44323fd0d0f7b80d857179c9",
+  "note": "Requests the original PM user-activity path every 30 s; requestUserActive returns void, so a submitted request does not prove the display stayed on. System sleep is refused separately by the ADT sleep-disabled policy."
+}
