@@ -3,6 +3,7 @@
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -40,7 +41,11 @@ class NativeLogFile(unittest.TestCase):
         cls.path = Path(cls.work.name)
         compiler = shutil.which('g++')
         if not compiler or not all(shutil.which(tool) for tool in ('mkfs.fat', 'mcopy', 'mdir')):
-            raise unittest.SkipTest('requires a host C++ compiler, dosfstools and mtools')
+            message = 'requires a host C++ compiler, dosfstools and mtools'
+            # CI sets this so the macoslog layout tests cannot pass by being skipped.
+            if os.environ.get('SHENG_REQUIRE_HOST_TOOLS') == '1':
+                raise RuntimeError(message)
+            raise unittest.SkipTest(message)
         library = cls.path/'bridge.so'
         subprocess.run([compiler, '-std=c++23', '-Wall', '-Wextra', '-Werror', '-shared', '-fPIC', *compile_defines(cls.layout),
                         str(ROOT/'tests/macoslog_bridge.cpp'), '-o', str(library)], check=True)
