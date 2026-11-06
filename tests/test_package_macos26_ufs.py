@@ -248,6 +248,47 @@ class DevelopmentDyldPackage(unittest.TestCase):
                     qualify_development_dyld(folder, folder, identity, 'volume')
 
 
+class HardwareSmp(unittest.TestCase):
+    def test_boot_arguments_use_eight_cores_and_spi_ipis(self):
+        args = package_macos26_ufs.hardware_smp_boot_args('-v debug=0x14e keepsyms=1 cpus=1 -enable_kprintf_spam native-ufs-root=1')
+        self.assertEqual(args.split().count('cpus=8'), 1)
+        self.assertNotIn('cpus=1', args.split())
+        self.assertTrue(args.endswith('sheng-smp=1 armcpu-spi-ipi=1'))
+        self.assertNotIn('armcpu-self-ipi=1', args)
+        for bad in ('-v keepsyms=1', '-v cpus=1 cpus=1', '-v cpus=8'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'single-CPU baseline'):
+                package_macos26_ufs.hardware_smp_boot_args(bad)
+        self.assertEqual(len(package_macos26_ufs.SMP_CPU_REGS), 8)
+        self.assertEqual(len(package_macos26_ufs.SMP_CPU_COMPATIBLE), 8)
+
+    def test_qemu_observation_must_start_all_secondaries_of_this_kernel(self):
+        identity = dict(kernel_sha256='kernel', uuid='UUID')
+        good = dict(kernel_sha256='kernel', uuid='UUID', reached=True, checkpoint='IOFindBSDRoot',
+                    smp_observation=dict(cpu_count=8, ipi='GIC SGI - QEMU'),
+                    smp_runtime=dict(running_secondaries=7, secondary_init_complete=True, failures=[0] * 8,
+                                     psci=[0] * 8, all_cores_received_ipi=True, all_cores_received_timer=False))
+        with tempfile.TemporaryDirectory() as temporary:
+            build, observation = Path(temporary) / 'build', Path(temporary) / 'smp'
+            build.mkdir(), observation.mkdir()
+            (build / 'build.json').write_text('{}')
+            with patch('native_smp.configure') as configure:
+                (observation / 'result.json').write_text(json.dumps(good))
+                result = package_macos26_ufs.qualify_smp(build, observation, identity)
+                configure.assert_called_once()
+                self.assertEqual(result['cpu_count'], 8)
+                self.assertFalse(result['hardware_qualified'])
+                for change in (dict(kernel_sha256='other'), dict(reached=False),
+                               dict(smp_observation=dict(cpu_count=4)),
+                               dict(smp_runtime=dict(good['smp_runtime'], running_secondaries=6)),
+                               dict(smp_runtime=dict(good['smp_runtime'], failures=[0] * 7 + [1])),
+                               dict(smp_runtime=dict(good['smp_runtime'], psci=[0] * 7 + [-2])),
+                               dict(smp_runtime=dict(good['smp_runtime'], all_cores_received_ipi=False))):
+                    with self.subTest(change=change):
+                        (observation / 'result.json').write_text(json.dumps(dict(good, **change)))
+                        with self.assertRaisesRegex(ValueError, 'all eight cores'):
+                            package_macos26_ufs.qualify_smp(build, observation, identity)
+
+
 class DisplayKeepAwake(unittest.TestCase):
     def test_switch_is_bound_to_the_exact_display_patch(self):
         result = package_macos26_ufs.qualify_display_keep_awake()
