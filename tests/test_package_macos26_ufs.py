@@ -31,7 +31,7 @@ class UfsPackage(unittest.TestCase):
                 for n in ('_g_crypto_funcs', '_img4if', '_amfi', '_libCoreEntitlements', '_pthread_functions')})
         self.bootstrap = dict(self.identity, reached_c_entry=True, instruction_and_args_match=True,
             bootstrap_stage='0xf', post_mmu_framebuffer_mapping_ready=True,
-            actual_stage_pixels=['0xff00ff00'] * 16)
+            actual_stage_pixels=['0xff00ff00'] * 16, placement='cn-16gb-12gib', owned_window_bytes='0x300000000')
         self.driver = dict(bundle='org.blu-sharky.NativeUfs',
             build=dict(root_partition='macosroot', root_lun=0, android_userdata_used=False,
                        recovery_root=self.recovery, recovery_transport_is_not_authentication=True),
@@ -92,6 +92,16 @@ class UfsPackage(unittest.TestCase):
         del self.driver['build']['recovery_root']
         with self.assertRaisesRegex(ValueError, 'recovery UFS ABI'):
             self.run_qualification()
+
+    def test_bootstrap_trace_must_use_the_packaged_window_placement(self):
+        self.assertEqual(self.run_qualification()[2], self.identity)
+        for change in (dict(placement='upstream-8gb', owned_window_bytes='0x20000000'),
+                       dict(owned_window_bytes='0x20000000'), dict(placement=None)):
+            with self.subTest(change=change):
+                self.bootstrap = dict(self.bootstrap, **change)
+                with self.assertRaisesRegex(ValueError, 'physical-placement'):
+                    self.run_qualification()
+                self.bootstrap.update(placement='cn-16gb-12gib', owned_window_bytes='0x300000000')
 
     def test_stale_observation_and_active_hardware_are_refused(self):
         self.observed['kernel_sha256'] = 'other'

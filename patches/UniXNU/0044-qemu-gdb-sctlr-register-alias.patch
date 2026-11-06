@@ -1,0 +1,38 @@
+--- a/scripts/qemu-entry/gdb-stop.py
++++ b/scripts/qemu-entry/gdb-stop.py
+@@ -1632,6 +1632,9 @@
+             if args.system_registers:
+                 target = feature('target.xml')
+                 report['system_registers'] = {}
++                report['system_register_sources'] = {}
++                # QEMU 8.2's system-register feature names SCTLR_EL1 "SCTLR".
++                aliases = {'SCTLR': 'SCTLR_EL1'}
+                 wanted = {'TCR_EL1', 'TTBR0_EL1', 'TTBR1_EL1', 'SCTLR_EL1', 'CNTFRQ_EL0',
+                           'ESR_EL1', 'FAR_EL1', 'ELR_EL1', 'SPSR_EL1', 'ID_AA64MMFR1_EL1', 'ID_AA64MMFR0_EL1', 'MIDR_EL1'}
+                 if process_plan:
+@@ -1639,10 +1642,23 @@
+                 for include in target.findall('{http://www.w3.org/2001/XInclude}include'):
+                     document = feature(include.attrib['href'])
+                     for register in document.findall('reg'):
+-                        if register.attrib['name'] in wanted:
++                        source_name = register.attrib['name']
++                        name = aliases.get(source_name, source_name)
++                        if name in wanted:
++                            bits = int(register.attrib['bitsize'])
++                            if bits != 64:
++                                raise RuntimeError(f'Unexpected system-register width: {source_name}')
+                             raw = packet(f'p{int(register.attrib["regnum"]):x}')
++                            if len(raw) != 16 or any(c not in '0123456789abcdefABCDEF' for c in raw):
++                                raise RuntimeError(f'Cannot read actual system register: {source_name}: {raw}')
+                             value = int.from_bytes(bytes.fromhex(raw), 'little')
+-                            report['system_registers'][register.attrib['name']] = hex(value)
++                            previous = report['system_registers'].get(name)
++                            if previous is not None and previous != hex(value):
++                                raise RuntimeError(f'Conflicting system-register aliases: {name}')
++                            report['system_registers'][name] = hex(value)
++                            report['system_register_sources'].setdefault(name, []).append(dict(
++                                name=source_name, regnum=int(register.attrib['regnum']),
++                                bitsize=bits, raw=raw, feature=include.attrib['href']))
+                 if followed_display and followed_display['observed']:
+                     followed_display['actual_process'] = process_identity()
+                 if args.process_layout_plan:
