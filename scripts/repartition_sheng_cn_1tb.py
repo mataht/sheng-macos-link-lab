@@ -108,6 +108,9 @@ def layout(primary, secondary, lbas, root_guid=None):
                        bytes=ROOT_BYTES),
         unallocated=dict(first_lba=root_last + 1, last_lba=before['last_usable'],
                          bytes=(before['last_usable'] - root_last) * BLOCK),
+        # Flat fields read by install_macos26_ufs_root.py and package_macos26_ufs.py (upstream plan format).
+        userdata_bytes=USERDATA_BYTES, root_index=ROOT_INDEX + 1, root_name='macosroot',
+        root_unique_guid=str(root_guid), root_first_lba=root_first, root_last_lba=root_last, root_bytes=ROOT_BYTES,
         other_partitions_changed=False, userdata_contents_discarded=False, userdata_filesystem_rebuilt=False,
         root_image_written=False, applied=False)
 

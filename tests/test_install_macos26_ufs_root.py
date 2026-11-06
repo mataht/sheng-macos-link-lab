@@ -85,5 +85,56 @@ class InstallUfsRoot(unittest.TestCase):
         self.assertFalse(json.loads((self.plan_dir / 'plan.json').read_text())['root_image_written'])
 
 
+class InstallUfsRootCn(InstallUfsRoot):
+    """The same installer on the CN 1 TB LUN0 plan (repartition_sheng_cn_1tb.py)."""
+
+    def setUp(self):
+        import repartition_sheng_cn_1tb as cn
+        import test_repartition_sheng_cn_1tb as cn_fixture
+        super().setUp()
+        primary, secondary = cn_fixture.windows_from_entries(cn_fixture.synthetic_entries())
+        copies, plan = cn.layout(primary, secondary, cn.LUN0_LBAS)
+        plan.update(applied=True, gpt_readback_verified=True, serial=self.device.serial)
+        for kind, data in copies.items():
+            (self.plan_dir / f'after-{kind}.bin').write_bytes(data)
+        (self.plan_dir / 'plan.json').write_text(json.dumps(plan))
+        self.plan = plan
+        self.device.lbas, self.device.copies = cn.LUN0_LBAS, copies
+        device = self.device
+        original = type(device).shell
+
+        def shell(command, **kwargs):
+            if command.startswith('readlink'):
+                device.commands.append(command)
+                return '/dev/block/sda' + str(plan['root_index'])
+            if command.startswith('blockdev --getsize64'):
+                device.commands.append(command)
+                return str(plan['root_bytes'])
+            if command == 'cat /tmp/recovery.log':
+                device.commands.append(command)
+                return ('Data wipe complete.\nformat_volume: wipe metadata encrypted '
+                        '/dev/block/bootdevice/by-name/userdata with size ' + str(plan['userdata_bytes']))
+            return original(device, command, **kwargs)
+        device.shell = shell
+
+    def test_cn_plan_fields_match_the_partition_it_describes(self):
+        self.assertEqual((self.plan['root_index'], self.plan['root_name']), (31, 'macosroot'))
+        self.assertEqual((self.plan['root_first_lba'], self.plan['root_last_lba']),
+                         (self.plan['macosroot']['first_lba'], self.plan['macosroot']['last_lba']))
+        self.assertEqual(self.plan['root_unique_guid'], self.plan['macosroot']['unique_guid'])
+        self.assertEqual((self.plan['root_bytes'], self.plan['userdata_bytes']), (32 << 30, 128 << 30))
+
+    def test_verified_write_updates_the_cn_plan(self):
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['status'], 'verified')
+        self.assertEqual(record['destination_guid'], self.plan['root_unique_guid'])
+        updated = json.loads((self.plan_dir / 'plan.json').read_text())
+        self.assertTrue(updated['root_image_readback_verified'])
+        self.assertEqual(updated['root_image_sha256'], record['sha256'])
+        self.assertIn('readlink -f ' + PARTITION, self.device.commands)
+
+
 if __name__ == '__main__':
     unittest.main()
