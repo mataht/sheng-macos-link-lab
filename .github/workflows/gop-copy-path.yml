@@ -1,0 +1,73 @@
+name: Stage15 GOP copy-path rebuild
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/gop-copy-path']
+    paths: ['gop-copy-path/**', 'scripts/rebuild_gop_driver.py', 'scripts/link_probe.py', '.github/workflows/gop-copy-path.yml']
+permissions:
+  contents: read
+concurrency:
+  group: gop-copy-path-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  rebuild:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Check out the pinned upstream source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: CrossDarwin/macOS-ForSheng
+          ref: a200d204230846bb640b715086d8c627405ba2df
+          path: upstream
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Record toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun clang --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = 27.0
+      - name: Verify the reviewed overlay and run its host tests
+        run: python3 scripts/rebuild_gop_driver.py check --output out/check
+      - name: Fetch pinned upstream sources and apply upstream patches
+        working-directory: upstream
+        run: |
+          python3 scripts/sources.py fetch --group core
+          python3 scripts/sources.py fetch --lock config/macos26-sources.json --group macos26
+          python3 scripts/apply_patches.py
+      - run: brew install cmake ninja unifdef
+      - name: Cache the pinned KDK download
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: upstream/private/apple/Kernel_Debug_Kit_26.5_build_25F71.dmg
+          key: macos26-kdk-${{ hashFiles('upstream/config/macos26.json') }}
+      - name: Select KDK staging path
+        run: echo "SHENG_KDK_EXPANDED=$RUNNER_TEMP/sheng-kdk-25F71" >> "$GITHUB_ENV"
+      - name: Verify the paired Apple-signed KDK
+        working-directory: upstream
+        run: bash scripts/verify_kdk.sh config/macos26.json
+      - name: Build the unmodified upstream kernel and UFS/GOP driver
+        working-directory: upstream
+        run: python3 scripts/build_macos26_xnu.py --arch arm64e --link-kernel --build-ufs-driver --build-gop-display --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
+      - name: Rebuild NativeUfs.o with the Stage15 display overlay and link both variants
+        run: python3 scripts/rebuild_gop_driver.py rebuild --upstream upstream --output out/rebuild
+      - name: Save results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gop-copy-path-${{ github.run_id }}
+          path: |
+            out/
+            upstream/out/macos26-xnu-arm64e/build.json
+            upstream/out/macos26-xnu-arm64e/logs/
+            upstream/out/macos26-xnu-arm64e/ufs-driver/build.json
+            upstream/out/macos26-xnu-arm64e/ufs-driver/gop-display/source.json
+          if-no-files-found: warn
+          retention-days: 7
