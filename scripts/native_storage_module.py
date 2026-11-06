@@ -72,8 +72,39 @@ def validate_private_slot(item, allowed):
     return matches[0]
 
 
+def validate_display(directory, evidence, info, original, kc, selected):
+    display = evidence['native_gop_display']
+    required = {'com.apple.iokit.IOMobileGraphicsFamily', 'com.apple.iokit.IOSurface',
+                'com.apple.iokit.IOAVFamily'}
+    if (not required <= selected.keys() or display.get('build') != '25F71'
+            or display.get('default_off') is not True or 1 not in display_cpus(display)
+            or display.get('gpu_acceleration') is not False
+            or display.get('publishes_vm_identity') is not False):
+        raise ValueError('GOP display requires the paired default-off framebuffer contract')
+    expected = dict(CFBundleIdentifier=evidence['bundle'], IOClass='NativeGOPDisplay',
+        IOProviderClass='IOPlatformExpertDevice', IOMatchCategory='NativeGOPDisplay', IOProbeScore=500)
+    if info['IOKitPersonalities'].get('NativeGOPDisplay') != expected:
+        raise ValueError('unexpected GOP display provider or identity')
+    for name, key in (('NativeGOPDisplay.cpp', 'source_sha256'),
+                      ('IOMobileFramebufferABI.h', 'header_sha256')):
+        if hashlib.sha256((directory / 'gop-display' / name).read_bytes()).hexdigest() != display.get(key):
+            raise ValueError('GOP display source differs from the compiled record')
+    if len(display_cpus(display)) > 1:
+        if hashlib.sha256((directory / 'gop-display/framebuffer_owner.h').read_bytes()).hexdigest() != display.get('framebuffer_owner_sha256'):
+            raise ValueError('GOP framebuffer owner differs from the compiled record')
+    contract = json.loads((Path(__file__).resolve().parents[1] /
+                          'config/macos26-gop-reference.json').read_text())['abi']
+    family = kc_macho(original, kc['entries']['com.apple.iokit.IOMobileGraphicsFamily'][1])
+    text = next(s for s in family['segments'] if s['name'] == '__TEXT_EXEC')
+    text_hash = hashlib.sha256(original[text['fileoff']:text['fileoff'] + text['filesize']]).hexdigest()
+    if (display.get('abi') != contract or family['uuid'] != contract['family_uuid']
+            or text_hash != contract['family_text_sha256']):
+        raise ValueError('GOP private field layout requires the reviewed paired framebuffer family')
+
+
 def prepare(directory: Path, base: int, native: dict, original: bytes,
-            kc: dict, selected: dict, slide: int) -> dict:
+            kc: dict, selected: dict, slide: int, *, allow_combined_virtio_gop=False,
+            native_data=None) -> dict:
     evidence = json.loads((directory / 'build.json').read_text())
     components = {
         'org.unixnu.driver.NativeVirtioBlock': ('NativeVirtioBlock', 'NativeVirtioBlock'),
@@ -97,6 +128,10 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     if info['CFBundleIdentifier'] != evidence['bundle']:
         raise ValueError('transport bundle identity mismatch')
     if component == 'NativeVirtioBlock':
+        from native_combined_driver import validate_combined
+        validate_combined(directory, evidence, info, allow_combined_virtio_gop)
+        if evidence.get('native_gop_display'):
+            validate_display(directory, evidence, info, original, kc, selected)
         from build_macos26_storage import PROTOCOL_CHARACTERISTICS
         personality = info['IOKitPersonalities']['NativeVirtioBlock']
         existing = personality.get('Protocol Characteristics')
@@ -105,6 +140,8 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         # VirtIO exposes a virtual block device; APFS uses this identity to select the BaseSystem root path.
         personality['Protocol Characteristics'] = dict(PROTOCOL_CHARACTERISTICS)
     else:
+        if allow_combined_virtio_gop:
+            raise ValueError('combined opt-in requires a VirtIO primary module')
         if (evidence.get('root_partition') != 'macosroot' or evidence.get('root_lun') != 0
                 or evidence.get('android_userdata_used') is not False
                 or evidence.get('read_only_transport') is not True
@@ -119,32 +156,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
         if display:
-            required = {'com.apple.iokit.IOMobileGraphicsFamily', 'com.apple.iokit.IOSurface',
-                        'com.apple.iokit.IOAVFamily'}
-            if (not required <= selected.keys() or display.get('build') != '25F71'
-                    or display.get('default_off') is not True or 1 not in display_cpus(display)
-                    or display.get('gpu_acceleration') is not False
-                    or display.get('publishes_vm_identity') is not False):
-                raise ValueError('GOP display requires the paired default-off framebuffer contract')
-            expected = dict(CFBundleIdentifier=evidence['bundle'], IOClass='NativeGOPDisplay',
-                IOProviderClass='IOPlatformExpertDevice', IOMatchCategory='NativeGOPDisplay', IOProbeScore=500)
-            if info['IOKitPersonalities'].get('NativeGOPDisplay') != expected:
-                raise ValueError('unexpected GOP display provider or identity')
-            for name, key in (('NativeGOPDisplay.cpp', 'source_sha256'),
-                              ('IOMobileFramebufferABI.h', 'header_sha256')):
-                if hashlib.sha256((directory / 'gop-display' / name).read_bytes()).hexdigest() != display.get(key):
-                    raise ValueError('GOP display source differs from the compiled record')
-            if len(display_cpus(display)) > 1:
-                if hashlib.sha256((directory / 'gop-display/framebuffer_owner.h').read_bytes()).hexdigest() != display.get('framebuffer_owner_sha256'):
-                    raise ValueError('GOP framebuffer owner differs from the compiled record')
-            contract = json.loads((Path(__file__).resolve().parents[1] /
-                                  'config/macos26-gop-reference.json').read_text())['abi']
-            family = kc_macho(original, kc['entries']['com.apple.iokit.IOMobileGraphicsFamily'][1])
-            text = next(s for s in family['segments'] if s['name'] == '__TEXT_EXEC')
-            text_hash = hashlib.sha256(original[text['fileoff']:text['fileoff'] + text['filesize']]).hexdigest()
-            if (display.get('abi') != contract or family['uuid'] != contract['family_uuid']
-                    or text_hash != contract['family_text_sha256']):
-                raise ValueError('GOP private field layout requires the reviewed paired framebuffer family')
+            validate_display(directory, evidence, info, original, kc, selected)
         if input_driver:
             contract = json.loads((Path(__file__).resolve().parents[1] /
                                    'config/macos26-input-reference.json').read_text())['abi']
@@ -296,6 +308,17 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     for item in relocations:
         if item['import_name'] != reserved:
             continue
+        if (evidence.get('combined_driver') and item['new_site'] in {
+                base + own[name] + 16 + 16 * 8 for name in (
+                    '__ZTV9NativeUfs', '__ZTVN9NativeUfs9MetaClassE',
+                    '__ZTVN17NativeVirtioBlock9MetaClassE', '__ZTVN14NativeUfsBlock9MetaClassE',
+                    '__ZTVN16NativeGOPDisplay9MetaClassE')}):
+            # Default MetaClass macros inherit OSMetaClass directly, not the
+            # instance parent's generated MetaClass. Both OSMetaClass and
+            # IOService retain reserved3; family instance adaptation is separate.
+            if reserved not in native or item['new_target'] != native[reserved]:
+                raise ValueError('combined reserved slot differs from native OSMetaClass/IOService')
+            continue
         if item['new_site'] not in slots or dispatch not in native:
             raise ValueError('unexpected reserved Dispatch compatibility use')
         compatibility.append(dict(site=item['new_site'], previous_target=item['new_target'],
@@ -322,6 +345,16 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != evidence['native_recovery_input']['abi']['device_slots']:
             raise ValueError('input companion HID vtable slot count differs')
         driver['input_vtable_abi'] = audit
+    if evidence.get('combined_driver'):
+        from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
+        driver['retained_vtable_abi'] = {
+            'NativeUfsBlock': audit_storage_vtable(driver, original, kc, native, slide, own_class='NativeUfsBlock'),
+            'NativeUfs': audit_storage_vtable(driver, original, kc, native, slide,
+                family_bundle='com.apple.kernel', base_class='IOService', own_class='NativeUfs'),
+        }
+        driver['combined_metaclass_abi'] = audit_combined_metaclasses(
+            driver, original, kc, native, slide, native_data)
+        driver['combined_initialization_audit'] = audit_combined_initialization(directory, driver)
     return driver
 
 
@@ -335,8 +368,15 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
     old_names.update(exports(original, family))
     for address, names in (additional_names or {}).items():
         old_names.setdefault(address, []).extend(n for n in names if n not in old_names.get(address, []))
+    def encoded_class(name):
+        return ''.join(str(len(part)) + part for part in name.split('::'))
+
+    def table_symbol(name):
+        encoded = encoded_class(name)
+        return '__ZTV' + ('N' + encoded + 'E' if '::' in name else encoded)
+
     table = next(a for a, names in exports(original, family).items()
-                 if f'__ZTV{len(base_class)}{base_class}' in names)
+                 if table_symbol(base_class) in names)
     original_slots = {p['site']: p for p in chains(original, kc)}
     declarations = {}
     if pure_declaration_class:
@@ -347,7 +387,7 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
         if declaration_table + 16 + 371 * 8 in original_slots:
             raise ValueError('unreviewed framebuffer introducing declaration slot count')
     block_class = own_class or driver['block_class']
-    own_table = driver['symbols'][f'__ZTV{len(block_class)}{block_class}']
+    own_table = driver['symbols'][table_symbol(block_class)]
     own_slots = {p['new_site']: p for p in driver['relocations']}
     own_names = {}
     for name, address in driver['symbols'].items():
@@ -363,7 +403,13 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
         n[1:] if n.startswith('__Z') else n for n in relevant) + '\n', text=True).splitlines()
     if len(decoded) != len(relevant):
         raise ValueError('incomplete vtable symbol demangling')
-    methods = {n: d.split('::', 1)[1] if '::' in d else None for n, d in zip(relevant, decoded)}
+    # Strip the complete owner before the function name, preserving qualified
+    # argument types. Nested MetaClass owners are not a part of the signature.
+    def method_signature(value):
+        prefix, opening, parameters = value.partition('(')
+        return prefix.rsplit('::', 1)[1] + opening + parameters if '::' in prefix else None
+
+    methods = {n: method_signature(d) for n, d in zip(relevant, decoded)}
 
     slots, overrides = [], 0
     for index in range(512):
@@ -377,7 +423,7 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
         expected = {native[n] for n in names if n in native}
         expected.add(old['target'] + slide)
         override = own['new_target'] in own_names and any(
-            n.startswith((f'__ZN{len(block_class)}{block_class}', f'__ZNK{len(block_class)}{block_class}'))
+            n.startswith((f'__ZN{encoded_class(block_class)}', f'__ZNK{encoded_class(block_class)}'))
             for n in own_names[own['new_target']])
         if override:
             actual = own_names[own['new_target']]
