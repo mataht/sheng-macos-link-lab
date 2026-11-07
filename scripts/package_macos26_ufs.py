@@ -28,6 +28,27 @@ OWNED_MEMORY_FIRMWARE = ('uefi-sheng/0004-sheng-cn-16gb-memory-map', 'UniXNU/004
                          'UniXNU/0042-native-log-saver-cn-layout', 'UniXNU-sheng/0009-adt-13gib-owned-memory')
 
 
+def stock_version_for_v0(boot: bytes, image_bytes: int, target_header_version: int) -> int:
+    """Preserve the stock v4 field, without qualifying the tablet's v0 loader."""
+    if target_header_version != 0:
+        raise ValueError('requires the configured v0 transport')
+    if len(boot) != 4096 or image_bytes < len(boot) or boot[:8] != b'ANDROID!':
+        raise ValueError('requires a complete backed-up slot A v4 header')
+    kernel_size, ramdisk_size, os_version, header_size = struct.unpack_from('<4I', boot, 8)
+    if (struct.unpack_from('<I', boot, 40)[0] != 4 or header_size != 1584
+            or boot[24:40] != bytes(16) or not kernel_size):
+        raise ValueError('invalid backed-up slot A v4 header geometry')
+    signature_size = struct.unpack_from('<I', boot, 1580)[0]
+    used = 4096 + sum((size + 4095) // 4096 * 4096
+                      for size in (kernel_size, ramdisk_size, signature_size))
+    if used > image_bytes:
+        raise ValueError('stock v4 payload exceeds the backed-up image')
+    # Android 13+ GKI v4 uses zero here and obtains version information from AVB.
+    # https://source.android.com/docs/core/architecture/bootloader/boot-image-header
+    # Copy all original bits; neither zero nor nonzero proves v0 ABL acceptance.
+    return os_version
+
+
 def qualify(build, observation, bootstrap, default_off, installed, plan, root_build, *, with_isc=False):
     kernel, symbols, identity = identify(build)
     kernel_build = json.loads((build / 'build.json').read_text())
@@ -392,14 +413,11 @@ def main():
     payload = base_data[4096:4096 + payload_size]
     if len(payload) != payload_size:
         raise ValueError('firmware payload is truncated')
-    with (args.backup_dir / 'boot_a.img').open('rb') as stream:
+    stock_boot = args.backup_dir / 'boot_a.img'
+    with stock_boot.open('rb') as stream:
         boot = stream.read(4096)
-    if boot[:8] != b'ANDROID!' or struct.unpack_from('<I', boot, 40)[0] != 4:
-        raise ValueError('requires backed-up slot A OS metadata')
-    os_version = struct.unpack_from('<I', boot, 16)[0]
     geometry = tomllib.loads((ROOT / 'uefi-sheng/Resources/Configs/sheng.toml').read_text())['boot_image']
-    if not os_version or geometry['header_version'] != 0:
-        raise ValueError('requires the qualified v0 transport and stock version field')
+    os_version = stock_version_for_v0(boot, stock_boot.stat().st_size, geometry['header_version'])
     boot_args = NATIVE_BOOT_ARGS + ' -sheng-early-console -sheng-capture-handoff native-ufs-root=1 native-ufs-diagnostics=1'
     if args.development_no_ignition:
         qualify_development_dyld(args.kernel_build, args.dyld_observation, identity, args.root_volume_uuid)
@@ -474,11 +492,18 @@ def main():
                 command += ['--' + name, str(geometry[name])]
             subprocess.run(command, check=True)
             data = bytearray(image.read_bytes())
+            if (len(data) < 1632 or data[:8] != b'ANDROID!'
+                    or struct.unpack_from('<I', data, 40)[0] != 0):
+                raise ValueError('generated transport is not an Android v0 image')
             struct.pack_into('<I', data, 44, os_version)
             (args.output / image.name).write_bytes(data)
             shutil.copy2(files / 'kernel.macho.adt', args.output / 'kernel.macho.adt')
             record = dict(container_sha256=hashlib.sha256(data).hexdigest(), container_bytes=len(data),
                 kernel=identity, purpose='Native EL1 UFS root experiment; hardware execution unqualified',
+                stock_boot_metadata=dict(path=str(stock_boot.resolve()), header_version=4,
+                    header_sha256=hashlib.sha256(boot).hexdigest(), image_bytes=stock_boot.stat().st_size,
+                    os_version=os_version, os_version_preserved=True),
+                transport_header_version=0, bootloader_acceptance_qualified=False,
                 boot_args=boot_args, temporary_ram_boot=True, partition_images_written=False,
                 root_media_preinstalled=True, root_partition_guid=partition['root_unique_guid'],
                 root_image_sha256=media['sha256'], root_volume_uuid=str(args.root_volume_uuid),
@@ -511,9 +536,10 @@ def main():
                 deployment_scope='fastboot boot only; no boot/recovery/UEFI partition flashing')
             (args.output / 'build.json').write_text(json.dumps(record, indent=2) + '\n')
             print(args.output / image.name)
-    except BaseException:
-        # Remove only the failed package in the newly created directory; preserve symbols and existing images.
-        shutil.rmtree(args.output)
+    except BaseException as error:
+        # Keep this attempt and any emitted artifacts distinct from a verified package.
+        (args.output / 'failure.json').write_text(json.dumps(dict(
+            status='failed', error_type=type(error).__name__, error=str(error)), indent=2) + '\n')
         raise
 
 

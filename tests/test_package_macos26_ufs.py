@@ -3,6 +3,7 @@ import json
 import hashlib
 from pathlib import Path
 import sys
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,46 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from package_macos26_ufs import qualify, qualify_development_dyld, qualify_isc_overlay, qualify_boot_progress
 import package_macos26_ufs
 from build_macos26_storage import PROTOCOL_CHARACTERISTICS
+
+
+class StockBootVersion(unittest.TestCase):
+    def header(self, version=0):
+        boot = bytearray(4096)
+        boot[:8] = b'ANDROID!'
+        struct.pack_into('<4I', boot, 8, 8192, 0, version, 1584)
+        struct.pack_into('<I', boot, 40, 4)
+        return boot
+
+    def test_zero_and_nonzero_version_bits_are_preserved(self):
+        for version in (0, 0x20000160, 0xffffffff):
+            with self.subTest(version=version):
+                self.assertEqual(package_macos26_ufs.stock_version_for_v0(
+                    self.header(version), 12288, 0), version)
+
+    def test_short_or_invalid_stock_headers_are_rejected(self):
+        good = self.header()
+        cases = [good[:length] for length in (0, 16, 44, 1583, 4095)]
+        for offset, value in ((0, 0), (8, 0), (20, 1580), (24, 1), (40, 0), (40, 3)):
+            bad = good.copy()
+            struct.pack_into('<I', bad, offset, value)
+            cases.append(bad)
+        for index, boot in enumerate(cases):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'v4 header'):
+                package_macos26_ufs.stock_version_for_v0(boot, 12288, 0)
+
+    def test_kernel_ramdisk_and_signature_must_fit_the_backup(self):
+        for offset in (8, 12, 1580):
+            bad = self.header()
+            struct.pack_into('<I', bad, offset, 12288)
+            with self.subTest(offset=offset), self.assertRaisesRegex(ValueError, 'exceeds'):
+                package_macos26_ufs.stock_version_for_v0(bad, 12288, 0)
+        with self.assertRaisesRegex(ValueError, 'complete'):
+            package_macos26_ufs.stock_version_for_v0(self.header(), 4095, 0)
+
+    def test_target_must_still_be_v0(self):
+        for target in (1, 2, 3, 4):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'v0 transport'):
+                package_macos26_ufs.stock_version_for_v0(self.header(), 12288, target)
 
 
 class UfsPackage(unittest.TestCase):
