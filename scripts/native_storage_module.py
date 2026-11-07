@@ -149,9 +149,22 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             raise ValueError('UFS transport must restrict its read-only root to macosroot on LUN0')
         display = evidence.get('native_gop_display')
         input_driver = evidence.get('native_recovery_input')
+        button_keys = evidence.get('native_button_keys')
         allowed = {component, 'NativeGOPDisplay'} if display else {component}
         if input_driver:
             allowed |= {'NativeRecoveryInput', 'IOHIDEventDriver'}
+        if button_keys:
+            from native_button_keys import EVENT_DRIVER, PERSONALITY, validate as validate_button_keys
+            if not display or 'com.apple.iokit.IOHIDFamily' not in selected:
+                raise ValueError('hardware key companion requires the GOP companion and the original HID family')
+            validate_button_keys(button_keys)
+            if (info['IOKitPersonalities'].get('NativeButtonKeys') != dict(PERSONALITY, CFBundleIdentifier=evidence['bundle'])
+                    or info['IOKitPersonalities'].get('NativeButtonHIDEventDriver') != EVENT_DRIVER):
+                raise ValueError('hardware key companion provider or original event driver identity differs')
+            for name, digest in button_keys['source_sha256'].items():
+                if hashlib.sha256((directory / 'button-keys' / name).read_bytes()).hexdigest() != digest:
+                    raise ValueError('hardware key source differs from compiled record')
+            allowed |= {'NativeButtonKeys', 'IOHIDEventDriver'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -345,6 +358,15 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != evidence['native_recovery_input']['abi']['device_slots']:
             raise ValueError('input companion HID vtable slot count differs')
         driver['input_vtable_abi'] = audit
+    if evidence.get('native_button_keys'):
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle='com.apple.iokit.IOHIDFamily', base_class='IOHIDDevice',
+            own_class='NativeButtonHID')
+        contract = json.loads((Path(__file__).resolve().parents[1] /
+                               'config/macos26-input-reference.json').read_text())['abi']
+        if audit['slots'] != contract['device_slots']:
+            raise ValueError('hardware key HID vtable slot count differs')
+        driver['button_keys_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {

@@ -1,0 +1,38 @@
+{
+  "schema": "sheng-hw-display-panel-size-v1",
+  "status": "source_only",
+  "compiled": false,
+  "ci_submitted": false,
+  "hardware_run": false,
+  "vm_run": false,
+  "base_record": "hw-keep-awake.json",
+  "base_patch_sha256": "1e29e7070bbf58aaee1b04cc0c837bd673f0a394a8edbd0bbe133134bd661d8a",
+  "patch_sha256": "2eb955d4197611e83f0ed91dd758b8f0e84b4cb570ee71fce8db4969b713c3e8",
+  "source_sha256": "7e961e752bdb34a334b32b14ba956b5cc42506c01cdd8d4a319233c5e49fe231",
+  "original_sha256": "050ae69eec6f0340c4f3659285dfb16fce13058648a044f9149b89d40344bcac",
+  "boot_arguments": [
+    "native-gop-width-mm",
+    "native-gop-height-mm"
+  ],
+  "default_off": true,
+  "bounds": {
+    "millimetres": [
+      50,
+      1000
+    ],
+    "aspect_tolerance_percent": 2
+  },
+  "sheng_panel": {
+    "width_mm": 262,
+    "height_mm": 175,
+    "pixels": [
+      3048,
+      2032
+    ],
+    "dpi": 295,
+    "basis": "12.4-inch 3:2 panel; inference from the marketed diagonal, not a measured EDID"
+  },
+  "added_lines": 28,
+  "removed_lines": 4,
+  "note": "Reports DisplayAttributes MaxHorizontal/VerticalImageSize and get_dot_pitch from the panel size; whether WindowServer then selects a 2x mode is a runtime question."
+}

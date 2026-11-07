@@ -104,7 +104,7 @@ jobs:
       - run: bash scripts/verify_kdk.sh config/macos26.json
       # No native build cache is restored: the hardware candidate is compiled from scratch.
       - name: Link the kernel with the UFS storage module and GOP display
-        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
+        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:

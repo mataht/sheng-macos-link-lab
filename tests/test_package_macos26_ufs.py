@@ -340,14 +340,75 @@ class DisplayKeepAwake(unittest.TestCase):
             root = Path(temporary)
             display = root / 'platform/sheng/macos26/display'
             display.mkdir(parents=True)
-            for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json'):
-                (display / name).write_bytes((source / name).read_bytes())
+            for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json', 'hw-panel-size.json'):
+                if (source / name).exists():
+                    (display / name).write_bytes((source / name).read_bytes())
             with patch.object(package_macos26_ufs, 'ROOT', root):
                 self.assertEqual(package_macos26_ufs.qualify_display_keep_awake(), result)
+                if (display / 'hw-panel-size.json').exists():
+                    # The panel-size step must chain from the keep-awake patch exactly.
+                    panel = json.loads((display / 'hw-panel-size.json').read_text())
+                    tampered = dict(panel, base_patch_sha256='0' * 64)
+                    (display / 'hw-panel-size.json').write_text(json.dumps(tampered))
+                    with self.assertRaisesRegex(ValueError, 'hardware keep-awake'):
+                        package_macos26_ufs.qualify_display_keep_awake()
+                    (display / 'hw-panel-size.json').write_text(json.dumps(panel))
                 (display / '0001-native-gop-display.patch').write_bytes(
                     (source / '0001-native-gop-display.patch').read_bytes() + b'\n')
                 with self.assertRaisesRegex(ValueError, 'hardware keep-awake'):
                     package_macos26_ufs.qualify_display_keep_awake()
+
+
+class InputAndPanelOptions(unittest.TestCase):
+    def build_dir(self, root, display_patch, button_keys=True, vtable=True):
+        import native_button_keys
+        build = Path(root) / 'build'
+        build.mkdir()
+        driver = dict(build=dict(native_gop_display=dict(patch_sha256=display_patch)))
+        if button_keys:
+            driver['build']['native_button_keys'] = native_button_keys.evidence()
+        if vtable:
+            driver['button_keys_vtable_abi'] = dict(slots=334)
+        (build / 'security-relink.json').write_text(json.dumps(dict(storage_driver=driver)))
+        return build
+
+    def test_panel_size_argument(self):
+        self.assertEqual(package_macos26_ufs.parse_panel_size('262x175'), (262, 175))
+        import argparse
+        for bad in ('262', '20x175', '262x2000', 'axb'):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                package_macos26_ufs.parse_panel_size(bad)
+
+    def test_panel_size_requires_the_compiled_panel_step(self):
+        panel = json.loads((package_macos26_ufs.ROOT / 'platform/sheng/macos26/display/hw-panel-size.json').read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            good = self.build_dir(temporary, panel['patch_sha256'])
+            result = package_macos26_ufs.qualify_panel_size(good, 262, 175)
+            self.assertEqual(result['boot_arguments'], ['native-gop-width-mm=262', 'native-gop-height-mm=175'])
+            self.assertFalse(result['hidpi_selection_qualified'])
+        with tempfile.TemporaryDirectory() as temporary:
+            old = self.build_dir(temporary, panel['base_patch_sha256'])
+            with self.assertRaisesRegex(ValueError, 'panel-size step'):
+                package_macos26_ufs.qualify_panel_size(old, 262, 175)
+
+    def test_button_keys_require_the_audited_compiled_companion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = package_macos26_ufs.qualify_button_keys(self.build_dir(temporary, 'x'))
+            self.assertEqual(result['boot_argument'], 'native-button-keys=1')
+            self.assertFalse(result['hardware_qualified'] or result['runtime_qualified'])
+        for kwargs in (dict(button_keys=False), dict(vtable=False)):
+            with tempfile.TemporaryDirectory() as temporary:
+                with self.assertRaisesRegex(ValueError, 'hardware key companion'):
+                    package_macos26_ufs.qualify_button_keys(self.build_dir(temporary, 'x', **kwargs))
+        import native_button_keys
+        with tempfile.TemporaryDirectory() as temporary:
+            build = self.build_dir(temporary, 'x')
+            record = json.loads((build / 'security-relink.json').read_text())
+            record['storage_driver']['build']['native_button_keys']['read_only_spmi'] = False
+            (build / 'security-relink.json').write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, 'read-only contract'):
+                package_macos26_ufs.qualify_button_keys(build)
+        self.assertEqual(native_button_keys.EVENT_DRIVER['VendorID'], 0x1209)
 
 
 if __name__ == '__main__':
