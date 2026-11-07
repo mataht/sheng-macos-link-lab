@@ -10,6 +10,46 @@ import subprocess
 import urllib.request
 
 
+def prepare_apple_hid_headers(root: Path, destination: Path, manifest: dict | None = None) -> dict:
+    if manifest is None:
+        manifest = json.loads((root / 'config/macos26-input-reference.json').read_text())
+    apple = manifest['apple_headers']
+    required_headers = {'IOHIDPrivateKeys.h', 'IOHIDProperties.h',
+                        'IOHIDTimeSyncKeys.h', 'IOHIDEventServiceKeys_Private.h'}
+    if (apple['repository'] != 'apple-oss-distributions/IOHIDFamily'
+            or apple['revision'] != 'e31e90a24c27ad6cbe981650d12a1a4124065b03'
+            or set(apple['files']) != required_headers):
+        raise ValueError('requires the paired Apple HID private headers')
+    inputs = destination / 'inputs'
+    inputs.mkdir(parents=True, exist_ok=True)
+    apple_hashes = {}
+    include = destination / 'include/IOKit/hid'
+    include.mkdir(parents=True, exist_ok=True)
+    for name, entry in apple['files'].items():
+        if entry['path'] != 'IOHIDFamily/' + name:
+            raise ValueError('unexpected Apple HID header path')
+        cached = inputs / name
+        sibling = destination.parent / 'recovery-input/inputs' / name
+        if cached.exists():
+            data = cached.read_bytes()
+        elif sibling.exists():
+            data = sibling.read_bytes()
+        else:
+            url = f'https://raw.githubusercontent.com/{apple["repository"]}/{apple["revision"]}/{entry["path"]}'
+            with urllib.request.urlopen(url, timeout=45) as response:
+                data = response.read((1 << 20) + 1)
+        if len(data) > 1 << 20:
+            raise ValueError('Apple HID header exceeds size bound')
+        data = data.rstrip(b'\n') + b'\n'
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != entry['canonical_sha256']:
+            raise ValueError(f'paired Apple HID header hash mismatch: {name}')
+        cached.write_bytes(data)
+        (include / name).write_bytes(data)
+        apple_hashes[name] = digest
+    return apple_hashes
+
+
 def prepare(root: Path, destination: Path) -> dict:
     manifest = json.loads((root / 'config/macos26-input-reference.json').read_text())
     repository, revision = manifest['repository'], manifest['revision']
@@ -50,35 +90,7 @@ def prepare(root: Path, destination: Path) -> dict:
                    cwd=destination, check=True, capture_output=True, text=True)
     source = destination / 'NativeRecoveryInput.cpp'
     (destination / 'DroidVMInput.cpp').replace(source)
-    apple = manifest['apple_headers']
-    required_headers = {'IOHIDPrivateKeys.h', 'IOHIDProperties.h',
-                        'IOHIDTimeSyncKeys.h', 'IOHIDEventServiceKeys_Private.h'}
-    if (apple['repository'] != 'apple-oss-distributions/IOHIDFamily'
-            or apple['revision'] != 'e31e90a24c27ad6cbe981650d12a1a4124065b03'
-            or set(apple['files']) != required_headers):
-        raise ValueError('requires the paired Apple HID private headers')
-    apple_hashes = {}
-    include = destination / 'include/IOKit/hid'
-    include.mkdir(parents=True, exist_ok=True)
-    for name, entry in apple['files'].items():
-        if entry['path'] != 'IOHIDFamily/' + name:
-            raise ValueError('unexpected Apple HID header path')
-        cached = inputs / name
-        if cached.exists():
-            data = cached.read_bytes()
-        else:
-            url = f'https://raw.githubusercontent.com/{apple["repository"]}/{apple["revision"]}/{entry["path"]}'
-            with urllib.request.urlopen(url, timeout=45) as response:
-                data = response.read((1 << 20) + 1)
-        if len(data) > 1 << 20:
-            raise ValueError('Apple HID header exceeds size bound')
-        data = data.rstrip(b'\n') + b'\n'
-        digest = hashlib.sha256(data).hexdigest()
-        if digest != entry['canonical_sha256']:
-            raise ValueError(f'paired Apple HID header hash mismatch: {name}')
-        cached.write_bytes(data)
-        (include / name).write_bytes(data)
-        apple_hashes[name] = digest
+    apple_hashes = prepare_apple_hid_headers(root, destination, manifest)
     evidence = dict(reference=f'https://github.com/{repository}/tree/{revision}',
         input_sha256=hashes, patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
         source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
