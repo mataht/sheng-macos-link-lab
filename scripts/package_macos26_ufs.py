@@ -19,6 +19,7 @@ from native_devtree import configure_native_text_state
 from build_macos26_storage import PROTOCOL_CHARACTERISTICS
 from native_log_file import CONTRACT as LOG_CONTRACT, LAYOUT as LOG_LAYOUT, BLOCK as LOG_BLOCK, decode as decode_log_file
 from recovery_ui_evidence import qualify_language_selector
+from display_diagnostic_evidence import qualify_display_observation
 from capture_persistent_log import RAM_RANGES as LOG_RAM_RANGES
 
 # 12 GiB of the 13 GiB contiguous run 0x8C0000000..0xC00000000 (uefi-sheng 0004 on the CN 16 GB unit); the
@@ -319,13 +320,52 @@ def qualify_smp(build, observation, identity) -> dict:
                 hardware_qualified=False, scheduler_migration_qualified=False)
 
 
+def parse_panel_size(text: str) -> tuple:
+    try:
+        width, height = (int(part) for part in text.lower().split('x'))
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected WIDTHxHEIGHT in millimetres, e.g. 262x175') from None
+    if not (50 <= width <= 1000 and 50 <= height <= 1000):
+        raise argparse.ArgumentTypeError('panel size must be 50..1000 mm on each side')
+    return width, height
+
+
+def qualify_button_keys(build) -> dict:
+    """The hardware key companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    from native_button_keys import validate
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_button_keys')
+    if not record or 'button_keys_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited hardware key companion')
+    validate(record)
+    return dict(record, runtime_qualified=False)
+
+
+def qualify_panel_size(build, width_mm: int, height_mm: int) -> dict:
+    """The compiled display patch must be the reviewed panel-size step; the boot arguments mirror its bounds."""
+    panel = json.loads((ROOT / 'platform/sheng/macos26/display/hw-panel-size.json').read_text())
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    compiled = driver.get('build', {}).get('native_gop_display', {}).get('patch_sha256')
+    if panel.get('schema') != 'sheng-hw-display-panel-size-v1' or compiled != panel.get('patch_sha256'):
+        raise ValueError('kernel display companion lacks the reviewed panel-size step')
+    return dict(boot_arguments=[f'native-gop-width-mm={width_mm}', f'native-gop-height-mm={height_mm}'],
+                width_mm=width_mm, height_mm=height_mm, patch_sha256=compiled,
+                aspect_checked_by_driver=True, hidpi_selection_qualified=False)
+
+
 def qualify_display_keep_awake() -> dict:
     """The derived hardware switch must describe the exact display patch that qualify_language_selector binds."""
     display = ROOT / 'platform/sheng/macos26/display'
     record = json.loads((display / 'hw-keep-awake.json').read_text())
     patch = hashlib.sha256((display / '0001-native-gop-display.patch').read_bytes()).hexdigest()
     switch = record.get('hardware_switch', {})
-    if (record.get('schema') != 'sheng-hw-display-keep-awake-v1' or record.get('patch_sha256') != patch
+    # The keep-awake patch may be followed by the reviewed default-off panel-size step (derive_hw_display_panel_size.py).
+    panel_path = display / 'hw-panel-size.json'
+    panel = json.loads(panel_path.read_text()) if panel_path.exists() else None
+    chained = (panel is not None and panel.get('schema') == 'sheng-hw-display-panel-size-v1'
+               and panel.get('base_patch_sha256') == record.get('patch_sha256') and panel.get('patch_sha256') == patch
+               and panel.get('default_off') is True)
+    if (record.get('schema') != 'sheng-hw-display-keep-awake-v1' or not (record.get('patch_sha256') == patch or chained)
             or switch.get('boot_argument') != 'native-gop-keep-awake=1' or switch.get('default_off') is not True):
         raise ValueError('display patch lacks the reviewed hardware keep-awake switch')
     return dict(boot_argument=switch['boot_argument'], patch_sha256=patch, guard=switch['guard'],
@@ -365,17 +405,34 @@ def main():
     parser.add_argument('--display-keep-awake', action='store_true',
                         help='send the original PM user-activity request every 30 s (native-gop-keep-awake=1); '
                              'the tablet has no input driver yet, so the display would otherwise idle off')
+    parser.add_argument('--display-observation', type=Path,
+                        help='display-only diagnostic: same-kernel QEMU fixture where WindowServer stays up and the GOP '
+                             'companion submits a first frame; does not qualify language selection or input')
+    parser.add_argument('--platform-uuid', type=uuid.UUID,
+                        help='owned platform UUID for /options and the volatile NVRAM proxy (never an Apple identity)')
+    parser.add_argument('--button-keys', action='store_true',
+                        help='enable the compiled hardware key companion (native-button-keys=1): volume up/down = Up/Down, '
+                             'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
+    parser.add_argument('--panel-size-mm', type=parse_panel_size,
+                        help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
-    if args.display_keep_awake and not args.recovery_ui_observation:
-        parser.error('--display-keep-awake requires --recovery-ui-observation')
+    gui = args.recovery_ui_observation or args.display_observation
+    if args.display_keep_awake and not gui:
+        parser.error('--display-keep-awake requires --recovery-ui-observation or --display-observation')
+    if (args.button_keys or args.panel_size_mm) and not gui:
+        parser.error('--button-keys and --panel-size-mm require the GOP display (UI qualification or display diagnostic)')
+    if args.display_observation and args.recovery_ui_observation:
+        parser.error('--display-observation is the display-only diagnostic; do not combine it with the UI qualification')
+    if args.platform_uuid is not None and args.platform_uuid.int == 0:
+        parser.error('--platform-uuid cannot be nil')
     if args.development_no_ignition != bool(args.dyld_observation):
         parser.error('--development-no-ignition and --dyld-observation must be used together')
     if args.isc_overlay and not args.development_no_ignition:
         parser.error('--isc-overlay requires the qualified explicit development root')
-    if args.recovery_ui_observation and not args.isc_overlay:
-        parser.error('Recovery UI requires the qualified ISC development root')
-    if args.boot_progress and not args.recovery_ui_observation:
-        parser.error('--boot-progress requires the qualified Recovery UI candidate')
+    if (args.recovery_ui_observation or args.display_observation) and not args.isc_overlay:
+        parser.error('Recovery UI and the display diagnostic require the qualified ISC development root')
+    if args.boot_progress and not (args.recovery_ui_observation or args.display_observation):
+        parser.error('--boot-progress requires the qualified Recovery UI candidate or the display diagnostic')
     log_options = (args.macoslog_observation, args.macoslog_readonly_observation, args.macoslog_deployment)
     if any(log_options) and not all(log_options):
         parser.error('macoslog requires write, readonly and deployment evidence together')
@@ -434,6 +491,19 @@ def main():
     if args.recovery_ui_observation:
         ui_qualification = qualify_language_selector(args.kernel_build, args.recovery_ui_observation, identity)
         boot_args += ' native-gop-display=1 sheng-recovery-ui=1'
+    display_qualification = None
+    if args.display_observation:
+        display_qualification = qualify_display_observation(args.kernel_build, args.display_observation, identity)
+        boot_args += ' ' + display_qualification['boot_argument']
+    gop_enabled = bool(ui_qualification or display_qualification)
+    button_keys = None
+    if args.button_keys:
+        button_keys = qualify_button_keys(args.kernel_build)
+        boot_args += ' ' + button_keys['boot_argument']
+    panel_size = None
+    if args.panel_size_mm:
+        panel_size = qualify_panel_size(args.kernel_build, *args.panel_size_mm)
+        boot_args += ' ' + ' '.join(panel_size['boot_arguments'])
     smp_qualification = None
     cpu_regs, cpu_compatible = ['0'], ['arm,cortex-a510']
     if args.smp_observation:
@@ -465,12 +535,15 @@ def main():
                 '--root-match-volume-uuid', str(args.root_volume_uuid)], check=True)
             configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                         root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
-                                        native_gop_display=bool(ui_qualification))
+                                        platform_uuid=args.platform_uuid,
+                                        native_gop_display=gop_enabled)
             transport_title = 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
             if ui_qualification:
                 transport_title += '+UI'
+            if display_qualification:
+                transport_title += '+DISPLAY'
             (stage / 'unixnu.toml').write_text('version = 1\n[boot]\ntimeout = -1\nfallback_timeout = 30\ndefault = "native26ufs"\n'
                 '[kits]\nautoload = false\n[[entry]]\nid = "native26ufs"\n'
                 f'title = "SHENG macOS 26 - {transport_title} {identity["uuid"][:8]}"\ntype = "xnu"\n'
@@ -527,7 +600,9 @@ def main():
                 isc_overlay=args.isc_overlay, isc_disk_writes=False,
                 isc_overlay_persistent=False, isc_overlay_limit_bytes=(64 << 20) if args.isc_overlay else 0,
                 macoslog=log_qualification,
-                recovery_ui=ui_qualification, native_gop_display=bool(ui_qualification),
+                recovery_ui=ui_qualification, native_gop_display=gop_enabled,
+                display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
+                owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
                 display_keep_awake=keep_awake, smp=smp_qualification,
                 boot_progress=progress_qualification,
                 native_recovery_input=False, physical_input_qualified=False,

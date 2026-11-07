@@ -10,6 +10,8 @@ import uuid
 
 from native_macho import macho
 from native_log_file import geometry_defines, layout_of, validate_contract
+from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONALITY as BUTTON_KEYS_PERSONALITY
+from native_button_keys import evidence as button_keys_evidence
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -19,13 +21,15 @@ PROTOCOL_CHARACTERISTICS = {
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False):
+          recovery_input=False, button_keys=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gop_display and transport != 'ufs':
         raise ValueError('the board GOP companion requires the UFS bundle')
     if recovery_input and not gop_display:
         raise ValueError('the QEMU input experiment requires the GOP companion')
+    if button_keys and not gop_display:
+        raise ValueError('the hardware key companion requires the GOP companion')
     component = 'NativeVirtioBlock' if transport == 'virtio' else 'NativeUfs'
     bundle = BUNDLE if transport == 'virtio' else 'org.blu-sharky.NativeUfs'
     directory = 'storage-driver' if transport == 'virtio' else 'ufs-driver'
@@ -137,6 +141,22 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         run(input_command, directory + '-input-compile', record,
             cwd=Path(compile_record['directory']), env=env)
         objects.append(str(input_object))
+    if button_keys:
+        keys = destination / 'button-keys'
+        keys.mkdir(exist_ok=True)
+        for name in ('native_button_keys.cpp', 'spmi_keys.h'):
+            (keys / name).write_bytes((root / 'platform/sheng/macos26/input' / name).read_bytes())
+        keys_object = keys / 'NativeButtonKeys.o'
+        keys_command = [str(keys_object) if arg == str(obj) else
+                        str(keys / 'native_button_keys.cpp') if arg == str(wrapper) else arg for arg in command]
+        # Same header arrangement as the input companion: kernel HID headers without the user SDK.
+        user_headers = keys_command.index(str(sdk / 'usr/include'))
+        if keys_command[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del keys_command[user_headers - 1:user_headers + 1]
+        keys_command += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        run(keys_command, directory + '-button-keys-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(keys_object))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -182,6 +202,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             CFBundleIdentifier='com.apple.iokit.IOHIDFamily', IOClass='IOHIDEventDriver',
             IOProviderClass='IOHIDInterface', VendorID=6900, ProductID=4178, IOProbeScore=3000)
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
+    if button_keys:
+        info['IOKitPersonalities']['NativeButtonKeys'] = dict(BUTTON_KEYS_PERSONALITY, CFBundleIdentifier=bundle)
+        info['IOKitPersonalities']['NativeButtonHIDEventDriver'] = dict(BUTTON_KEYS_EVENT_DRIVER)
+        info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -193,6 +217,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_gop_display'] = display
     if input_driver:
         evidence['native_recovery_input'] = input_driver
+    if button_keys:
+        evidence['native_button_keys'] = button_keys_evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

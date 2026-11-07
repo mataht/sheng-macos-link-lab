@@ -746,8 +746,28 @@
  }
  
  static bool appendNumber(OSDictionary *dictionary, const char *key, uint64_t value, unsigned bits = 32)
-@@ -502,16 +725,19 @@
+@@ -500,18 +723,43 @@
+     return dictionary;
+ }
  
++// native-gop-width-mm / native-gop-height-mm (default off) give the panel's physical size so the system derives its real density
++// (about 295 dpi for the 12.4-inch 3048x2032 sheng panel, 262x175 mm) instead of the 96-dpi fallback that draws the UI at 1x.
++// Both are required, each 50..1000 mm, and their aspect must match the framebuffer within 2 percent; otherwise the fallback stays.
++static bool nativeGopPanelSize(uint32_t width, uint32_t height, uint32_t *widthMM, uint32_t *heightMM)
++{
++    unsigned w = 0, h = 0;
++    if (!PE_parse_boot_argn("native-gop-width-mm", &w, sizeof(w)) || !PE_parse_boot_argn("native-gop-height-mm", &h, sizeof(h)))
++        return false;
++    if (w < 50 || w > 1000 || h < 50 || h > 1000 || !width || !height)
++        return false;
++    const uint64_t a = static_cast<uint64_t>(w) * height, b = static_cast<uint64_t>(h) * width;
++    if (a * 50 < b * 49 || a * 50 > b * 51)
++        return false;
++    *widthMM = w;
++    *heightMM = h;
++    return true;
++}
++
  // AppleParavirtDisplay::createDisplayAttributes, with the display of the boot framebuffer: one timing (the GOP mode) with one
  // 8-bit SDR color element. Chromaticities are sRGB's (16.16 fixed point, as the panel's EDID would give them).
 -bool DroidVMDisplay::createDisplayAttributes()
@@ -756,6 +776,10 @@
      uint32_t width = static_cast<uint32_t>(fVideo.v_width), height = static_cast<uint32_t>(fVideo.v_height);
 +    if (static_cast<uint64_t>(width + 160) * (height + 23) * kRefreshHz > UINT32_MAX)
 +        return false;
++    uint32_t widthMM = 0, heightMM = 0;
++    const bool panel = nativeGopPanelSize(width, height, &widthMM, &heightMM);
++    if (panel)
++        IOLog("NativeGOPDisplay: panel %ux%u mm, %u dpi\n", widthMM, heightMM, (width * 254 + widthMM * 5) / (widthMM * 10));
      bool done = false;
      OSDictionary *attributes = OSDictionary::withCapacity(16), *product = OSDictionary::withCapacity(8);
      OSDictionary *chromaticity = OSDictionary::withCapacity(3), *whitePoint = point(20493, 21561);
@@ -768,7 +792,7 @@
      // CVT reduced blanking as IOAVFamily's sCVTTimingData has it (1280x800@60: 1440x823, 71 MHz). Sync rates are 16.16 fixed point
      // (IOAVVideoTimingGetSyncRateRounded); the table leaves the horizontal one 0.
      uint8_t timingData[80] = {};
-@@ -541,8 +767,8 @@
+@@ -541,8 +789,8 @@
          if (!colors->setObject(color) || !timingColors->setObject(color) || !timings->setObject(timing))
              break;
          ioavTimingSetColorElements(timing, timingColors);
@@ -779,18 +803,18 @@
                appendNumber(product, "WeekOfManufacture", 24) && appendNumber(product, "YearOfManufacture", 2021)))
              break;
          if (!(appendDictionary(chromaticity, "Red", point(41943, 21627)) && appendDictionary(chromaticity, "Green", point(19661, 39322)) &&
-@@ -554,8 +780,8 @@
+@@ -554,8 +802,8 @@
                attributes->setObject("Chromaticity", chromaticity) && attributes->setObject("DefaultColorSpaceIsSRGB", kOSBooleanFalse) &&
                attributes->setObject("DefaultWhitePoint", whitePoint) && attributes->setObject("SupportsStandby", kOSBooleanTrue) &&
                appendNumber(attributes, "ContinuousFrequencySupport", 3) &&
 -              appendNumber(attributes, "MaxHorizontalImageSize", (kWidthMM + 5) / 10) &&
 -              appendNumber(attributes, "MaxVerticalImageSize", (kHeightMM + 5) / 10) &&
-+              appendNumber(attributes, "MaxHorizontalImageSize", (width * 254 + 4800) / 9600) &&
-+              appendNumber(attributes, "MaxVerticalImageSize", (height * 254 + 4800) / 9600) &&
++              appendNumber(attributes, "MaxHorizontalImageSize", panel ? (widthMM + 5) / 10 : (width * 254 + 4800) / 9600) &&
++              appendNumber(attributes, "MaxVerticalImageSize", panel ? (heightMM + 5) / 10 : (height * 254 + 4800) / 9600) &&
                appendNumber(attributes, "NativeFormatHorizontalPixels", width) && appendNumber(attributes, "NativeFormatVerticalPixels", height) &&
                appendNumber(attributes, "PreciseAspectRatio", (static_cast<uint64_t>(width) << 16) / height)))
              break;
-@@ -567,8 +793,8 @@
+@@ -567,8 +815,8 @@
              break;
          if (!(appendNumber(scalingLimits, "RGBLayer_MinScaleFraction", 4) && appendNumber(scalingLimits, "RGBLayer_MaxScale", 4)))
              break;
@@ -801,7 +825,7 @@
          setProperty("primary", 0ULL, 32);   // AppleParavirtDisplay's display index
          done = setProperty("DisplayAttributes", attributes) && setProperty("Transport", transport) &&
              setProperty("ColorElements", colors) && setProperty("TimingElements", timings) &&
-@@ -587,14 +813,14 @@
+@@ -587,14 +835,14 @@
      OSSafeReleaseNULL(color);
      OSSafeReleaseNULL(timing);
      if (!done || set_digital_out_mode(kColorID, kTimingID) != kIOReturnSuccess) {
@@ -818,7 +842,7 @@
  {
      if (colorID != kColorID || timingID != kTimingID)
          return kIOReturnBadArgument;
-@@ -606,55 +832,57 @@
+@@ -606,55 +854,59 @@
      return kIOReturnSuccess;
  }
  
@@ -826,10 +850,12 @@
 -IOReturn DroidVMDisplay::get_dot_pitch(unsigned int *pitch)
 -{
 -    *pitch = static_cast<unsigned int>(fVideo.v_width * 25.46 / kWidthMM + 0.5);
-+// GOP supplies no EDID here; use a 96-dpi logical fallback.
++// GOP supplies no EDID here: the explicit panel size when given (see nativeGopPanelSize), else a 96-dpi logical fallback.
 +IOReturn NativeGOPDisplay::get_dot_pitch(unsigned int *pitch)
 +{
-+    *pitch = 96;
++    const uint32_t width = static_cast<uint32_t>(fVideo.v_width), height = static_cast<uint32_t>(fVideo.v_height);
++    uint32_t widthMM = 0, heightMM = 0;
++    *pitch = nativeGopPanelSize(width, height, &widthMM, &heightMM) ? (width * 254 + widthMM * 5) / (widthMM * 10) : 96;
      return kIOReturnSuccess;
  }
  
@@ -899,7 +925,7 @@
  {
      IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kCurrentSwap);
      if (at<uint32_t>(swap, kSwapDropReasons))
-@@ -672,7 +900,7 @@
+@@ -672,7 +924,7 @@
  }
  
  // AppleParavirtDisplay::do_swap_info_notify_gated: the request's async result is the mask, the swap ID and the words it asks for.
@@ -908,7 +934,7 @@
  {
      const SwapInfo *info = reinterpret_cast<const SwapInfo *>(blob);
      uint32_t mask = at<uint32_t>(request, kNotifyMask);
-@@ -698,5 +926,5 @@
+@@ -698,5 +950,5 @@
      return userClientSendAsyncResult(&at<io_user_reference_t>(request, kNotifyAsyncReference), kIOReturnSuccess, args, count,
                                       kIOUserNotifyOptionCanDrop);
  }

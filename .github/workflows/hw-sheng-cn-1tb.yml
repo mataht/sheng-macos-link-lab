@@ -104,24 +104,18 @@ jobs:
       - run: bash scripts/verify_kdk.sh config/macos26.json
       # No native build cache is restored: the hardware candidate is compiled from scratch.
       - name: Link the kernel with the UFS storage module and GOP display
-        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
-      - name: Encrypt the kernel artifact
-        if: success()
-        env:
-          ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
-        # The artifact holds a linked kernel and driver objects. They are built from Apple's open-source XNU together with
-        # code under other licenses and are not for redistribution, so only the key holder can read the artifact.
-        run: |
-          set -euo pipefail
-          test -n "$ARTIFACT_KEY" || { echo "ARTIFACT_KEY is not set: refusing to upload an unencrypted kernel artifact"; exit 1; }
-          tar -C "$NATIVE_OUT" -czf "$RUNNER_TEMP/kernel.tar.gz" build.json kernel.development.sheng kernel.development.sheng.map kernel.development.sheng.dSYM storage-driver ufs-driver
-          /usr/bin/openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:ARTIFACT_KEY -in "$RUNNER_TEMP/kernel.tar.gz" -out "$RUNNER_TEMP/kernel.tar.gz.enc"
-          rm -f "$RUNNER_TEMP/kernel.tar.gz"
+        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with:
           name: hw-sheng-cn-1tb-kernel-${{ github.run_id }}
-          path: ${{ runner.temp }}/kernel.tar.gz.enc
+          path: |
+            ${{ env.NATIVE_OUT }}/build.json
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng.map
+            ${{ env.NATIVE_OUT }}/kernel.development.sheng.dSYM/
+            ${{ env.NATIVE_OUT }}/storage-driver/
+            ${{ env.NATIVE_OUT }}/ufs-driver/
           retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

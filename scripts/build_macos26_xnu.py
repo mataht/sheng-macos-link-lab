@@ -564,7 +564,8 @@ def compile_sources(args, record: dict) -> None:
             if args.build_ufs_driver:
                 build_storage(ROOT, OUT, compile_record, source, run, record, env,
                               transport='ufs', gop_display=args.build_gop_display,
-                              recovery_input=args.build_recovery_input)
+                              recovery_input=args.build_recovery_input,
+                              button_keys=args.build_button_keys)
             save(record)
 
 
@@ -653,6 +654,8 @@ def main() -> None:
                         help='include the default-off paired CPU GOP display in the UFS companion')
     parser.add_argument('--build-recovery-input', action='store_true',
                         help='include the default-off QEMU VirtIO HID input companion')
+    parser.add_argument('--build-button-keys', action='store_true',
+                        help='include the default-off hardware power/volume key companion (SPMI, read-only)')
     parser.add_argument('--arch', choices=('arm64', 'arm64e'), default='arm64')
     parser.add_argument('--kdk-root', type=Path)
     parser.add_argument('-j', '--jobs', type=int, default=4, choices=range(1, 33))
@@ -663,6 +666,8 @@ def main() -> None:
         parser.error('--build-gop-display requires --build-ufs-driver')
     if args.build_recovery_input and not args.build_gop_display:
         parser.error('--build-recovery-input requires --build-gop-display')
+    if args.build_button_keys and not args.build_gop_display:
+        parser.error('--build-button-keys requires --build-gop-display')
     ARCH = args.arch
     if ARCH == 'arm64e':
         OUT = ROOT / 'out/macos26-xnu-arm64e'
