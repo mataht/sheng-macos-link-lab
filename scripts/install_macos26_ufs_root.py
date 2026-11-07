@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Write only the prepared macosroot partition from root sheng Recovery."""
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -9,6 +10,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import uuid
 
 from create_log_partition import geometry
@@ -22,6 +24,31 @@ else:
 
 
 PARTITION = '/dev/block/by-name/macosroot'
+
+
+def require_safe_transport(staged_image):
+    if staged_image is None and sys.platform == 'win32':
+        raise ValueError('Windows ADB stdin is not qualified; requires --staged-image in verified /tmp RAM')
+    if staged_image is not None and not re.fullmatch(r'/tmp/sheng-macosroot-[A-Za-z0-9_-]+/macosroot\.img', staged_image):
+        raise ValueError('staged image must use /tmp/sheng-macosroot-<safe-id>/macosroot.img')
+
+
+def qualify_staged_image(device, staged_image, image_bytes, image_sha256):
+    mounts = [line.split() for line in device.shell('cat /proc/mounts').splitlines()]
+    tmp = [mount for mount in mounts if len(mount) >= 3 and mount[1] == '/tmp']
+    directory = staged_image.rsplit('/', 1)[0]
+    if (len(tmp) != 1 or tmp[0][2] != 'tmpfs'
+            or any(len(mount) >= 2 and (mount[1] == directory or mount[1].startswith(directory + '/'))
+                   for mount in mounts)):
+        raise ValueError('staged image requires /tmp tmpfs without an overlaid staging directory or file')
+    if device.shell('readlink -f ' + staged_image) != staged_image:
+        raise ValueError('staged image realpath differs from its approved RAM path')
+    device.shell('test -f ' + staged_image)
+    if device.shell('stat -c %s ' + staged_image) != str(image_bytes):
+        raise ValueError('staged image size differs from the local image')
+    if device.shell('sha256sum ' + staged_image, timeout=120).split() != [image_sha256, staged_image]:
+        raise ValueError('staged image SHA-256 differs from the local image')
+    return dict(path=staged_image, bytes=image_bytes, sha256=image_sha256, filesystem='tmpfs')
 
 
 def qualify_android_format(evidence, plan, serial):
@@ -50,7 +77,8 @@ def select_discard_command(device):
     raise ValueError('no usable blkdiscard tool; help probes failed: ' + json.dumps(probes))
 
 
-def install(device, plan_dir, root_dir, output, android_format=None, recovery_format=None):
+def install(device, plan_dir, root_dir, output, android_format=None, recovery_format=None, staged_image=None):
+    require_safe_transport(staged_image)
     if android_format and recovery_format:
         raise ValueError('Android and stock Recovery filesystem evidence are mutually exclusive')
     plan_bytes = (plan_dir / 'plan.json').read_bytes()
@@ -104,6 +132,9 @@ def install(device, plan_dir, root_dir, output, android_format=None, recovery_fo
             raise ValueError('root image manifest differs from the prepared manifest')
         stream.seek(0)
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    staged = qualify_staged_image(device, staged_image, image.stat().st_size, digest) if staged_image is not None else None
+    write_command = ('dd ' + ('if=' + staged_image + ' ' if staged is not None else '')
+                     + 'of=' + PARTITION + ' bs=1048576 conv=notrunc,fsync')
     discard_command, discard_probes = select_discard_command(device)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     if android_format or recovery_format:
@@ -123,6 +154,8 @@ def install(device, plan_dir, root_dir, output, android_format=None, recovery_fo
                   destination=PARTITION, destination_guid=plan['root_unique_guid'],
                   bytes=image.stat().st_size, sha256=digest, status='prepared',
                   userdata_discard_authorized=True, gpt_writes=False, image_write_attempts=0,
+                  image_write_command=write_command, image_write_transport='staged-ram-file' if staged else 'adb-stdin',
+                  staged_image=staged,
                   discard_command=discard_command, discard_tool_probes=discard_probes, discard_attempts=0,
                   userdata_reset_evidence=reset_evidence)
     def save():
@@ -140,10 +173,17 @@ def install(device, plan_dir, root_dir, output, android_format=None, recovery_fo
         raise
     record.update(status='writing-root', discard_returncode=0, image_write_attempts=1)
     save()
-    with image.open('rb') as source, (output / 'write.log').open('w') as log_stream:
-        subprocess.run(device.adb + ['shell', '-T', 'dd of=' + PARTITION + ' bs=1048576 conv=notrunc,fsync'], stdin=source, stdout=log_stream,
-            stderr=subprocess.STDOUT, check=True, timeout=240)
-    record['status'] = 'verifying-root'
+    try:
+        with (nullcontext(subprocess.DEVNULL) if staged else image.open('rb')) as source, (output / 'write.log').open('w') as log_stream:
+            subprocess.run(device.adb + ['shell', '-T', write_command], stdin=source, stdout=log_stream,
+                stderr=subprocess.STDOUT, check=True, timeout=240)
+    except (subprocess.SubprocessError, OSError) as error:
+        record.update(status='write-failed', image_write_returncode=getattr(error, 'returncode', None),
+                      image_write_error=dict(type=type(error).__name__, message=str(error)),
+                      failed_at=datetime.now(timezone.utc).isoformat())
+        save()
+        raise
+    record.update(status='verifying-root', image_write_returncode=0)
     save()
     device.shell('sync; blockdev --flushbufs ' + PARTITION, timeout=120)
     count = image.stat().st_size // WINDOW
@@ -177,14 +217,16 @@ def main():
     parser.add_argument('--partition-plan', required=True, type=Path)
     parser.add_argument('--root-build', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--staged-image', help='verified RAM image at /tmp/sheng-macosroot-<safe-id>/macosroot.img')
     evidence = parser.add_mutually_exclusive_group()
     evidence.add_argument('--android-format', type=Path,
                           help='read-only Android statfs evidence after Recovery wipe and filesystem rebuild')
     evidence.add_argument('--recovery-format', type=Path,
                           help='qualified saved stock Recovery filesystem observations (not an Android initialization)')
     args = parser.parse_args()
+    require_safe_transport(args.staged_image)
     print(json.dumps(install(Device(args.serial), args.partition_plan, args.root_build, args.output,
-                             args.android_format, args.recovery_format), indent=2))
+                             args.android_format, args.recovery_format, args.staged_image), indent=2))
 
 
 if __name__ == '__main__':
