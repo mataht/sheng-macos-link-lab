@@ -35,6 +35,21 @@ def qualify_android_format(evidence, plan, serial):
         raise ValueError('requires the freshly rebuilt Android filesystem within resized userdata')
 
 
+def select_discard_command(device):
+    """Probe help without a device argument; never try another tool after an actual discard."""
+    probes = []
+    for tool in ('blkdiscard', 'toybox blkdiscard'):
+        command = tool + ' --help'
+        try:
+            device.shell(command, timeout=10)
+        except subprocess.CalledProcessError as error:
+            probes.append(dict(command=command, returncode=error.returncode))
+        else:
+            probes.append(dict(command=command, returncode=0))
+            return tool + ' ' + PARTITION, probes
+    raise ValueError('no usable blkdiscard tool; help probes failed: ' + json.dumps(probes))
+
+
 def install(device, plan_dir, root_dir, output, android_format=None, recovery_format=None):
     if android_format and recovery_format:
         raise ValueError('Android and stock Recovery filesystem evidence are mutually exclusive')
@@ -89,6 +104,7 @@ def install(device, plan_dir, root_dir, output, android_format=None, recovery_fo
             raise ValueError('root image manifest differs from the prepared manifest')
         stream.seek(0)
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    discard_command, discard_probes = select_discard_command(device)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     if android_format or recovery_format:
         evidence_file = 'android-format.json' if android_format else 'recovery-format.json'
@@ -107,14 +123,22 @@ def install(device, plan_dir, root_dir, output, android_format=None, recovery_fo
                   destination=PARTITION, destination_guid=plan['root_unique_guid'],
                   bytes=image.stat().st_size, sha256=digest, status='prepared',
                   userdata_discard_authorized=True, gpt_writes=False, image_write_attempts=0,
+                  discard_command=discard_command, discard_tool_probes=discard_probes, discard_attempts=0,
                   userdata_reset_evidence=reset_evidence)
     def save():
         (output / 'deployment.json').write_text(json.dumps(record, indent=2) + '\n')
     save()
-    record['status'] = 'discarding-dedicated-root'
+    record.update(status='discarding-dedicated-root', discard_attempts=1)
     save()
-    device.shell('blkdiscard ' + PARTITION)
-    record.update(status='writing-root', image_write_attempts=1)
+    try:
+        device.shell(discard_command)
+    except (subprocess.SubprocessError, OSError) as error:
+        record.update(status='discard-failed', discard_returncode=getattr(error, 'returncode', None),
+                      discard_error=dict(type=type(error).__name__, message=str(error)),
+                      failed_at=datetime.now(timezone.utc).isoformat())
+        save()
+        raise
+    record.update(status='writing-root', discard_returncode=0, image_write_attempts=1)
     save()
     with image.open('rb') as source, (output / 'write.log').open('w') as log_stream:
         subprocess.run(device.adb + ['shell', '-T', 'dd of=' + PARTITION + ' bs=1048576 conv=notrunc,fsync'], stdin=source, stdout=log_stream,

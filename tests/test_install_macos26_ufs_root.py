@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -226,6 +227,87 @@ class InstallUfsRoot(unittest.TestCase):
                 main()
         self.assertEqual(error.exception.code, 2)
         device.assert_not_called()
+
+    def discard_tools(self, named=True, toybox=True, discard_failure=None):
+        original = self.device.shell
+        probes = {'blkdiscard --help': named, 'toybox blkdiscard --help': toybox}
+        def shell(command, **kwargs):
+            if command in probes:
+                # Tool selection must finish before even creating a deployment directory.
+                self.assertFalse(self.output.exists())
+                self.assertNotIn(PARTITION, command)
+                self.device.commands.append(command)
+                if not probes[command]:
+                    raise subprocess.CalledProcessError(127, command)
+                return 'usage: blkdiscard DEVICE'
+            if command in ('blkdiscard ' + PARTITION, 'toybox blkdiscard ' + PARTITION):
+                self.device.commands.append(command)
+                saved = json.loads((self.output / 'deployment.json').read_bytes())
+                self.assertEqual(saved['discard_attempts'], 1)
+                self.assertEqual(saved['image_write_attempts'], 0)
+                self.assertEqual(saved['discard_command'], command)
+                if discard_failure is not None:
+                    raise discard_failure(command)
+                return ''
+            return original(command, **kwargs)
+        self.device.shell = shell
+
+    def test_named_discard_tool_is_selected_without_probing_toybox(self):
+        self.discard_tools()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['discard_command'], 'blkdiscard ' + PARTITION)
+        self.assertEqual(record['discard_attempts'], 1)
+        self.assertEqual(record['discard_returncode'], 0)
+        self.assertEqual(record['discard_tool_probes'], [dict(command='blkdiscard --help', returncode=0)])
+        self.assertNotIn('toybox blkdiscard --help', self.device.commands)
+        self.assertEqual(self.device.commands.count('blkdiscard ' + PARTITION), 1)
+
+    def test_toybox_discard_is_selected_only_after_named_help_fails(self):
+        self.discard_tools(named=False)
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['discard_command'], 'toybox blkdiscard ' + PARTITION)
+        self.assertEqual(record['discard_attempts'], 1)
+        self.assertEqual(record['discard_returncode'], 0)
+        self.assertEqual(record['discard_tool_probes'], [dict(command='blkdiscard --help', returncode=127),
+                                                       dict(command='toybox blkdiscard --help', returncode=0)])
+        self.assertNotIn('blkdiscard ' + PARTITION, self.device.commands)
+        self.assertEqual(self.device.commands.count('toybox blkdiscard ' + PARTITION), 1)
+
+    def test_no_discard_tool_refuses_before_deployment_directory_or_write(self):
+        self.discard_tools(named=False, toybox=False)
+        plan_before = (self.plan_dir / 'plan.json').read_bytes()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'no usable blkdiscard tool'):
+                install(self.device, self.plan_dir, self.root_dir, self.output)
+        run.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertNotIn('blkdiscard ' + PARTITION, self.device.commands)
+        self.assertNotIn('toybox blkdiscard ' + PARTITION, self.device.commands)
+        self.assertEqual((self.plan_dir / 'plan.json').read_bytes(), plan_before)
+
+    def test_actual_discard_failure_records_one_attempt_and_never_falls_back_or_writes(self):
+        self.discard_tools(discard_failure=lambda command: subprocess.CalledProcessError(1, command))
+        plan_before = (self.plan_dir / 'plan.json').read_bytes()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaises(subprocess.CalledProcessError):
+                install(self.device, self.plan_dir, self.root_dir, self.output)
+        run.assert_not_called()
+        self.assertEqual(self.device.commands.count('blkdiscard ' + PARTITION), 1)
+        self.assertFalse(any(c.startswith('toybox blkdiscard') for c in self.device.commands))
+        self.assertFalse((self.output / 'write.log').exists())
+        record = json.loads((self.output / 'deployment.json').read_bytes())
+        self.assertEqual(record['status'], 'discard-failed')
+        self.assertEqual(record['discard_command'], 'blkdiscard ' + PARTITION)
+        self.assertEqual(record['discard_attempts'], 1)
+        self.assertEqual(record['discard_returncode'], 1)
+        self.assertEqual(record['discard_error']['type'], 'CalledProcessError')
+        self.assertEqual(record['image_write_attempts'], 0)
+        self.assertNotIn('readback_verified', record)
+        self.assertEqual((self.plan_dir / 'plan.json').read_bytes(), plan_before)
 
 
 class InstallUfsRootCn(InstallUfsRoot):
