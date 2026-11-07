@@ -19,6 +19,10 @@ import test_repartition_macos26_root as partition_fixture
 
 class InstallUfsRoot(unittest.TestCase):
     def setUp(self):
+        # The legacy stdin route is retained only for non-Windows hosts; Windows cases override this explicitly.
+        platform = patch('install_macos26_ufs_root.sys.platform', 'linux')
+        platform.start()
+        self.addCleanup(platform.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
@@ -308,6 +312,114 @@ class InstallUfsRoot(unittest.TestCase):
         self.assertEqual(record['image_write_attempts'], 0)
         self.assertNotIn('readback_verified', record)
         self.assertEqual((self.plan_dir / 'plan.json').read_bytes(), plan_before)
+
+    def staged_ram_image(self, *, mounts=None, realpath=None, size=None, digest=None, regular=True):
+        remote = '/tmp/sheng-macosroot-test-01/macosroot.img'
+        image = self.root_dir / 'macosroot.img'
+        expected_size = image.stat().st_size
+        expected_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        original = self.device.shell
+        values = {
+            'cat /proc/mounts': 'tmpfs /tmp tmpfs rw 0 0' if mounts is None else mounts,
+            'readlink -f ' + remote: remote if realpath is None else realpath,
+            'stat -c %s ' + remote: str(expected_size if size is None else size),
+            'sha256sum ' + remote: (expected_digest if digest is None else digest) + '  ' + remote,
+        }
+        def shell(command, **kwargs):
+            if command == 'test -f ' + remote:
+                self.device.commands.append(command)
+                if not regular:
+                    raise subprocess.CalledProcessError(1, command)
+                return ''
+            if command in values:
+                self.device.commands.append(command)
+                return values[command]
+            return original(command, **kwargs)
+        self.device.shell = shell
+        return remote
+
+    def test_staged_ram_image_is_verified_before_discard_and_uses_no_image_stdin(self):
+        remote = self.staged_ram_image()
+        with patch('install_macos26_ufs_root.sys.platform', 'win32'), patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output, staged_image=remote)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(run.call_args.args[0][5], 'dd if=' + remote + ' of=' + PARTITION + ' bs=1048576 conv=notrunc,fsync')
+        self.assertEqual(record['image_write_transport'], 'staged-ram-file')
+        self.assertEqual(record['image_write_attempts'], 1)
+        self.assertEqual(record['image_write_returncode'], 0)
+        self.assertEqual(record['staged_image']['path'], remote)
+        self.assertEqual(record['staged_image']['sha256'], record['sha256'])
+        self.assertLess(self.device.commands.index('sha256sum ' + remote),
+                        self.device.commands.index('blkdiscard ' + PARTITION))
+
+    def test_unqualified_ram_image_refuses_before_discard_directory_or_write(self):
+        original = self.device.shell
+        plan_before = (self.plan_dir / 'plan.json').read_bytes()
+        for change in (dict(digest='00' * 32), dict(size=1), dict(mounts='/dev/block/sda27 /tmp ext4 rw 0 0'),
+                       dict(realpath='/data/macosroot.img'), dict(regular=False),
+                       dict(mounts='tmpfs /tmp tmpfs rw 0 0\n/dev/block/sda27 /tmp/sheng-macosroot-test-01 ext4 rw 0 0'),
+                       dict(mounts='tmpfs /tmp tmpfs rw 0 0\n/dev/block/sda27 /tmp/sheng-macosroot-test-01/macosroot.img ext4 rw 0 0')):
+            with self.subTest(change=change):
+                self.device.shell = original
+                self.device.commands.clear()
+                remote = self.staged_ram_image(**change)
+                with patch('install_macos26_ufs_root.subprocess.run') as run:
+                    with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        install(self.device, self.plan_dir, self.root_dir, self.output, staged_image=remote)
+                run.assert_not_called()
+                self.assertFalse(self.output.exists())
+                self.assertFalse(any('blkdiscard' in command for command in self.device.commands))
+                self.assertEqual((self.plan_dir / 'plan.json').read_bytes(), plan_before)
+
+    def test_unsafe_staging_path_is_rejected_before_device_access(self):
+        for path in ('/data/macosroot.img', '/tmp/sheng-macosroot-x/../macosroot.img',
+                     '/tmp/sheng-macosroot-x/macosroot.img;id', '/tmp/sheng-macosroot-x/macosroot.img\nid',
+                     '/tmp/sheng-macosroot-x/extra/macosroot.img'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'safe-id'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, staged_image=path)
+        self.assertEqual(self.device.commands, [])
+        self.assertFalse(self.output.exists())
+
+    def test_windows_missing_staged_image_is_rejected_before_device_construction(self):
+        args = ['install_macos26_ufs_root.py', '--serial', self.device.serial, '--partition-plan', str(self.plan_dir),
+                '--root-build', str(self.root_dir), '--output', str(self.output)]
+        with patch('install_macos26_ufs_root.sys.platform', 'win32'):
+            with self.assertRaisesRegex(ValueError, 'Windows ADB stdin'):
+                install(self.device, self.plan_dir, self.root_dir, self.output)
+            with patch.object(sys, 'argv', args), patch('install_macos26_ufs_root.Device') as device:
+                with self.assertRaisesRegex(ValueError, 'Windows ADB stdin'):
+                    main()
+            device.assert_not_called()
+        self.assertEqual(self.device.commands, [])
+        self.assertFalse(self.output.exists())
+
+    def test_staged_write_failures_are_recorded_without_retry_or_plan_update(self):
+        original = self.device.shell
+        plan_before = (self.plan_dir / 'plan.json').read_bytes()
+        for label, error in (('nonzero', subprocess.CalledProcessError(1, 'adb shell dd')),
+                             ('oserror', OSError('transport unavailable')),
+                             ('timeout', subprocess.TimeoutExpired('adb shell dd', 240))):
+            with self.subTest(failure=label):
+                self.output = self.folder / ('deployment-write-' + label)
+                self.device.shell = original
+                self.device.commands.clear()
+                remote = self.staged_ram_image()
+                with patch('install_macos26_ufs_root.subprocess.run', side_effect=error) as run:
+                    with self.assertRaises(type(error)):
+                        install(self.device, self.plan_dir, self.root_dir, self.output, staged_image=remote)
+                self.assertEqual(run.call_count, 1)
+                record = json.loads((self.output / 'deployment.json').read_bytes())
+                self.assertEqual(record['status'], 'write-failed')
+                self.assertEqual(record['image_write_attempts'], 1)
+                self.assertEqual(record['image_write_returncode'], getattr(error, 'returncode', None))
+                self.assertEqual(record['image_write_error']['type'], type(error).__name__)
+                self.assertIn('if=' + remote, record['image_write_command'])
+                self.assertEqual(record['discard_attempts'], 1)
+                self.assertEqual(self.device.commands.count('blkdiscard ' + PARTITION), 1)
+                self.assertNotIn('readback_verified', record)
+                self.assertFalse(any(command.startswith('sync;') for command in self.device.commands))
+                self.assertEqual((self.plan_dir / 'plan.json').read_bytes(), plan_before)
 
 
 class InstallUfsRootCn(InstallUfsRoot):
