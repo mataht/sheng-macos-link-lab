@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Append a verified ISC seed inside existing macosroot; commit its manifest last."""
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -11,8 +12,10 @@ import subprocess
 import uuid
 
 from create_log_partition import geometry
-from install_macos26_ufs_root import PARTITION
-from repartition_macos26_root import BLOCK, WINDOW, ROOT, Device
+from install_macos26_ufs_root import (
+    BLOCK, WINDOW, Device, PARTITION, qualify_staged_image, require_safe_transport,
+)
+from repartition_macos26_root import ROOT
 
 
 def validate_update(previous, candidate, plan, contract):
@@ -58,7 +61,8 @@ def image_digest(image, windows):
     return digest.hexdigest()
 
 
-def update(device, plan_dir, previous_root, previous_deployment, candidate_dir, output):
+def update(device, plan_dir, previous_root, previous_deployment, candidate_dir, output, staged_image=None):
+    require_safe_transport(staged_image)
     plan = json.loads((plan_dir / 'plan.json').read_text())
     previous = json.loads((previous_root / 'build.json').read_text())
     installed = json.loads(previous_deployment.read_text())
@@ -118,12 +122,24 @@ def update(device, plan_dir, previous_root, previous_deployment, candidate_dir, 
                             f'count={size} iflag=skip_bytes,count_bytes | sha256sum', timeout=180).split()[0]
     if remote_digest(os_window['offset'], os_window['bytes']) != os_window['sha256']:
         raise ValueError('BaseSystem changed before the update; no writes performed')
+    staged = qualify_staged_image(device, staged_image, candidate['image_bytes'], digest) if staged_image is not None else None
+    # Read both bounded extents from the same fully verified tmpfs image on
+    # Windows. Neither write sends binary data through adb shell stdin.
+    isc_command = (f'dd ' + (f'if={staged_image} skip={isc["offset"]} ' if staged else '')
+        + f'of={PARTITION} bs={WINDOW} seek={isc["offset"] // WINDOW} count={isc["bytes"]} '
+        + ('iflag=skip_bytes,count_bytes ' if staged else 'iflag=count_bytes ')
+        + 'conv=notrunc,fsync')
+    manifest_command = (f'dd ' + (f'if={staged_image} ' if staged else '')
+        + f'of={PARTITION} bs={BLOCK} count={BLOCK} iflag=count_bytes conv=notrunc,fsync')
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     (output / 'manifest-before.bin').write_bytes(old_manifest)
     record = dict(serial=device.serial, started_at=datetime.now(timezone.utc).isoformat(),
         destination=PARTITION, destination_guid=plan['root_unique_guid'], bytes=candidate['image_bytes'],
         sha256=digest, status='prepared', image_write_attempts=0, gpt_writes=False,
         android_userdata_modified=False, base_system_written=False, manifest_committed=False,
+        manifest_write_attempts=0, manifest_readback_verified=False,
+        image_write_transport='staged-ram-file' if staged else 'adb-stdin', staged_image=staged,
+        isc_write_command=isc_command, manifest_write_command=manifest_command,
         isc_offset=isc['offset'], isc_bytes=isc['bytes'], previous_sha256=installed['sha256'])
     def save():
         (output / 'deployment.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -131,25 +147,31 @@ def update(device, plan_dir, previous_root, previous_deployment, candidate_dir, 
     try:
         record.update(status='writing-isc-seed', image_write_attempts=1)
         save()
-        with image.open('rb') as source, (output / 'write-isc.log').open('w') as log:
-            source.seek(isc['offset'])
-            # Toybox count_bytes bounds pipe input by bytes, including short reads.
-            command = f'dd of={PARTITION} bs={WINDOW} seek={isc["offset"] // WINDOW} count={isc["bytes"]} iflag=count_bytes conv=notrunc,fsync'
-            subprocess.run(device.adb + ['shell', '-T', command], stdin=source, stdout=log,
+        with (nullcontext(subprocess.DEVNULL) if staged else image.open('rb')) as source, (output / 'write-isc.log').open('w') as log:
+            if not staged:
+                source.seek(isc['offset'])
+            subprocess.run(device.adb + ['shell', '-T', isc_command], stdin=source, stdout=log,
                            stderr=subprocess.STDOUT, check=True, timeout=300)
+        record.update(status='verifying-isc-seed', image_write_returncode=0)
+        save()
+        flush_aliases()
         if remote_digest(isc['offset'], isc['bytes']) != isc['sha256']:
             raise ValueError('ISC readback differs; original manifest retained, no automatic retry')
+        record['isc_readback_verified'] = True
         record['manifest_committed'] = None
+        record['manifest_write_attempts'] = 1
         record['status'] = 'committing-manifest'
         save()
         with (output / 'write-manifest.log').open('w') as log:
-            subprocess.run(device.adb + ['shell', '-T', f'dd of={PARTITION} bs={BLOCK} count={BLOCK} iflag=count_bytes conv=notrunc,fsync'],
-                           input=manifest, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=30)
-        record['manifest_committed'] = True
+            transfer = dict(stdin=subprocess.DEVNULL) if staged else dict(input=manifest)
+            subprocess.run(device.adb + ['shell', '-T', manifest_command],
+                           **transfer, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=30)
+        record.update(status='verifying-manifest', manifest_write_returncode=0)
         save()
         flush_aliases()
         if device.read(plan['root_first_lba'], 1) != manifest:
             raise ValueError('manifest readback differs; no automatic retry')
+        record.update(manifest_committed=True, manifest_readback_verified=True)
         record['status'] = 'verifying-complete-root'
         save()
         observed = remote_digest(0, candidate['image_bytes'])
@@ -164,7 +186,12 @@ def update(device, plan_dir, previous_root, previous_deployment, candidate_dir, 
         (plan_dir / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
         return record
     except BaseException as error:
-        record.update(failed_phase=record['status'], status='failed', error=str(error))
+        record.update(failed_phase=record['status'], status='failed', error=str(error),
+                      error_type=type(error).__name__, failed_at=datetime.now(timezone.utc).isoformat())
+        if record['failed_phase'] == 'writing-isc-seed':
+            record['image_write_returncode'] = getattr(error, 'returncode', None)
+        elif record['failed_phase'] == 'committing-manifest':
+            record['manifest_write_returncode'] = getattr(error, 'returncode', None)
         save()
         raise
 
@@ -177,9 +204,11 @@ def main():
     parser.add_argument('--previous-deployment', required=True, type=Path)
     parser.add_argument('--candidate-root', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--staged-image', help='verified full candidate in /tmp/sheng-macosroot-<safe-id>/macosroot.img')
     args = parser.parse_args()
+    require_safe_transport(args.staged_image)
     print(json.dumps(update(Device(args.serial), args.partition_plan, args.previous_root,
-        args.previous_deployment, args.candidate_root, args.output), indent=2))
+        args.previous_deployment, args.candidate_root, args.output, args.staged_image), indent=2))
 
 
 if __name__ == '__main__':
