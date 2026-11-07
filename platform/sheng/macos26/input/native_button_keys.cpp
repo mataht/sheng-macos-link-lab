@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // NativeButtonKeys: the sheng power and volume keys as a boot keyboard, so Recovery can be driven without touch.
-// Volume up = Up arrow, volume down = Down arrow, power = Return, both volume keys = Tab.
+// Volume up = Up arrow, volume down = Down arrow, power = Return, both volume keys = Tab (80 ms chord window, spmi_keys.h).
 //
 // Default off: native-button-keys=1, on hardware only (PE_vmm_present == 0). A kernel thread polls the keys every 20 ms through
 // the SPMI PMIC arbiter's observer (read) channel; see spmi_keys.h for the register sources. Only reads are issued: the arbiter
@@ -112,6 +112,7 @@ class NativeButtonKeys : public IOService {
   sheng_keys::Arbiter fArbiter;
   sheng_keys::Channels fChannels;
   sheng_keys::Debounce fDebounce;
+  sheng_keys::Chord fChord;
   NativeButtonHID *fHid = nullptr;
   unsigned fReports = 0;
 
@@ -206,8 +207,11 @@ void NativeButtonKeys::pollThread(void *self, wait_result_t)
       continue;
     }
     failures = 0;
-    if (keys->fDebounce.update(now))
-      keys->post(now);
+    keys->fDebounce.update(now);
+    sheng_keys::Keys reports[3];
+    const unsigned count = keys->fChord.update(keys->fDebounce.stable, reports);
+    for (unsigned i = 0; i < count; ++i)
+      keys->post(reports[i]);
   }
 }
 

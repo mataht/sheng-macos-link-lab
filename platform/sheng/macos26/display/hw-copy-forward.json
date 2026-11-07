@@ -1,0 +1,21 @@
+{
+  "schema": "sheng-hw-display-copy-forward-v1",
+  "status": "source_only",
+  "compiled": false,
+  "ci_submitted": false,
+  "hardware_run": false,
+  "vm_run": false,
+  "base_record": "hw-panel-size.json",
+  "base_patch_sha256": "2eb955d4197611e83f0ed91dd758b8f0e84b4cb570ee71fce8db4969b713c3e8",
+  "patch_sha256": "7cd1c7b76bd0cc7893f3f3f048438dd9db49fb17b66bfff27ad005e5302108de",
+  "source_sha256": "cf100b1cf9893849892a4243fc989ae6caeccc0310c0cb58bcd43a7c3756dfe3",
+  "original_sha256": "050ae69eec6f0340c4f3659285dfb16fce13058648a044f9149b89d40344bcac",
+  "scanout_sha256": "65f31d0597f77975df933c86f0acd729a223d50e44323fd0d0f7b80d857179c9",
+  "boot_argument": null,
+  "always_on": true,
+  "evidence": "Step18 hardware screen observations: highlights on alternating rows 1,3,5 / 2,4,6 after volume-down (private audit 20261107-step18-display-keys-waiver-boot-01)",
+  "assumption": "WindowServer does not compose while a swap it submitted is pending (IOMFBDisplay::can_update_ asks swap_wait first), so the other root surfaces are idle when they are written",
+  "hardware_qualified": false,
+  "added_lines": 45,
+  "removed_lines": 3
+}

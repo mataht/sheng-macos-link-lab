@@ -74,6 +74,58 @@ struct Target {
     }
 };
 
+// Step18 hardware: WindowServer alternates two root surfaces and redraws only the damaged rows into the one it submits,
+// as if that surface still held the frame shown last. A whole-surface copy then shows the other surface's missed updates
+// (a selection highlight left on every other row). The driver's copy-forward step makes the assumption true: before the
+// swap completes, the shown surface is copied into the other one. This models that renderer and both driver behaviours.
+void alternatingPartialSurfaces()
+{
+    const uint64_t w = 8, h = 6;
+    const uint32_t plain = 0xff202020, highlight = 0xff1060e0;
+    auto paint = [&](Frame &frame, uint64_t y, uint32_t value) {
+        for (uint64_t x = 0; x < w; x++) frame.row32(y)[x] = value | static_cast<uint32_t>(x);
+    };
+    for (bool forward : {true, false}) {
+        Frame surfaces[2] = {Frame(w, h, 4, 8), Frame(w, h, 4, 8)};
+        Frame truth(w, h, 4, 8);
+        for (uint64_t y = 0; y < h; y++) {
+            paint(truth, y, y == 0 ? highlight : plain);
+            paint(surfaces[0], y, y == 0 ? highlight : plain);
+            paint(surfaces[1], y, y == 0 ? highlight : plain);
+        }
+        Target target(w, h, 0, surfaces[0].rowBytes);
+        auto show = [&](unsigned s, bool shadowValid) {
+            CountingLease lease;
+            NativeGopBlitResult r = target.blit(surfaces[s], 4, nullptr, shadowValid, lease, [](uint64_t, const uint16_t *) {});
+            assert(r.complete);
+            if (forward)   // copy-forward: same geometry, rows only (the padding stays the other surface's)
+                for (uint64_t y = 0; y < h; y++) memcpy(surfaces[1 - s].row32(y), surfaces[s].row32(y), w * 4);
+        };
+        show(0, false);
+        bool stale = false;
+        // Move the selection down one row per frame, then redraw something unrelated (the last frame touches no row).
+        for (uint64_t frame = 1; frame <= h; frame++) {
+            Frame &next = surfaces[frame % 2];
+            if (frame < h) {
+                paint(truth, frame - 1, plain);
+                paint(truth, frame, highlight);
+                paint(next, frame - 1, plain);
+                paint(next, frame, highlight);
+            }
+            show(frame % 2, true);
+            for (uint64_t y = 0; y < h; y++) {
+                for (uint64_t x = 0; x < w; x++) {
+                    const bool same = target.pixel(x, y) == truth.row32(y)[x];
+                    assert(same || !forward);
+                    stale |= !same;
+                }
+            }
+        }
+        // Without copy-forward the whole-surface copy shows the stale highlights seen on the tablet.
+        assert(forward || stale);
+    }
+}
+
 void fill(Frame &frame, uint32_t seed)
 {
     for (uint64_t y = 0; y < frame.height; y++)
@@ -202,5 +254,6 @@ int main()
     halfFloat();
     refusedLease();
     panelGeometry();
+    alternatingPartialSurfaces();
     return 0;
 }

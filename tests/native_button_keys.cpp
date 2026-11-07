@@ -159,6 +159,46 @@ int main()
         report(none, r);
         for (unsigned i = 0; i < 8; ++i) CHECK(r[i] == 0);
     }
+    // Chord window: a lone volume key waits kWindowPolls polls; the other joining makes it Tab only.
+    {
+        auto lone = [](bool up) { Keys k; k.volumeUp = up; k.volumeDown = !up; return k; };
+        Keys none, both, power;
+        both.volumeUp = both.volumeDown = true;
+        power.power = true;
+        Keys out[3];
+        // Held down: nothing for three polls, Down on the fourth, released when let go.
+        Chord c;
+        for (unsigned i = 1; i < Chord::kWindowPolls; ++i) CHECK(c.update(lone(false), out) == 0);
+        CHECK(c.update(lone(false), out) == 1 && sameKeys(out[0], lone(false)));
+        CHECK(c.update(lone(false), out) == 0);
+        CHECK(c.update(none, out) == 1 && sameKeys(out[0], none));
+        // A quick tap inside the window: press and release in the same poll.
+        CHECK(c.update(lone(true), out) == 0);
+        CHECK(c.update(none, out) == 2 && sameKeys(out[0], lone(true)) && sameKeys(out[1], none));
+        // Volume down, then volume up 40 ms later: Tab only, no arrow; Tab stays until both are up.
+        CHECK(c.update(lone(false), out) == 0 && c.update(lone(false), out) == 0);
+        CHECK(c.update(both, out) == 1 && sameKeys(out[0], both));
+        CHECK(c.update(lone(true), out) == 0);    // one released: still the chord
+        CHECK(c.update(none, out) == 1 && sameKeys(out[0], none));
+        // Past the window the arrow is already down; the other key joining then gives Tab.
+        for (unsigned i = 0; i < Chord::kWindowPolls; ++i) c.update(lone(true), out);
+        CHECK(sameKeys(c.shown, lone(true)));
+        CHECK(c.update(both, out) == 1 && sameKeys(out[0], both));
+        CHECK(c.update(none, out) == 1);
+        // Power is immediate, also while a volume key is held back.
+        CHECK(c.update(power, out) == 1 && sameKeys(out[0], power));
+        Keys powerDown = lone(false);
+        powerDown.power = true;
+        CHECK(c.update(powerDown, out) == 0);    // volume down held back, power unchanged
+        CHECK(c.update(none, out) == 2);         // tap of volume down with power, then all up
+        CHECK(sameKeys(out[0], powerDown) && sameKeys(out[1], none));
+        // Switching from one lone key to the other inside the window: the first is a tap.
+        CHECK(c.update(lone(true), out) == 0);
+        CHECK(c.update(lone(false), out) == 2 && sameKeys(out[0], lone(true)) && sameKeys(out[1], none));
+        uint8_t r[8];
+        report(both, r);
+        CHECK(r[2] == kUsageTab && r[3] == 0);
+    }
     std::printf("PASS\n");
     return 0;
 }

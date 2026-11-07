@@ -20,6 +20,7 @@ from build_macos26_storage import PROTOCOL_CHARACTERISTICS
 from native_log_file import CONTRACT as LOG_CONTRACT, LAYOUT as LOG_LAYOUT, BLOCK as LOG_BLOCK, decode as decode_log_file
 from recovery_ui_evidence import qualify_language_selector
 from display_diagnostic_evidence import qualify_display_observation
+from display_waiver_evidence import qualify_display_waiver
 from capture_persistent_log import RAM_RANGES as LOG_RAM_RANGES
 
 # 12 GiB of the 13 GiB contiguous run 0x8C0000000..0xC00000000 (uefi-sheng 0004 on the CN 16 GB unit); the
@@ -341,15 +342,29 @@ def qualify_button_keys(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def display_copy_forward(panel_patch_sha256):
+    """The reviewed always-on copy-forward step chained on the panel-size patch, or None (derive_hw_display_copy_forward.py)."""
+    path = ROOT / 'platform/sheng/macos26/display/hw-copy-forward.json'
+    record = json.loads(path.read_text()) if path.exists() else None
+    if (record is None or record.get('schema') != 'sheng-hw-display-copy-forward-v1'
+            or record.get('base_patch_sha256') != panel_patch_sha256 or record.get('always_on') is not True):
+        return None
+    return record
+
+
 def qualify_panel_size(build, width_mm: int, height_mm: int) -> dict:
-    """The compiled display patch must be the reviewed panel-size step; the boot arguments mirror its bounds."""
+    """The compiled display patch must be the reviewed panel-size step (optionally followed by the copy-forward step);
+    the boot arguments mirror its bounds."""
     panel = json.loads((ROOT / 'platform/sheng/macos26/display/hw-panel-size.json').read_text())
     driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
     compiled = driver.get('build', {}).get('native_gop_display', {}).get('patch_sha256')
-    if panel.get('schema') != 'sheng-hw-display-panel-size-v1' or compiled != panel.get('patch_sha256'):
+    forward = display_copy_forward(panel.get('patch_sha256'))
+    accepted = {panel.get('patch_sha256')} | ({forward['patch_sha256']} if forward else set())
+    if panel.get('schema') != 'sheng-hw-display-panel-size-v1' or compiled not in accepted:
         raise ValueError('kernel display companion lacks the reviewed panel-size step')
     return dict(boot_arguments=[f'native-gop-width-mm={width_mm}', f'native-gop-height-mm={height_mm}'],
                 width_mm=width_mm, height_mm=height_mm, patch_sha256=compiled,
+                copy_forward=bool(forward and compiled == forward['patch_sha256']),
                 aspect_checked_by_driver=True, hidpi_selection_qualified=False)
 
 
@@ -362,9 +377,11 @@ def qualify_display_keep_awake() -> dict:
     # The keep-awake patch may be followed by the reviewed default-off panel-size step (derive_hw_display_panel_size.py).
     panel_path = display / 'hw-panel-size.json'
     panel = json.loads(panel_path.read_text()) if panel_path.exists() else None
-    chained = (panel is not None and panel.get('schema') == 'sheng-hw-display-panel-size-v1'
-               and panel.get('base_patch_sha256') == record.get('patch_sha256') and panel.get('patch_sha256') == patch
-               and panel.get('default_off') is True)
+    panel_chained = (panel is not None and panel.get('schema') == 'sheng-hw-display-panel-size-v1'
+                     and panel.get('base_patch_sha256') == record.get('patch_sha256') and panel.get('default_off') is True)
+    # ... and that by the always-on copy-forward step (derive_hw_display_copy_forward.py).
+    forward = display_copy_forward(panel.get('patch_sha256')) if panel_chained else None
+    chained = panel_chained and (panel.get('patch_sha256') == patch or (forward is not None and forward['patch_sha256'] == patch))
     if (record.get('schema') != 'sheng-hw-display-keep-awake-v1' or not (record.get('patch_sha256') == patch or chained)
             or switch.get('boot_argument') != 'native-gop-keep-awake=1' or switch.get('default_off') is not True):
         raise ValueError('display patch lacks the reviewed hardware keep-awake switch')
@@ -408,6 +425,9 @@ def main():
     parser.add_argument('--display-observation', type=Path,
                         help='display-only diagnostic: same-kernel QEMU fixture where WindowServer stays up and the GOP '
                              'companion submits a first frame; does not qualify language selection or input')
+    parser.add_argument('--display-waiver', type=Path,
+                        help='explicit user waiver of the complete same-kernel QEMU display window, bound to a partial '
+                             'same-kernel display fixture; records the unobserved checks, qualifies nothing')
     parser.add_argument('--platform-uuid', type=uuid.UUID,
                         help='owned platform UUID for /options and the volatile NVRAM proxy (never an Apple identity)')
     parser.add_argument('--button-keys', action='store_true',
@@ -416,22 +436,24 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
-    gui = args.recovery_ui_observation or args.display_observation
+    gui = args.recovery_ui_observation or args.display_observation or args.display_waiver
     if args.display_keep_awake and not gui:
         parser.error('--display-keep-awake requires --recovery-ui-observation or --display-observation')
     if (args.button_keys or args.panel_size_mm) and not gui:
         parser.error('--button-keys and --panel-size-mm require the GOP display (UI qualification or display diagnostic)')
     if args.display_observation and args.recovery_ui_observation:
         parser.error('--display-observation is the display-only diagnostic; do not combine it with the UI qualification')
+    if args.display_waiver and (args.display_observation or args.recovery_ui_observation):
+        parser.error('--display-waiver replaces the display evidence; do not combine it with an observation')
     if args.platform_uuid is not None and args.platform_uuid.int == 0:
         parser.error('--platform-uuid cannot be nil')
     if args.development_no_ignition != bool(args.dyld_observation):
         parser.error('--development-no-ignition and --dyld-observation must be used together')
     if args.isc_overlay and not args.development_no_ignition:
         parser.error('--isc-overlay requires the qualified explicit development root')
-    if (args.recovery_ui_observation or args.display_observation) and not args.isc_overlay:
+    if gui and not args.isc_overlay:
         parser.error('Recovery UI and the display diagnostic require the qualified ISC development root')
-    if args.boot_progress and not (args.recovery_ui_observation or args.display_observation):
+    if args.boot_progress and not gui:
         parser.error('--boot-progress requires the qualified Recovery UI candidate or the display diagnostic')
     log_options = (args.macoslog_observation, args.macoslog_readonly_observation, args.macoslog_deployment)
     if any(log_options) and not all(log_options):
@@ -494,6 +516,9 @@ def main():
     display_qualification = None
     if args.display_observation:
         display_qualification = qualify_display_observation(args.kernel_build, args.display_observation, identity)
+        boot_args += ' ' + display_qualification['boot_argument']
+    elif args.display_waiver:
+        display_qualification = qualify_display_waiver(args.kernel_build, args.display_waiver, identity)
         boot_args += ' ' + display_qualification['boot_argument']
     gop_enabled = bool(ui_qualification or display_qualification)
     button_keys = None
@@ -602,6 +627,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
+                display_qualification_waived=bool(args.display_waiver),
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
                 display_keep_awake=keep_awake, smp=smp_qualification,
                 boot_progress=progress_qualification,

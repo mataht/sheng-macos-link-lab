@@ -110,7 +110,7 @@
      bool createDisplayAttributes();
      static void vblFired(OSObject *, IOTimerEventSource *);
  
-@@ -172,37 +137,143 @@
+@@ -172,37 +137,149 @@
      static_assert(sizeof(SwapInfo) == 48, "IOMobileFramebufferLegacy::SwapInfoBlob");
      static constexpr unsigned kSwapInfoRing = 6;
  
@@ -156,6 +156,10 @@
 +        IOMemoryDescriptor *memory;   // retained and prepared while cached
 +        IOMemoryMap *map;             // read-only kernel mapping of [base, base + span)
 +        uint64_t base, span, used;
++        IOMemoryMap *writable;        // copy-forward: writable kernel mapping of the same range, made on first use
++        uint64_t rowBytes, rows, rowLength;   // geometry when last shown (zero until then)
++        uint32_t format;
++        bool forwardRefused;          // no writable mapping could be made
 +    };
 +    static constexpr unsigned kSourceMapCount = 3;      // WindowServer rotates a few root surfaces
 +    static constexpr uint64_t kFullRefreshFrames = 300; // rewrite every row periodically regardless of the shadow
@@ -167,6 +171,8 @@
 +    uint64_t fConvertedBytes = 0;
 +    bool fShadowValid = false;
 +    uint64_t fRowsWritten = 0, fRowsSkipped = 0;   // diagnostic: scanout rows rewritten / left unchanged
++    SourceMap *fMappedSource = nullptr;           // the cache entry mapSource returned last
++    uint64_t fForwardCopies = 0, fForwardFailures = 0;   // diagnostic: copy-forward surface updates / unmappable
  };
  
 -OSDefineMetaClassAndStructors(DroidVMDisplay, IOMobileFramebufferLegacy)
@@ -277,7 +283,7 @@
          return false;
      }
      IOMemoryDescriptor *memory = IOMemoryDescriptor::withPhysicalAddress(fVideo.v_baseAddr & ~3UL, fVideo.v_rowBytes * fVideo.v_height,
-@@ -212,49 +283,60 @@
+@@ -212,49 +289,60 @@
          memory->release();
      }
      if (!fScanoutMap) {
@@ -354,7 +360,7 @@
          OSSafeReleaseNULL(fVBL);
          return false;
      }
-@@ -267,11 +349,11 @@
+@@ -267,11 +355,11 @@
      // AppleParavirtDisplay does when the host reports its display. Unplugged (0), WindowServer kept this display disabled and composited
      // a virtual one as the main display ("get_hotplug_state - not active").
      hotPlug_notify(1);
@@ -368,7 +374,7 @@
  {
      if (fVBL) {
          fVBL->cancelTimeout();
-@@ -281,13 +363,13 @@
+@@ -281,13 +369,13 @@
      return kIOReturnSuccess;
  }
  
@@ -386,7 +392,7 @@
  {
      if (at<IOMFBSwapIORequest *>(this, kCurrentSwap) || !at<IOMFBSwapIORequest *>(this, kSwapQueueFirst))
          return false;
-@@ -300,10 +382,13 @@
+@@ -300,10 +388,13 @@
  }
  
  // AppleParavirtDisplay::swap_begin_gated: the family calls it when a swap is submitted, the VBL timer every 16 ms.
@@ -401,15 +407,15 @@
      fVBL->cancelTimeout();
      while (clean_queue_gated()) {
          IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kSwapQueueFirst);
-@@ -327,19 +412,20 @@
+@@ -327,19 +418,20 @@
          fStalled++;
      if (++fTicks % 625 == 0 && fSubmitted + fFrames + fDropped + fStalled != fReported) {   // about every 10 s while swaps arrive
          fReported = fSubmitted + fFrames + fDropped + fStalled;
 -        IOLog("DroidVMDisplay: %llu swaps submitted, %llu shown, %llu dropped, %llu ticks stalled (current %p), last frame %llu lit centre %#llx\n",
 -              fSubmitted, fFrames, fDropped, fStalled, at<IOMFBSwapIORequest *>(this, kCurrentSwap), fLastLit, fLastCenter);
-+        IOLog("NativeGOPDisplay: %llu swaps submitted, %llu shown, %llu dropped, %llu ticks stalled (current %p), last frame %llu lit centre %#llx, rows %llu written %llu unchanged\n",
++        IOLog("NativeGOPDisplay: %llu swaps submitted, %llu shown, %llu dropped, %llu ticks stalled (current %p), last frame %llu lit centre %#llx, rows %llu written %llu unchanged, %llu surfaces forwarded %llu failed\n",
 +              fSubmitted, fFrames, fDropped, fStalled, at<IOMFBSwapIORequest *>(this, kCurrentSwap), fLastLit, fLastCenter,
-+              fRowsWritten, fRowsSkipped);
++              fRowsWritten, fRowsSkipped, fForwardCopies, fForwardFailures);
      }
      return fVBL->setTimeoutMS(16);
  }
@@ -426,7 +432,7 @@
                swapID, options, timeout, result, fWaitFailures, at<uint32_t>(this, 6412), at<uint32_t>(this, kSystemPowerState),
                at<uint32_t>(this, kAPIPowerState), at<uint32_t>(this, kHardwarePowered), at<uint8_t>(this, kHardwareStarted),
                at<IOMFBSwapIORequest *>(this, kCurrentSwap), at<IOMFBSwapIORequest *>(this, kSwapQueueFirst));
-@@ -348,52 +434,45 @@
+@@ -348,52 +440,45 @@
  
  // AppleParavirtDisplay::do_power_state_change_gated: the display is on while both the system and WindowServer (setAPIPowerState)
  // want it on; each change goes to WindowServer as a power state notification, which CoreAnimation waits for before it swaps.
@@ -504,7 +510,7 @@
      swap_complete_gated();
  }
  
-@@ -412,61 +491,205 @@
+@@ -412,61 +497,241 @@
      return static_cast<uint8_t>((scaled + (1u << (shift - 1))) >> shift);
  }
  
@@ -518,12 +524,16 @@
 +    for (SourceMap &entry : fSourceMaps) {
 +        if (entry.memory == memory && entry.base == base && entry.span == span) {
 +            entry.used = ++fSourceMapClock;
++            fMappedSource = &entry;
 +            return reinterpret_cast<const uint8_t *>(entry.map->getVirtualAddress());
 +        }
 +        if (!victim || !entry.memory || (victim->memory && entry.used < victim->used))
 +            victim = &entry;
 +    }
++    fMappedSource = nullptr;
 +    if (victim->memory) {
++        if (victim->writable)
++            victim->writable->release();
 +        victim->map->release();
 +        victim->memory->complete();
 +        victim->memory->release();
@@ -539,7 +549,8 @@
 +        return nullptr;
 +    }
 +    memory->retain();
-+    *victim = {memory, map, base, span, ++fSourceMapClock};
++    *victim = {memory, map, base, span, ++fSourceMapClock, nullptr, 0, 0, 0, 0, false};
++    fMappedSource = victim;
 +    return reinterpret_cast<const uint8_t *>(map->getVirtualAddress());
 +}
 +
@@ -548,11 +559,14 @@
 +    for (SourceMap &entry : fSourceMaps) {
 +        if (!entry.memory)
 +            continue;
++        if (entry.writable)
++            entry.writable->release();
 +        entry.map->release();
 +        entry.memory->complete();
 +        entry.memory->release();
 +        entry = {};
 +    }
++    fMappedSource = nullptr;
 +}
 +
 +void NativeGOPDisplay::copySurface(IOSurface *surface)
@@ -635,6 +649,7 @@
 +    }
 +    const uint64_t span = (height - 1) * rowBytes + sourceRowBytes;
 +    const uint8_t *source = span <= (512ULL << 20) ? mapSource(memory, base, span) : nullptr;
++    SourceMap *current = source ? fMappedSource : nullptr;
 +    // A frame without a cached mapping falls back to bounded row reads and rewrites every row.
 +    struct FallbackRead {
 +        IOMemoryDescriptor *memory = nullptr;
@@ -722,6 +737,33 @@
 +            blit.written++;
 +        }
 +    }
++    // Copy-forward (derive_hw_display_copy_forward.py): WindowServer alternates root surfaces and redraws only the
++    // damaged area into the one it submits, as if that surface still held the frame shown last. It does not compose
++    // while this swap is pending, so bring every other cached root surface of this geometry up to date before the swap
++    // completes and hands them back.
++    if (current) {
++        current->rowBytes = rowBytes;
++        current->rows = height;
++        current->rowLength = sourceRowBytes;
++        current->format = format;
++        for (SourceMap &other : fSourceMaps) {
++            if (&other == current || !other.memory || other.forwardRefused || other.span != span ||
++                other.rowBytes != rowBytes || other.rows != height || other.rowLength != sourceRowBytes ||
++                other.format != format)
++                continue;
++            if (!other.writable)
++                other.writable = other.memory->createMappingInTask(kernel_task, 0, kIOMapAnywhere, other.base, other.span);
++            if (!other.writable || other.writable->getLength() < span) {
++                other.forwardRefused = true;   // not retried for this cached surface
++                fForwardFailures++;
++                continue;
++            }
++            uint8_t *target = reinterpret_cast<uint8_t *>(other.writable->getVirtualAddress());
++            for (uint64_t y = 0; y < height; y++)
++                __builtin_memcpy(target + y * rowBytes, source + y * rowBytes, sourceRowBytes);
++            fForwardCopies++;
++        }
++    }
 +    fRowsWritten += blit.written;
 +    fRowsSkipped += blit.skipped;
 +    if (!blit.complete)
@@ -746,7 +788,7 @@
  }
  
  static bool appendNumber(OSDictionary *dictionary, const char *key, uint64_t value, unsigned bits = 32)
-@@ -500,18 +723,43 @@
+@@ -500,18 +765,43 @@
      return dictionary;
  }
  
@@ -792,7 +834,7 @@
      // CVT reduced blanking as IOAVFamily's sCVTTimingData has it (1280x800@60: 1440x823, 71 MHz). Sync rates are 16.16 fixed point
      // (IOAVVideoTimingGetSyncRateRounded); the table leaves the horizontal one 0.
      uint8_t timingData[80] = {};
-@@ -541,8 +789,8 @@
+@@ -541,8 +831,8 @@
          if (!colors->setObject(color) || !timingColors->setObject(color) || !timings->setObject(timing))
              break;
          ioavTimingSetColorElements(timing, timingColors);
@@ -803,7 +845,7 @@
                appendNumber(product, "WeekOfManufacture", 24) && appendNumber(product, "YearOfManufacture", 2021)))
              break;
          if (!(appendDictionary(chromaticity, "Red", point(41943, 21627)) && appendDictionary(chromaticity, "Green", point(19661, 39322)) &&
-@@ -554,8 +802,8 @@
+@@ -554,8 +844,8 @@
                attributes->setObject("Chromaticity", chromaticity) && attributes->setObject("DefaultColorSpaceIsSRGB", kOSBooleanFalse) &&
                attributes->setObject("DefaultWhitePoint", whitePoint) && attributes->setObject("SupportsStandby", kOSBooleanTrue) &&
                appendNumber(attributes, "ContinuousFrequencySupport", 3) &&
@@ -814,7 +856,7 @@
                appendNumber(attributes, "NativeFormatHorizontalPixels", width) && appendNumber(attributes, "NativeFormatVerticalPixels", height) &&
                appendNumber(attributes, "PreciseAspectRatio", (static_cast<uint64_t>(width) << 16) / height)))
              break;
-@@ -567,8 +815,8 @@
+@@ -567,8 +857,8 @@
              break;
          if (!(appendNumber(scalingLimits, "RGBLayer_MinScaleFraction", 4) && appendNumber(scalingLimits, "RGBLayer_MaxScale", 4)))
              break;
@@ -825,7 +867,7 @@
          setProperty("primary", 0ULL, 32);   // AppleParavirtDisplay's display index
          done = setProperty("DisplayAttributes", attributes) && setProperty("Transport", transport) &&
              setProperty("ColorElements", colors) && setProperty("TimingElements", timings) &&
-@@ -587,14 +835,14 @@
+@@ -587,14 +877,14 @@
      OSSafeReleaseNULL(color);
      OSSafeReleaseNULL(timing);
      if (!done || set_digital_out_mode(kColorID, kTimingID) != kIOReturnSuccess) {
@@ -842,7 +884,7 @@
  {
      if (colorID != kColorID || timingID != kTimingID)
          return kIOReturnBadArgument;
-@@ -606,55 +854,59 @@
+@@ -606,55 +896,59 @@
      return kIOReturnSuccess;
  }
  
@@ -925,7 +967,7 @@
  {
      IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kCurrentSwap);
      if (at<uint32_t>(swap, kSwapDropReasons))
-@@ -672,7 +924,7 @@
+@@ -672,7 +966,7 @@
  }
  
  // AppleParavirtDisplay::do_swap_info_notify_gated: the request's async result is the mask, the swap ID and the words it asks for.
@@ -934,7 +976,7 @@
  {
      const SwapInfo *info = reinterpret_cast<const SwapInfo *>(blob);
      uint32_t mask = at<uint32_t>(request, kNotifyMask);
-@@ -698,5 +950,5 @@
+@@ -698,5 +992,5 @@
      return userClientSendAsyncResult(&at<io_user_reference_t>(request, kNotifyAsyncReference), kIOReturnSuccess, args, count,
                                       kIOUserNotifyOptionCanDrop);
  }

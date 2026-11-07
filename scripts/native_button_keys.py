@@ -27,7 +27,7 @@ def evidence(root: Path = ROOT) -> dict:
                 spmi_regions=dict(core='0x0c400000', cnfg='0x0c42d000', obsrvr='0x0c440000', ee=0),
                 keys=dict(volume_up='Up arrow (GPIO6 of PM8550, SID 1)', volume_down='Down arrow (PON RESIN, SID 0)',
                           power='Return (PON KPDPWR, SID 0)', both_volume='Tab'),
-                vendor_id=VENDOR_ID, product_id=PRODUCT_ID, poll_ms=20, hardware_qualified=False)
+                vendor_id=VENDOR_ID, product_id=PRODUCT_ID, poll_ms=20, chord_window_ms=80, hardware_qualified=False)
 
 
 def validate(record: dict, root: Path = ROOT) -> None:

@@ -158,6 +158,73 @@ struct Debounce {
     }
 };
 
+inline bool sameKeys(const Keys &a, const Keys &b)
+{
+    return a.power == b.power && a.volumeDown == b.volumeDown && a.volumeUp == b.volumeUp;
+}
+
+// Both volume keys are Tab, but two keys never go down in the same poll. Reporting the first key at once would send an
+// arrow before Tab (on hardware this moved the list selection). A lone volume key is therefore held back for kWindowPolls
+// polls: if the other volume key joins within that window only Tab is reported, held until both keys are up; if the lone
+// key is released inside the window it is reported as a tap (press, then release). Power is never delayed.
+// update() takes the debounced state once per poll and returns how many reports (at most 3) to send, in order.
+struct Chord {
+    static constexpr unsigned kWindowPolls = 4;   // 80 ms at the 20 ms poll
+    Keys shown;               // what the last report described
+    unsigned waiting = 0;     // polls a lone volume key has been held back (0: none)
+    bool pendingUp = false;   // which volume key is held back
+    bool chord = false;       // both volume keys reported as Tab until both are up
+    unsigned update(const Keys &now, Keys out[3])
+    {
+        unsigned n = 0;
+        auto emit = [&](const Keys &k) {
+            if (!sameKeys(k, shown)) {
+                out[n++] = k;
+                shown = k;
+            }
+        };
+        auto tap = [&]() {   // the held-back key goes down with the power state already shown, then the caller releases it
+            Keys k = shown;
+            k.volumeUp = pendingUp;
+            k.volumeDown = !pendingUp;
+            emit(k);
+            waiting = 0;
+        };
+        Keys next = shown;
+        next.power = now.power;
+        if (chord) {
+            if (!now.volumeUp && !now.volumeDown) {
+                chord = false;
+                next.volumeUp = next.volumeDown = false;
+            }
+        } else if (now.volumeUp && now.volumeDown) {
+            chord = true;
+            waiting = 0;
+            next.volumeUp = next.volumeDown = true;
+        } else if (now.volumeUp || now.volumeDown) {
+            const bool up = now.volumeUp;
+            if (!(up ? shown.volumeUp : shown.volumeDown)) {
+                if (waiting && pendingUp != up)   // the other key alone: the first one was a tap
+                    tap();
+                pendingUp = up;
+                if (++waiting >= kWindowPolls) {
+                    waiting = 0;
+                    next.volumeUp = up;
+                    next.volumeDown = !up;
+                } else {
+                    next.volumeUp = next.volumeDown = false;
+                }
+            }
+        } else {
+            if (waiting)   // released inside the window
+                tap();
+            next.volumeUp = next.volumeDown = false;
+        }
+        emit(next);
+        return n;
+    }
+};
+
 // Boot keyboard input report: modifiers, reserved, six key slots. Both volume keys together are Tab (move focus).
 inline void report(const Keys &k, uint8_t out[8])
 {

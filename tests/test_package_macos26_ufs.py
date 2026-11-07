@@ -340,7 +340,8 @@ class DisplayKeepAwake(unittest.TestCase):
             root = Path(temporary)
             display = root / 'platform/sheng/macos26/display'
             display.mkdir(parents=True)
-            for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json', 'hw-panel-size.json'):
+            for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json', 'hw-panel-size.json',
+                         'hw-copy-forward.json'):
                 if (source / name).exists():
                     (display / name).write_bytes((source / name).read_bytes())
             with patch.object(package_macos26_ufs, 'ROOT', root):
@@ -386,6 +387,13 @@ class InputAndPanelOptions(unittest.TestCase):
             result = package_macos26_ufs.qualify_panel_size(good, 262, 175)
             self.assertEqual(result['boot_arguments'], ['native-gop-width-mm=262', 'native-gop-height-mm=175'])
             self.assertFalse(result['hidpi_selection_qualified'])
+            self.assertFalse(result['copy_forward'])
+        forward = package_macos26_ufs.display_copy_forward(panel['patch_sha256'])
+        if forward:
+            # The always-on copy-forward step chained on the panel-size patch also carries the panel switch.
+            with tempfile.TemporaryDirectory() as temporary:
+                result = package_macos26_ufs.qualify_panel_size(self.build_dir(temporary, forward['patch_sha256']), 262, 175)
+                self.assertTrue(result['copy_forward'])
         with tempfile.TemporaryDirectory() as temporary:
             old = self.build_dir(temporary, panel['base_patch_sha256'])
             with self.assertRaisesRegex(ValueError, 'panel-size step'):

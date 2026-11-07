@@ -74,12 +74,18 @@ class NativeGopKeepAwake(unittest.TestCase):
         current = hashlib.sha256(PATCH.read_bytes()).hexdigest()
         panel_path = DISPLAY / 'hw-panel-size.json'
         if record['patch_sha256'] != current:
-            # Only the reviewed default-off panel-size step may follow the keep-awake patch.
+            # Only the reviewed default-off panel-size step, optionally followed by the always-on copy-forward step,
+            # may follow the keep-awake patch.
             panel = json.loads(panel_path.read_text())
             self.assertEqual(panel['schema'], 'sheng-hw-display-panel-size-v1')
             self.assertEqual(panel['base_patch_sha256'], record['patch_sha256'])
-            self.assertEqual(panel['patch_sha256'], current)
             self.assertTrue(panel['default_off'])
+            if panel['patch_sha256'] != current:
+                forward = json.loads((DISPLAY / 'hw-copy-forward.json').read_text())
+                self.assertEqual(forward['schema'], 'sheng-hw-display-copy-forward-v1')
+                self.assertEqual(forward['base_patch_sha256'], panel['patch_sha256'])
+                self.assertEqual(forward['patch_sha256'], current)
+                self.assertEqual(forward['scanout_sha256'], record['scanout_sha256'])
         self.assertEqual(record['scanout_sha256'], hashlib.sha256((DISPLAY / 'gop_scanout.h').read_bytes()).hexdigest())
         self.assertEqual(record['hardware_switch']['boot_argument'], 'native-gop-keep-awake=1')
         self.assertFalse(record['compiled'] or record['hardware_run'] or record['ci_submitted'])
