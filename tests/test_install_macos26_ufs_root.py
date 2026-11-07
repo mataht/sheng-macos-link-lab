@@ -84,6 +84,133 @@ class InstallUfsRoot(unittest.TestCase):
         self.assertNotIn('readback_verified', record)
         self.assertFalse(json.loads((self.plan_dir / 'plan.json').read_text())['root_image_written'])
 
+    def test_recovery_log_requires_both_markers_and_exact_size(self):
+        original = self.device.shell
+        size = self.plan['userdata_bytes']
+        prefix = 'format_volume: wipe metadata encrypted /dev/block/bootdevice/by-name/userdata with size '
+        invalid = {
+            'missing-completion': prefix + str(size),
+            'missing-size': 'Data wipe complete.',
+            'wrong-size': 'Data wipe complete.\n' + prefix + str(size - 1),
+            'extra-zero': 'Data wipe complete.\n' + prefix + str(size) + '0\n',
+            'extra-digits': prefix + str(size) + '123\nData wipe complete.',
+            'leading-digit': 'Data wipe complete.\n' + prefix + '1' + str(size),
+            'leading-zero': 'Data wipe complete.\n' + prefix + '0' + str(size),
+            'hex-suffix': 'Data wipe complete.\n' + prefix + str(size) + 'x01',
+            'exponent-suffix': 'Data wipe complete.\n' + prefix + str(size) + 'e0',
+            'fractional-suffix': 'Data wipe complete.\n' + prefix + str(size) + '.0',
+        }
+        for label, log in invalid.items():
+            with self.subTest(label=label):
+                self.device.commands.clear()
+                def shell(command, **kwargs):
+                    if command == 'cat /tmp/recovery.log':
+                        self.device.commands.append(command)
+                        return log
+                    return original(command, **kwargs)
+                self.device.shell = shell
+                with patch('install_macos26_ufs_root.subprocess.run') as run:
+                    with self.assertRaisesRegex(ValueError, 'completed Recovery wipe'):
+                        install(self.device, self.plan_dir, self.root_dir, self.output)
+                run.assert_not_called()
+                self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+                self.assertFalse(self.output.exists())
+
+    def test_recovery_log_size_followed_by_whitespace_qualifies(self):
+        original = self.device.shell
+        def shell(command, **kwargs):
+            if command == 'cat /tmp/recovery.log':
+                self.device.commands.append(command)
+                return ('format_volume: wipe metadata encrypted /dev/block/bootdevice/by-name/userdata '
+                        f'with size {self.plan["userdata_bytes"]}\nData wipe complete.')
+            return original(command, **kwargs)
+        self.device.shell = shell
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['status'], 'verified')
+
+    def test_recovery_log_records_only_the_observed_wipe_route(self):
+        # The existing fixture deliberately has completion before the size marker: no new ordering assumption.
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output)
+        self.assertEqual(run.call_count, 1)
+        evidence = record['userdata_reset_evidence']
+        self.assertEqual((evidence['kind'], evidence['source']), ('recovery-log', '/tmp/recovery.log'))
+        self.assertEqual(evidence['capture'], 'decoded-adb-shell-output')
+        self.assertTrue(evidence['recovery_wipe_observed'])
+        self.assertEqual(evidence['artifact_sha256'],
+                         hashlib.sha256((self.output / 'recovery-wipe.log').read_bytes()).hexdigest())
+        self.assertFalse((self.output / 'android-format.json').exists())
+        updated = json.loads((self.plan_dir / 'plan.json').read_text())
+        self.assertTrue(updated['userdata_recovery_wipe_completed'])
+        self.assertFalse(updated['userdata_filesystem_rebuilt'])
+        self.assertTrue(updated['userdata_format_pending_vold'])
+
+    def android_evidence(self, **changes):
+        evidence = dict(serial=self.device.serial, read_only=True,
+                        root_partition_guid=self.plan['root_unique_guid'],
+                        userdata_partition_bytes=self.plan['userdata_bytes'], user_setup_complete='0',
+                        filesystem='f2fs', physical_partition='sda29', physical_disk='sda',
+                        filesystem_bytes=self.plan['userdata_bytes'] - (2 << 20))
+        evidence.update(changes)
+        path = self.folder / 'android-observation.json'
+        path.write_bytes(json.dumps(evidence, indent=2).replace('\n', '\r\n').encode('utf-8'))
+        return path
+
+    def android_shell_without_recovery_log(self, userdata_bytes=None):
+        original = self.device.shell
+        def shell(command, **kwargs):
+            if command == 'cat /tmp/recovery.log':
+                raise AssertionError('Android evidence must not depend on Recovery log availability')
+            if command == 'blockdev --getsize64 /dev/block/by-name/userdata':
+                self.device.commands.append(command)
+                return str(self.plan['userdata_bytes'] if userdata_bytes is None else userdata_bytes)
+            return original(command, **kwargs)
+        self.device.shell = shell
+
+    def test_android_route_works_without_recovery_log_and_preserves_evidence(self):
+        source = self.android_evidence()
+        captured = source.read_bytes()
+        self.android_shell_without_recovery_log()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output, source)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['status'], 'verified')
+        self.assertNotIn('cat /tmp/recovery.log', self.device.commands)
+        self.assertFalse((self.output / 'recovery-wipe.log').exists())
+        self.assertEqual((self.output / 'android-format.json').read_bytes(), captured)
+        evidence = record['userdata_reset_evidence']
+        self.assertEqual(evidence['kind'], 'android-filesystem')
+        self.assertEqual(evidence['capture'], 'local-file-bytes')
+        self.assertFalse(evidence['recovery_wipe_observed'])
+        self.assertEqual(evidence['artifact_sha256'], hashlib.sha256(captured).hexdigest())
+        updated = json.loads((self.plan_dir / 'plan.json').read_text())
+        self.assertIsNone(updated['userdata_recovery_wipe_completed'])
+        self.assertEqual(updated['userdata_reset_evidence_kind'], 'android-filesystem')
+        self.assertTrue(updated['userdata_filesystem_rebuilt'])
+        self.assertFalse(updated['userdata_format_pending_vold'])
+
+    def test_invalid_android_evidence_refuses_discard_and_write_without_log_fallback(self):
+        source = self.android_evidence(serial='another-device')
+        self.android_shell_without_recovery_log()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'rebuilt Android filesystem'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, source)
+        run.assert_not_called()
+        self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+        self.assertFalse(self.output.exists())
+
+    def test_android_route_keeps_current_userdata_size_gate(self):
+        source = self.android_evidence()
+        self.android_shell_without_recovery_log(userdata_bytes=self.plan['userdata_bytes'] - 4096)
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'current userdata node differs'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, source)
+        run.assert_not_called()
+        self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+        self.assertFalse(self.output.exists())
+
 
 class InstallUfsRootCn(InstallUfsRoot):
     """The same installer on the CN 1 TB LUN0 plan (repartition_sheng_cn_1tb.py)."""

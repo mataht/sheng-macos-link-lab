@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import uuid
@@ -64,27 +65,41 @@ def install(device, plan_dir, root_dir, output, android_format=None):
             or int(device.shell('blockdev --getsize64 ' + PARTITION)) != plan['root_bytes']
             or device.shell(f'ls -A /sys/class/block/sda{plan["root_index"]}/holders')):
         raise ValueError('kernel macosroot node differs from the verified GPT')
-    log = device.shell('cat /tmp/recovery.log')
+    log, android_format_bytes = None, None
     if android_format:
-        qualify_android_format(json.loads(android_format.read_text()), plan, device.serial)
+        android_format_bytes = android_format.read_bytes()
+        qualify_android_format(json.loads(android_format_bytes), plan, device.serial)
         if int(device.shell('blockdev --getsize64 /dev/block/by-name/userdata')) != plan['userdata_bytes']:
             raise ValueError('current userdata node differs from the observed Android filesystem boundary')
-    elif ('Data wipe complete.' not in log
-          or f'wipe metadata encrypted /dev/block/bootdevice/by-name/userdata with size {plan["userdata_bytes"]}' not in log):
-        raise ValueError('requires completed Recovery wipe or observed rebuilt Android filesystem')
+    else:
+        log = device.shell('cat /tmp/recovery.log')
+        size_marker = re.escape(
+            f'wipe metadata encrypted /dev/block/bootdevice/by-name/userdata with size {plan["userdata_bytes"]}')
+        if 'Data wipe complete.' not in log or not re.search(size_marker + r'(?=\s|$)', log):
+            raise ValueError('requires completed Recovery wipe or observed rebuilt Android filesystem')
     with image.open('rb') as stream:
         if stream.read(BLOCK) != manifest:
             raise ValueError('root image manifest differs from the prepared manifest')
         stream.seek(0)
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    (output / 'recovery-wipe.log').write_text(log)
     if android_format:
-        (output / 'android-format.json').write_bytes(android_format.read_bytes())
+        evidence_file = 'android-format.json'
+        (output / evidence_file).write_bytes(android_format_bytes)
+        reset_evidence = dict(kind='android-filesystem', source=str(android_format),
+                              capture='local-file-bytes', recovery_wipe_observed=False)
+    else:
+        evidence_file = 'recovery-wipe.log'
+        (output / evidence_file).write_text(log, encoding='utf-8')
+        reset_evidence = dict(kind='recovery-log', source='/tmp/recovery.log',
+                              capture='decoded-adb-shell-output', recovery_wipe_observed=True)
+    reset_evidence.update(file=evidence_file,
+                          artifact_sha256=hashlib.sha256((output / evidence_file).read_bytes()).hexdigest())
     record = dict(serial=device.serial, started_at=datetime.now(timezone.utc).isoformat(),
                   destination=PARTITION, destination_guid=plan['root_unique_guid'],
                   bytes=image.stat().st_size, sha256=digest, status='prepared',
-                  userdata_discard_authorized=True, gpt_writes=False, image_write_attempts=0)
+                  userdata_discard_authorized=True, gpt_writes=False, image_write_attempts=0,
+                  userdata_reset_evidence=reset_evidence)
     def save():
         (output / 'deployment.json').write_text(json.dumps(record, indent=2) + '\n')
     save()
@@ -112,7 +127,9 @@ def install(device, plan_dir, root_dir, output, android_format=None):
     plan.update(root_image_written=True, root_image_bytes=image.stat().st_size,
                 root_image_sha256=digest, root_image_readback_verified=True,
                 userdata_contents_discarded=True,
-                userdata_recovery_wipe_completed=True, userdata_filesystem_rebuilt=bool(android_format),
+                # Android statfs proves the rebuilt filesystem, not the preceding Recovery wipe event.
+                userdata_recovery_wipe_completed=None if android_format else True,
+                userdata_reset_evidence_kind=reset_evidence['kind'], userdata_filesystem_rebuilt=bool(android_format),
                 userdata_format_pending_vold=not bool(android_format))
     (plan_dir / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     return record
