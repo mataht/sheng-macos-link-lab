@@ -142,8 +142,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             cwd=Path(compile_record['directory']), env=env)
         objects.append(str(input_object))
     if button_keys:
+        from prepare_macos26_input import prepare_apple_hid_headers
         keys = destination / 'button-keys'
         keys.mkdir(exist_ok=True)
+        prepare_apple_hid_headers(root, keys)
         for name in ('native_button_keys.cpp', 'spmi_keys.h'):
             (keys / name).write_bytes((root / 'platform/sheng/macos26/input' / name).read_bytes())
         keys_object = keys / 'NativeButtonKeys.o'
@@ -154,6 +156,7 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         if keys_command[user_headers - 1] != '-I':
             raise ValueError('unexpected user SDK include option')
         del keys_command[user_headers - 1:user_headers + 1]
+        keys_command[1:1] = ['-I', str(keys / 'include')]
         keys_command += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
         run(keys_command, directory + '-button-keys-compile', record, cwd=Path(compile_record['directory']), env=env)
         objects.append(str(keys_object))
