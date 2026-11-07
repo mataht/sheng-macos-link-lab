@@ -47,6 +47,9 @@ FORWARD = (
     '            uint8_t *target = reinterpret_cast<uint8_t *>(other.writable->getVirtualAddress());\n'
     '            for (uint64_t y = 0; y < height; y++)\n'
     '                __builtin_memcpy(target + y * rowBytes, source + y * rowBytes, sourceRowBytes);\n'
+    '            // WindowServer may map its surfaces write-combined: clean the cached copy to memory so its reads see it\n'
+    '            // and no dirty line written back later can overwrite what it draws next.\n'
+    '            other.memory->performOperation(kIOMemoryIncoherentIOStore, other.base, span);\n'
     '            fForwardCopies++;\n'
     '        }\n'
     '    }\n')
