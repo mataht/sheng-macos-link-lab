@@ -36,7 +36,8 @@ jobs:
           for t in test_native_log_file test_native_log_persistence test_repartition_sheng_cn_1tb \
                    test_native_gop_keep_awake test_native_gop_scanout test_prepare_macos26_gop \
                    test_package_macos26_ufs test_native_devtree test_recovery_ui_evidence \
-                   test_native_button_keys test_display_diagnostic_evidence test_display_waiver_evidence; do
+                   test_native_button_keys test_display_diagnostic_evidence test_display_waiver_evidence \
+                   test_qualification_reuse; do
             python3 -m unittest discover -s tests -p "$t.py" -v
           done
       - name: Full suite (informational; some baseline tests need local-only observers)

@@ -21,6 +21,7 @@ from native_log_file import CONTRACT as LOG_CONTRACT, LAYOUT as LOG_LAYOUT, BLOC
 from recovery_ui_evidence import qualify_language_selector
 from display_diagnostic_evidence import qualify_display_observation
 from display_waiver_evidence import qualify_display_waiver
+from qualification_reuse import compare_scope, display_hardware_verification
 from capture_persistent_log import RAM_RANGES as LOG_RAM_RANGES
 
 # 12 GiB of the 13 GiB contiguous run 0x8C0000000..0xC00000000 (uefi-sheng 0004 on the CN 16 GB unit); the
@@ -428,6 +429,14 @@ def main():
     parser.add_argument('--display-waiver', type=Path,
                         help='explicit user waiver of the complete same-kernel QEMU display window, bound to a partial '
                              'same-kernel display fixture; records the unobserved checks, qualifies nothing')
+    parser.add_argument('--qualification-reference', type=Path,
+                        help='tiered qualification: an already qualified kernel build whose long QEMU evidence is reused when '
+                             'the CI records show only display/input changes (qualification_reuse.py)')
+    parser.add_argument('--reference-dyld-observation', type=Path,
+                        help='the reference kernel\'s development dyld/ISC observation (with --qualification-reference)')
+    parser.add_argument('--display-hardware-verification', action='store_true',
+                        help='tiered qualification: enable the GOP display without same-kernel QEMU display evidence; display '
+                             'behaviour is verified on the tablet (requires --qualification-reference)')
     parser.add_argument('--platform-uuid', type=uuid.UUID,
                         help='owned platform UUID for /options and the volatile NVRAM proxy (never an Apple identity)')
     parser.add_argument('--button-keys', action='store_true',
@@ -436,7 +445,8 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
-    gui = args.recovery_ui_observation or args.display_observation or args.display_waiver
+    gui = (args.recovery_ui_observation or args.display_observation or args.display_waiver
+           or args.display_hardware_verification)
     if args.display_keep_awake and not gui:
         parser.error('--display-keep-awake requires --recovery-ui-observation or --display-observation')
     if (args.button_keys or args.panel_size_mm) and not gui:
@@ -445,9 +455,18 @@ def main():
         parser.error('--display-observation is the display-only diagnostic; do not combine it with the UI qualification')
     if args.display_waiver and (args.display_observation or args.recovery_ui_observation):
         parser.error('--display-waiver replaces the display evidence; do not combine it with an observation')
+    if args.display_hardware_verification and (args.display_observation or args.recovery_ui_observation
+                                               or args.display_waiver):
+        parser.error('--display-hardware-verification replaces the display evidence; do not combine it')
+    if bool(args.qualification_reference) != bool(args.reference_dyld_observation):
+        parser.error('--qualification-reference and --reference-dyld-observation must be used together')
+    if args.display_hardware_verification and not args.qualification_reference:
+        parser.error('--display-hardware-verification is part of the tiered qualification (--qualification-reference)')
+    if args.qualification_reference and args.dyld_observation:
+        parser.error('use either the same-kernel --dyld-observation or the reference observation, not both')
     if args.platform_uuid is not None and args.platform_uuid.int == 0:
         parser.error('--platform-uuid cannot be nil')
-    if args.development_no_ignition != bool(args.dyld_observation):
+    if args.development_no_ignition != bool(args.dyld_observation or args.reference_dyld_observation):
         parser.error('--development-no-ignition and --dyld-observation must be used together')
     if args.isc_overlay and not args.development_no_ignition:
         parser.error('--isc-overlay requires the qualified explicit development root')
@@ -498,11 +517,22 @@ def main():
     geometry = tomllib.loads((ROOT / 'uefi-sheng/Resources/Configs/sheng.toml').read_text())['boot_image']
     os_version = stock_version_for_v0(boot, stock_boot.stat().st_size, geometry['header_version'])
     boot_args = NATIVE_BOOT_ARGS + ' -sheng-early-console -sheng-capture-handoff native-ufs-root=1 native-ufs-diagnostics=1'
+    reuse = None
+    dyld_build, dyld_observation, dyld_identity = args.kernel_build, args.dyld_observation, identity
+    if args.qualification_reference:
+        # Tiered qualification: the CI records must show only display/input changes against the qualified reference.
+        reuse = compare_scope(args.kernel_build, args.qualification_reference)
+        if reuse['kernel_sha256'] != identity['kernel_sha256']:
+            raise ValueError('tiered qualification record differs from the packaged kernel')
+        dyld_build, dyld_observation = args.qualification_reference, args.reference_dyld_observation
+        dyld_identity = identify(args.qualification_reference)[2]
+        reuse['reference_identity'] = dyld_identity
+        reuse['reference_dyld_observation'] = str(args.reference_dyld_observation.resolve())
     if args.development_no_ignition:
-        qualify_development_dyld(args.kernel_build, args.dyld_observation, identity, args.root_volume_uuid)
+        qualify_development_dyld(dyld_build, dyld_observation, dyld_identity, args.root_volume_uuid)
         boot_args += ' -sheng-development-no-ignition'
     if args.isc_overlay:
-        qualify_isc_overlay(args.kernel_build, args.dyld_observation, identity, args.root_volume_uuid)
+        qualify_isc_overlay(dyld_build, dyld_observation, dyld_identity, args.root_volume_uuid)
         boot_args += ' native-ufs-isc-overlay=1'
     log_qualification = None
     if args.macoslog_observation:
@@ -519,6 +549,9 @@ def main():
         boot_args += ' ' + display_qualification['boot_argument']
     elif args.display_waiver:
         display_qualification = qualify_display_waiver(args.kernel_build, args.display_waiver, identity)
+        boot_args += ' ' + display_qualification['boot_argument']
+    elif args.display_hardware_verification:
+        display_qualification = display_hardware_verification()
         boot_args += ' ' + display_qualification['boot_argument']
     gop_enabled = bool(ui_qualification or display_qualification)
     button_keys = None
@@ -628,11 +661,12 @@ def main():
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
                 display_qualification_waived=bool(args.display_waiver),
+                qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
                 display_keep_awake=keep_awake, smp=smp_qualification,
                 boot_progress=progress_qualification,
                 native_recovery_input=False, physical_input_qualified=False,
-                dyld_observation=str(args.dyld_observation.resolve()) if args.dyld_observation else None,
+                dyld_observation=str(dyld_observation.resolve()) if dyld_observation else None,
                 root_variant='recoveryos', recovery_transport_is_not_authentication=True,
                 deployment_scope='fastboot boot only; no boot/recovery/UEFI partition flashing')
             (args.output / 'build.json').write_text(json.dumps(record, indent=2) + '\n')
