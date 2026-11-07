@@ -164,6 +164,29 @@ class Device:
             self.shell('rm -f ' + shlex.quote(remote))
 
 
+def validate_fat16(data):
+    """Check the bounded empty-volume format used for the dedicated log partition."""
+    if len(data) != LOG_BLOCKS * BLOCK:
+        raise ValueError('macoslog image size differs from the reviewed extent')
+    sector, cluster, reserved, fats, entries, sectors, _, fat_blocks = struct.unpack_from('<HBHBHHBH', data, 11)
+    if (data[510:512] != b'\x55\xaa' or data[54:62] != b'FAT16   ' or data[43:54] != b'MACOSLOG   '
+            or sector != BLOCK or cluster != 1 or fats != 2 or sectors != LOG_BLOCKS
+            or data[21] != 0xf8
+            or not 0 < reserved < LOG_BLOCKS or not 0 < fat_blocks <= 32
+            or not 0 < entries <= 1024 or entries % (BLOCK // 32)
+            or struct.unpack_from('<I', data, 32)[0] != 0):
+        raise ValueError('macoslog image is not the expected 4 KiB-sector FAT16 volume')
+    root_first = reserved + fats * fat_blocks
+    data_first = root_first + entries * 32 // BLOCK
+    clusters = (sectors - data_first) // cluster
+    if not 4085 <= clusters < 65525 or (clusters + 2) * 2 > fat_blocks * BLOCK:
+        raise ValueError('macoslog FAT16 data or allocation-table extent is invalid')
+    first = data[reserved * BLOCK:(reserved + fat_blocks) * BLOCK]
+    second = data[(reserved + fat_blocks) * BLOCK:(reserved + 2 * fat_blocks) * BLOCK]
+    if first[:4] != b'\xf8\xff\xff\xff' or first != second:
+        raise ValueError('macoslog FAT16 allocation-table copies differ')
+
+
 def make_fat16(image):
     """Format the macoslog image. ADB reaches the tablet only from Windows, where dosfstools runs in WSL."""
     command = ['mkfs.fat', '-F', '16', '-S', str(BLOCK), '-s', '1', '-n', 'MACOSLOG']
@@ -175,10 +198,51 @@ def make_fat16(image):
     else:
         command.append(str(image))
     subprocess.run(command, check=True, capture_output=True)
-    data = image.read_bytes()
-    if (len(data) != LOG_BLOCKS * BLOCK or data[510:512] != b'\x55\xaa' or data[54:62] != b'FAT16   '
-            or data[43:54] != b'MACOSLOG   ' or struct.unpack_from('<H', data, 11)[0] != BLOCK or data[13] != 1):
-        raise ValueError('macoslog image is not the expected 4 KiB-sector FAT16 volume')
+    validate_fat16(image.read_bytes())
+
+
+def validate_prepared(directory, record=None):
+    """Read-only host preflight; reconstruct every planned extent before any journal or device write.
+
+    A valid GPT CRC is not proof of the intended layout. The log write uses plan.json directly, so its
+    destination must also equal the reviewed layout even when both after-GPT files remain unchanged.
+    This validates local prepared artifacts only; apply() still independently binds the live device.
+    """
+    directory = Path(directory)
+    if record is None:
+        record = json.loads((directory / 'plan.json').read_text())
+    if record.get('disk_lbas') != LUN0_LBAS:
+        raise ValueError('prepared plan capacity differs from the reviewed CN 1 TB device')
+    before = {name: (directory / f'before-{name}.bin').read_bytes() for name in ('primary', 'secondary')}
+    for name, data in before.items():
+        if len(data) != WINDOW or sha(data) != record.get('before', {}).get(name):
+            raise ValueError('prepared before-GPT identity differs: ' + name)
+    try:
+        root_guid = uuid.UUID(record['root_unique_guid'])
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise ValueError('prepared macosroot identity is invalid') from error
+    if root_guid.int == 0:
+        raise ValueError('prepared macosroot identity must be nonzero')
+    expected, layout_record = layout(before['primary'], before['secondary'], LUN0_LBAS, root_guid)
+    for key, value in layout_record.items():
+        # Bind JSON types too: an equal-valued float is not an integer dd seek/count argument.
+        if json.dumps(record.get(key), sort_keys=True) != json.dumps(value, sort_keys=True):
+            raise ValueError('prepared plan differs from the recomputed layout: ' + key)
+    after_hashes = {}
+    for name, data in expected.items():
+        actual = (directory / f'after-{name}.bin').read_bytes()
+        if actual != data:
+            raise ValueError('prepared after-GPT differs from the recomputed layout: ' + name)
+        after_hashes[name] = sha(actual)
+    image = (directory / 'macoslog-fat16.img').read_bytes()
+    validate_fat16(image)
+    digest = sha(image)
+    if digest != record.get('macoslog_filesystem_image_sha256'):
+        raise ValueError('prepared macoslog image SHA-256 differs from the plan')
+    return dict(validated=True, device_checked=False, device_writes=False, layout=layout_record['layout'],
+                after_sha256=after_hashes, macoslog_filesystem_image_sha256=digest,
+                macoslog=layout_record['macoslog'], macosroot=layout_record['macosroot'],
+                userdata=layout_record['userdata'], unallocated=layout_record['unallocated'])
 
 
 def prepare(device, directory, baseline):
@@ -210,6 +274,7 @@ def apply(device, directory):
     if record['applied'] or record['serial'] != device.serial or record['disk_lbas'] != device.lbas:
         raise ValueError('stale or already applied destructive plan')
     device.require_recovery()
+    validate_prepared(directory, record)
     for name, start in (('primary', 0), ('secondary', device.lbas - ALIGN)):
         raw = device.read(start, ALIGN)
         if sha(raw) != record['before'][name] or raw != (directory / f'before-{name}.bin').read_bytes():
