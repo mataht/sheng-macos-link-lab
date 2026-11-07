@@ -6,9 +6,11 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stderr
+import io
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from install_macos26_ufs_root import install, PARTITION
+from install_macos26_ufs_root import install, main, PARTITION
 from prepare_macos26_ufs_root import prepare
 from repartition_macos26_root import BLOCK, WINDOW, layout
 import test_repartition_macos26_root as partition_fixture
@@ -211,6 +213,20 @@ class InstallUfsRoot(unittest.TestCase):
         self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
         self.assertFalse(self.output.exists())
 
+    def test_filesystem_evidence_routes_are_mutually_exclusive_before_device_access(self):
+        missing = self.folder / 'not-read.json'
+        with self.assertRaisesRegex(ValueError, 'mutually exclusive'):
+            install(self.device, self.plan_dir, self.root_dir, self.output, missing, missing)
+        self.assertEqual(self.device.commands, [])
+        args = ['install_macos26_ufs_root.py', '--serial', self.device.serial,
+                '--partition-plan', str(self.plan_dir), '--root-build', str(self.root_dir), '--output', str(self.output),
+                '--android-format', str(missing), '--recovery-format', str(missing)]
+        with patch.object(sys, 'argv', args), patch('install_macos26_ufs_root.Device') as device, redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                main()
+        self.assertEqual(error.exception.code, 2)
+        device.assert_not_called()
+
 
 class InstallUfsRootCn(InstallUfsRoot):
     """The same installer on the CN 1 TB LUN0 plan (repartition_sheng_cn_1tb.py)."""
@@ -261,6 +277,70 @@ class InstallUfsRootCn(InstallUfsRoot):
         self.assertTrue(updated['root_image_readback_verified'])
         self.assertEqual(updated['root_image_sha256'], record['sha256'])
         self.assertIn('readlink -f ' + PARTITION, self.device.commands)
+
+    def recovery_evidence(self):
+        from test_capture_recovery_userdata_format import make_raw, encode_raw
+        from capture_recovery_userdata_format import parse
+        plan_bytes, raw = make_raw((self.plan_dir / 'plan.json').read_bytes(), self.device.serial)
+        evidence = parse(self.device.serial, plan_bytes, encode_raw(raw))
+        source = self.folder / 'recovery-observation.json'
+        source.write_bytes(json.dumps(evidence, indent=2).replace('\n', '\r\n').encode())
+        return source
+
+    def test_recovery_filesystem_route_preserves_evidence_and_pending_android_state(self):
+        source = self.recovery_evidence()
+        saved = source.read_bytes()
+        self.android_shell_without_recovery_log()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            record = install(self.device, self.plan_dir, self.root_dir, self.output, recovery_format=source)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(record['status'], 'verified')
+        self.assertNotIn('cat /tmp/recovery.log', self.device.commands)
+        self.assertFalse((self.output / 'recovery-wipe.log').exists())
+        self.assertEqual((self.output / 'recovery-format.json').read_bytes(), saved)
+        evidence = record['userdata_reset_evidence']
+        self.assertEqual(evidence['kind'], 'stock-recovery-filesystem')
+        self.assertFalse(evidence['recovery_wipe_observed'])
+        self.assertEqual(evidence['artifact_sha256'], hashlib.sha256(saved).hexdigest())
+        updated = json.loads((self.plan_dir / 'plan.json').read_bytes())
+        self.assertIsNone(updated['userdata_recovery_wipe_completed'])
+        self.assertTrue(updated['userdata_filesystem_rebuilt'])
+        self.assertTrue(updated['userdata_format_pending_vold'])
+        self.assertFalse(updated['userdata_android_initialization_observed'])
+
+    def test_recovery_derived_tampering_refuses_discard_and_write(self):
+        source = self.recovery_evidence()
+        evidence = json.loads(source.read_bytes())
+        evidence['filesystem_bytes'] = 1
+        source.write_text(json.dumps(evidence))
+        self.android_shell_without_recovery_log()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'derived fields'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, recovery_format=source)
+        run.assert_not_called()
+        self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+        self.assertFalse(self.output.exists())
+
+    def test_recovery_evidence_from_an_older_plan_refuses_discard_and_write(self):
+        source = self.recovery_evidence()
+        (self.plan_dir / 'plan.json').write_bytes((self.plan_dir / 'plan.json').read_bytes() + b'\n')
+        self.android_shell_without_recovery_log()
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'bound to the applied CN plan'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, recovery_format=source)
+        run.assert_not_called()
+        self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+        self.assertFalse(self.output.exists())
+
+    def test_recovery_route_keeps_current_userdata_size_gate(self):
+        source = self.recovery_evidence()
+        self.android_shell_without_recovery_log(userdata_bytes=self.plan['userdata_bytes'] - 4096)
+        with patch('install_macos26_ufs_root.subprocess.run') as run:
+            with self.assertRaisesRegex(ValueError, 'current userdata node differs'):
+                install(self.device, self.plan_dir, self.root_dir, self.output, recovery_format=source)
+        run.assert_not_called()
+        self.assertFalse(any(c.startswith('blkdiscard') for c in self.device.commands))
+        self.assertFalse(self.output.exists())
 
 
 if __name__ == '__main__':

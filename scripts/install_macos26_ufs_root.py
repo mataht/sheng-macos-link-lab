@@ -12,6 +12,7 @@ import subprocess
 import uuid
 
 from create_log_partition import geometry
+from capture_recovery_userdata_format import qualify_recovery_format
 from native_log_file import LAYOUT
 if LAYOUT['name'] == 'sheng-cn-1tb-lun0':
     # CN 1 TB unit: the plan comes from repartition_sheng_cn_1tb.py, whose Device checks this LUN0 and Recovery.
@@ -34,8 +35,11 @@ def qualify_android_format(evidence, plan, serial):
         raise ValueError('requires the freshly rebuilt Android filesystem within resized userdata')
 
 
-def install(device, plan_dir, root_dir, output, android_format=None):
-    plan = json.loads((plan_dir / 'plan.json').read_text())
+def install(device, plan_dir, root_dir, output, android_format=None, recovery_format=None):
+    if android_format and recovery_format:
+        raise ValueError('Android and stock Recovery filesystem evidence are mutually exclusive')
+    plan_bytes = (plan_dir / 'plan.json').read_bytes()
+    plan = json.loads(plan_bytes)
     build = json.loads((root_dir / 'build.json').read_text())
     image = root_dir / 'macosroot.img'
     manifest = (root_dir / 'manifest.bin').read_bytes()
@@ -65,12 +69,15 @@ def install(device, plan_dir, root_dir, output, android_format=None):
             or int(device.shell('blockdev --getsize64 ' + PARTITION)) != plan['root_bytes']
             or device.shell(f'ls -A /sys/class/block/sda{plan["root_index"]}/holders')):
         raise ValueError('kernel macosroot node differs from the verified GPT')
-    log, android_format_bytes = None, None
-    if android_format:
-        android_format_bytes = android_format.read_bytes()
-        qualify_android_format(json.loads(android_format_bytes), plan, device.serial)
+    log, format_bytes = None, None
+    if android_format or recovery_format:
+        format_bytes = (android_format or recovery_format).read_bytes()
+        if android_format:
+            qualify_android_format(json.loads(format_bytes), plan, device.serial)
+        else:
+            qualify_recovery_format(json.loads(format_bytes), plan_bytes, device.serial)
         if int(device.shell('blockdev --getsize64 /dev/block/by-name/userdata')) != plan['userdata_bytes']:
-            raise ValueError('current userdata node differs from the observed Android filesystem boundary')
+            raise ValueError('current userdata node differs from the observed filesystem boundary')
     else:
         log = device.shell('cat /tmp/recovery.log')
         size_marker = re.escape(
@@ -83,10 +90,11 @@ def install(device, plan_dir, root_dir, output, android_format=None):
         stream.seek(0)
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
-    if android_format:
-        evidence_file = 'android-format.json'
-        (output / evidence_file).write_bytes(android_format_bytes)
-        reset_evidence = dict(kind='android-filesystem', source=str(android_format),
+    if android_format or recovery_format:
+        evidence_file = 'android-format.json' if android_format else 'recovery-format.json'
+        (output / evidence_file).write_bytes(format_bytes)
+        reset_evidence = dict(kind='android-filesystem' if android_format else 'stock-recovery-filesystem',
+                              source=str(android_format or recovery_format),
                               capture='local-file-bytes', recovery_wipe_observed=False)
     else:
         evidence_file = 'recovery-wipe.log'
@@ -127,10 +135,14 @@ def install(device, plan_dir, root_dir, output, android_format=None):
     plan.update(root_image_written=True, root_image_bytes=image.stat().st_size,
                 root_image_sha256=digest, root_image_readback_verified=True,
                 userdata_contents_discarded=True,
-                # Android statfs proves the rebuilt filesystem, not the preceding Recovery wipe event.
-                userdata_recovery_wipe_completed=None if android_format else True,
-                userdata_reset_evidence_kind=reset_evidence['kind'], userdata_filesystem_rebuilt=bool(android_format),
+                # Filesystem observations do not directly observe the preceding Recovery wipe event.
+                userdata_recovery_wipe_completed=None if android_format or recovery_format else True,
+                userdata_reset_evidence_kind=reset_evidence['kind'],
+                userdata_filesystem_rebuilt=bool(android_format or recovery_format),
+                # Stock Recovery directly mounts F2FS; Android vold/metadata encryption is still unobserved.
                 userdata_format_pending_vold=not bool(android_format))
+    if recovery_format:
+        plan['userdata_android_initialization_observed'] = False
     (plan_dir / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
     return record
 
@@ -141,11 +153,14 @@ def main():
     parser.add_argument('--partition-plan', required=True, type=Path)
     parser.add_argument('--root-build', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--android-format', type=Path,
-                        help='read-only Android statfs evidence after Recovery wipe and filesystem rebuild')
+    evidence = parser.add_mutually_exclusive_group()
+    evidence.add_argument('--android-format', type=Path,
+                          help='read-only Android statfs evidence after Recovery wipe and filesystem rebuild')
+    evidence.add_argument('--recovery-format', type=Path,
+                          help='qualified saved stock Recovery filesystem observations (not an Android initialization)')
     args = parser.parse_args()
     print(json.dumps(install(Device(args.serial), args.partition_plan, args.root_build, args.output,
-                             args.android_format), indent=2))
+                             args.android_format, args.recovery_format), indent=2))
 
 
 if __name__ == '__main__':
