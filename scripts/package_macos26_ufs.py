@@ -191,6 +191,17 @@ def qualify_full_driver(driver, contract):
         raise ValueError('requires the compiled full-system root identity and its volatile overlay')
 
 
+def qualify_full_writes(driver):
+    writes = driver['build'].get('full_root_writes', {})
+    header = ROOT / 'platform/sheng/macos26/storage/full_root_writes.h'
+    if (writes.get('boot_argument') != 'native-ufs-root-writes=1' or writes.get('default_off') is not True
+            or writes.get('window_only') is not True or writes.get('header_excluded') is not True
+            or writes.get('fail_stop') is not True or writes.get('exclusive_with_overlay') is not True
+            or writes.get('header_sha256') != hashlib.sha256(header.read_bytes()).hexdigest()):
+        raise ValueError('requires the compiled window-confined, fail-stop persistent root write path')
+    return writes
+
+
 def qualify_full_system_dyld(build, observation, identity, contract):
     """Same kernel, full-system image in QEMU: skipIgnition published and the original launchd main reached."""
     patch = ROOT / 'platform/sheng/macos26/patches/0053-development-dyld-commpage.patch'
@@ -483,6 +494,9 @@ def main():
     parser.add_argument('--full-system-install', type=Path, help='verified install_macos26_full_system.py output')
     parser.add_argument('--root-overlay-mib', type=int,
                         help='volatile RAM overlay for the full-system root (256..8192 MiB; writes never reach UFS)')
+    parser.add_argument('--root-writes', action='store_true',
+                        help='full-system root: persistent writes confined to the OS window of macossystem '
+                             '(native-ufs-root-writes=1; fail-stop); exclusive with --root-overlay-mib')
     parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
                         help='experiment: also publish chosen/root-snapshot-name')
     parser.add_argument('--firmware-build', type=Path, required=True)
@@ -530,10 +544,12 @@ def main():
     args = parser.parse_args()
     recovery_inputs = ('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
     if args.full_system:
-        missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install', 'root_overlay_mib')
+        missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install')
                    if getattr(args, n) is None]
         if missing:
             parser.error('--full-system requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
+        if (args.root_overlay_mib is None) == (not args.root_writes):
+            parser.error('--full-system needs exactly one of --root-overlay-mib (volatile) or --root-writes (persistent)')
         excluded = [n for n in recovery_inputs + ('recovery_ui_observation', 'display_observation', 'display_waiver',
                                                   'qualification_reference', 'reference_dyld_observation',
                                                   'panel_size_mm', 'platform_uuid')
@@ -543,7 +559,7 @@ def main():
         if excluded:
             parser.error('--full-system excludes Recovery and display inputs: '
                          + ', '.join('--' + n.replace('_', '-') for n in excluded))
-        if not 256 <= args.root_overlay_mib <= 8192:
+        if args.root_overlay_mib is not None and not 256 <= args.root_overlay_mib <= 8192:
             parser.error('--root-overlay-mib must be within 256..8192')
         if not args.development_no_ignition or not args.dyld_observation:
             parser.error('--full-system requires --development-no-ignition with its full-system --dyld-observation')
@@ -552,7 +568,7 @@ def main():
         if missing:
             parser.error('the Recovery root requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
         if any(getattr(args, n) for n in ('full_system_plan', 'full_system_package', 'full_system_install',
-                                          'root_overlay_mib', 'full_system_adt_snapshot_name')):
+                                          'root_overlay_mib', 'root_writes', 'full_system_adt_snapshot_name')):
             parser.error('full-system inputs require --full-system')
     gui = (args.recovery_ui_observation or args.display_observation or args.display_waiver
            or args.display_hardware_verification)
@@ -592,7 +608,10 @@ def main():
         full_contract = full_root_contract(ROOT)
         kernel, symbols, identity, relink, refused = qualify_kernel(args.kernel_build, args.qemu_observation,
             args.bootstrap_observation, args.default_off_observation)
-        qualify_full_driver(qualify_ufs_driver(relink, refused, identity, 'macossystem', full_contract), full_contract)
+        full_driver = qualify_ufs_driver(relink, refused, identity, 'macossystem', full_contract)
+        qualify_full_driver(full_driver, full_contract)
+        if args.root_writes:
+            qualify_full_writes(full_driver)
         media, partition = qualify_full_deployment(args.full_system_plan, args.full_system_package,
                                                    args.full_system_install, full_contract)
         root_hash = None
@@ -651,7 +670,8 @@ def main():
         reuse['reference_dyld_observation'] = str(args.reference_dyld_observation.resolve())
     if args.development_no_ignition and full_contract:
         qualify_full_system_dyld(dyld_build, dyld_observation, dyld_identity, full_contract)
-        boot_args += f' -sheng-development-no-ignition -nobsdmgroot native-ufs-root-overlay-mib={args.root_overlay_mib}'
+        boot_args += ' -sheng-development-no-ignition -nobsdmgroot ' + (
+            'native-ufs-root-writes=1' if args.root_writes else f'native-ufs-root-overlay-mib={args.root_overlay_mib}')
     elif args.development_no_ignition:
         qualify_development_dyld(dyld_build, dyld_observation, dyld_identity, args.root_volume_uuid)
         boot_args += ' -sheng-development-no-ignition'
@@ -799,6 +819,7 @@ def main():
                 dyld_observation=str(dyld_observation.resolve()) if dyld_observation else None,
                 root_variant='full-system' if full_contract else 'recoveryos',
                 full_system=dict(contract=full_contract, root_overlay_mib=args.root_overlay_mib,
+                                 persistent_root_writes=args.root_writes, disk_writes=args.root_writes,
                                  overlay_disk_writes=False, overlay_persistent=False,
                                  adt_root_snapshot_name=args.full_system_adt_snapshot_name,
                                  deployment=media) if full_contract else None,

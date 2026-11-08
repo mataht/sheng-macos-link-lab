@@ -267,6 +267,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             evidence['full_root_overlay'] = dict(recovery_root['overlay'], volume_group=recovery_root['volume_group'],
                 header_sha256=hashlib.sha256((root / 'platform/sheng/macos26/storage/full_root_overlay.h').read_bytes()).hexdigest(),
                 seed_read_only=True, hardware_qualified=False)
+            evidence['full_root_writes'] = dict(boot_argument='native-ufs-root-writes=1', default_off=True,
+                window_only=True, header_excluded=True, fail_stop=True, exclusive_with_overlay=True,
+                force_unit_access_honoured=True, cache_flush='SYNCHRONIZE CACHE(10)', hardware_qualified=False,
+                header_sha256=hashlib.sha256((root / 'platform/sheng/macos26/storage/full_root_writes.h').read_bytes()).hexdigest())
             evidence['full_system_root'] = True  # absent from Recovery builds, keeping their records unchanged
         evidence.update(root_partition=FULL_ROOT_PARTITION if full_root else 'macosroot', root_lun=0,
                         android_userdata_used=False, root_media_layout_qualified=False,

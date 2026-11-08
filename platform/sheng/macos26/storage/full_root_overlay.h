@@ -111,3 +111,6 @@ static void ufsTieredRelease (Ops &ops, UfsTieredDisk &disk)
   }
   disk.resident = disk.tableBytes = 0;
 }
+
+// Persistent writes share the same OS-window geometry and helpers.
+#include "full_root_writes.h"

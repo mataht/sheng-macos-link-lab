@@ -6,7 +6,7 @@
 #include <cstring>
 #include <vector>
 using IOReturn = int;
-constexpr int kIOReturnSuccess = 0, kIOReturnBadArgument = 1, kIOReturnIOError = 2, kIOReturnNoMemory = 3;
+constexpr int kIOReturnSuccess = 0, kIOReturnBadArgument = 1, kIOReturnIOError = 2, kIOReturnNoMemory = 3, kIOReturnNotWritable = 4;
 constexpr unsigned kDataMax = 131072;
 #include "../UniXNU/drivers/NativeUfs/RootWindowRead.h"
 #include "../platform/sheng/macos26/storage/full_root_overlay.h"

@@ -95,6 +95,18 @@ class FullSystemPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'full-system image'):
                 packager.qualify_full_system_dyld(build, observation, identity, self.contract)
 
+    def test_persistent_writes_require_the_compiled_fail_stop_window(self):
+        header = ROOT / 'platform/sheng/macos26/storage/full_root_writes.h'
+        writes = dict(boot_argument='native-ufs-root-writes=1', default_off=True, window_only=True,
+                      header_excluded=True, fail_stop=True, exclusive_with_overlay=True,
+                      header_sha256=hashlib.sha256(header.read_bytes()).hexdigest())
+        self.assertEqual(packager.qualify_full_writes(dict(build=dict(full_root_writes=writes))), writes)
+        for change in (dict(fail_stop=False), dict(window_only=False), dict(header_sha256='0' * 64), dict(default_off=False)):
+            with self.assertRaisesRegex(ValueError, 'fail-stop persistent'):
+                packager.qualify_full_writes(dict(build=dict(full_root_writes=writes | change)))
+        with self.assertRaisesRegex(ValueError, 'fail-stop persistent'):
+            packager.qualify_full_writes(dict(build={}))
+
     def run_main(self, *arguments):
         common = ['--kernel-build', 'k', '--qemu-observation', 'q', '--bootstrap-observation', 'b',
                   '--default-off-observation', 'd', '--firmware-build', 'f', '--backup-dir', 'x', '--output', 'o']
@@ -113,6 +125,9 @@ class FullSystemPackageTests(unittest.TestCase):
         self.assertIn('excludes Recovery', self.run_main(*full, '--root-hash', 'h'))
         self.assertIn('excludes Recovery', self.run_main(*full, '--button-keys'))
         self.assertIn('256..8192', self.run_main(*full[:-4], '128', '--development-no-ignition', '--dyld-observation', 'o'))
+        self.assertIn('exactly one', self.run_main(*full, '--root-writes'))
+        no_mode = [a for a in full if a not in ('--root-overlay-mib', '1024')]
+        self.assertIn('exactly one', self.run_main(*no_mode))
         self.assertIn('require --full-system', self.run_main('--root-deployment', 'a', '--partition-plan', 'b',
                                                              '--root-build', 'c', '--root-hash', 'd',
                                                              '--root-volume-uuid', '808eac5e-8275-478d-814c-2229d8eb8d07',

@@ -1,0 +1,156 @@
+diff --git a/drivers/NativeUfs/RootCommands.h b/drivers/NativeUfs/RootCommands.h
+--- a/drivers/NativeUfs/RootCommands.h
++++ b/drivers/NativeUfs/RootCommands.h
+@@ -275,6 +275,12 @@
+ }
+ #endif
+ static uint64_t gStoreFirst = 0, gStoreBlocks = 0, gLogFirst = 0, gLogBlocks = 0;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++// Full-system development root: the OS window itself (never the SHNGROOT header or any other partition),
++// opened once by the explicit native-ufs-root-writes=1 boot argument.
++static bool gRootWindowOpen = false;
++static uint64_t gRootWindowFirst = 0, gRootWindowBlocks = 0;
++#endif
+ 
+ static bool hostLogOpen (uint64_t first, uint64_t blocks)
+ {
+@@ -289,6 +295,10 @@
+ static bool hostInWindow (uint64_t lba, uint32_t blocks)
+ {
+   if (gStoreOpen && lba >= gStoreFirst && lba - gStoreFirst < gStoreBlocks && blocks <= gStoreBlocks - (lba - gStoreFirst)) return true;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  if (gRootWindowOpen && lba >= gRootWindowFirst && lba - gRootWindowFirst < gRootWindowBlocks &&
++      blocks <= gRootWindowBlocks - (lba - gRootWindowFirst)) return true;
++#endif
+   return gLogOpen && lba >= gLogFirst && lba - gLogFirst < gLogBlocks && blocks <= gLogBlocks - (lba - gLogFirst);
+ }
+ 
+@@ -301,6 +311,19 @@
+   gStoreOpen = true;
+   return true;
+ }
++
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++static bool hostRootWindowOpen (uint64_t first, uint64_t blocks)
++{
++  if (gRootWindowOpen || !blocks || first > 0xffffffffULL || blocks > 0xffffffffULL - first) return false;
++  if (gStoreOpen && first < gStoreFirst + gStoreBlocks && gStoreFirst < first + blocks) return false;
++  if (gLogOpen && first < gLogFirst + gLogBlocks && gLogFirst < first + blocks) return false;
++  gRootWindowFirst = first;
++  gRootWindowBlocks = blocks;
++  gRootWindowOpen = true;
++  return true;
++}
++#endif
+ 
+ // WRITE(10) of 4096-byte blocks; both LUN and range must match an explicitly opened window.
+ static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const void *src, bool fua = false)
+@@ -327,7 +350,11 @@
+ // SYNCHRONIZE CACHE(10) for the whole LUN: everything written so far is on the medium when this returns.
+ static IOReturn hostSyncCache (void)
+ {
+-  if (!gHost.ready || (!gStoreOpen && !gLogOpen)) return kIOReturnNotReady;
++  bool anyWindow = gStoreOpen || gLogOpen;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  anyWindow = anyWindow || gRootWindowOpen;
++#endif
++  if (!gHost.ready || !anyWindow) return kIOReturnNotReady;
+   IOLockLock (gHost.lock);
+   uint8_t cdb[10] = { 0x35 };
+   uint32_t scsi = 0;
+diff --git a/drivers/NativeUfs/NativeUfs.cpp b/drivers/NativeUfs/NativeUfs.cpp
+--- a/drivers/NativeUfs/NativeUfs.cpp
++++ b/drivers/NativeUfs/NativeUfs.cpp
+@@ -1224,6 +1224,10 @@
+ volatile uint64_t native_ufs_root_overlay_resident_bytes = 0, native_ufs_root_overlay_table_bytes = 0;
+ volatile uint64_t native_ufs_root_overlay_limit_bytes = 0;
+ volatile uint32_t native_ufs_root_overlay_enabled = 0;
++// Persistent writes to the OS window (default off; fail-stop after the first media error).
++volatile uint64_t native_ufs_root_writes = 0, native_ufs_root_write_blocks = 0, native_ufs_root_write_failures = 0;
++volatile uint64_t native_ufs_root_syncs = 0, native_ufs_root_rmw = 0;
++volatile uint32_t native_ufs_root_writes_enabled = 0;
+ }
+ #endif
+ class NativeUfsBlock : public IOBlockStorageDevice {
+@@ -1238,6 +1242,7 @@
+ #if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
+   UfsTieredDisk fullOverlay = {};
+   uint64_t fullOverlayLimit = 0;
++  UfsRootWrites rootWrites = {};
+ #endif
+   bool online = false;
+ #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
+@@ -1274,13 +1279,20 @@
+   IOReturn reportRemovability (bool *value) override { *value = false; return kIOReturnSuccess; }
+   bool writable () const {
+ #if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
+-    if (fullOverlay.tables) return true;
++    if (fullOverlay.tables || rootWrites.enabled) return true;
+ #endif
+     return overlay.pages != nullptr;
+   }
+   IOReturn reportWriteProtection (bool *value) override { *value = !writable (); return kIOReturnSuccess; }
+   IOReturn doSynchronizeCache () override {
+     if (!online) return kIOReturnNotReady;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++    if (rootWrites.enabled) {
++      IOReturn flushed = hostSyncCache ();
++      __atomic_fetch_add (flushed == kIOReturnSuccess ? &native_ufs_root_syncs : &native_ufs_root_write_failures, 1, __ATOMIC_RELAXED);
++      return flushed;
++    }
++#endif
+     IOLockLock (windowLock);
+     if (overlay.pages) __atomic_fetch_add (&native_ufs_isc_syncs, 1, __ATOMIC_RELAXED);
+     IOLockUnlock (windowLock);
+@@ -1368,6 +1380,14 @@
+     native_ufs_root_overlay_enabled = 1;
+     IOLog ("NativeUfs: full-system root volatile RAM overlay limit=%llu bytes; UFS stays read-only\n", fullOverlayLimit);
+   }
++  // Default off. Persistent writes reach only the OS window of macossystem; never combined with the RAM overlay.
++  uint32_t persistent = 0;
++  if (!strcmp (label, "OS") && PE_parse_boot_argn ("native-ufs-root-writes", &persistent, sizeof (persistent)) && persistent == 1) {
++    if (fullOverlay.tables || (bytes & 4095) || (absolute & 4095) || !hostRootWindowOpen (absolute / 4096, bytes / 4096)) return false;
++    rootWrites.enabled = true;
++    native_ufs_root_writes_enabled = 1;
++    IOLog ("NativeUfs: full-system root persistent writes enabled for the OS window only (%llu bytes)\n", bytes);
++  }
+ #endif
+ #if defined(NATIVE_UFS_RECOVERY_ROOT) && NATIVE_UFS_RECOVERY_ROOT
+   // Publish the BaseSystem disk image stored in the partition rather than the underlying UFS controller.
+@@ -1542,8 +1562,9 @@
+ }
+ 
+ IOReturn NativeUfsBlock::doAsyncReadWrite (IOMemoryDescriptor *buffer, UInt64 block, UInt64 count,
+-                                           IOStorageAttributes *, IOStorageCompletion *completion)
+-{
++                                           IOStorageAttributes *attributes, IOStorageCompletion *completion)
++{
++  (void) attributes;
+   if (!buffer || !completion || !completion->action || !count || block >= bytes / 512 ||
+       count > bytes / 512 - block || buffer->getLength () < count * 512) {
+     return kIOReturnBadArgument;
+@@ -1598,7 +1619,23 @@
+   };
+   UfsWindowResult outcome;
+ #if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
+-  if (fullOverlay.tables) {
++  if (write && rootWrites.enabled) {
++    struct WriteOperations {
++      IOLock *mutex;
++      IOMemoryDescriptor *buffer;
++      void lock () { IOLockLock (mutex); }
++      void unlock () { IOLockUnlock (mutex); }
++      IOReturn read (uint64_t lba, uint32_t blocks, void *out) { return hostRead4k (0, lba, blocks, out); }
++      IOReturn write (uint64_t lba, uint32_t blocks, const void *src, bool fua) { return hostWrite4k (0, lba, blocks, src, fua); }
++      uint64_t load (uint64_t offset, void *out, uint64_t length) { return buffer->readBytes (offset, out, length); }
++    } writeOps = { windowLock, buffer };
++    bool fua = attributes && (attributes->options & kIOStorageOptionForceUnitAccess);
++    outcome = ufsWriteWindow (writeOps, rootWrites, absolute, bytes, block, count, fua, bounce);
++    native_ufs_root_writes = rootWrites.writes;
++    native_ufs_root_write_blocks = rootWrites.blocks;
++    native_ufs_root_rmw = rootWrites.readModifyWrites;
++    if (outcome.status != kIOReturnSuccess) __atomic_fetch_add (&native_ufs_root_write_failures, 1, __ATOMIC_RELAXED);
++  } else if (fullOverlay.tables) {
+     struct TieredOperations {
+       IOLock *mutex;
+       IOMemoryDescriptor *buffer;
