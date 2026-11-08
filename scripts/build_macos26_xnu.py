@@ -571,7 +571,8 @@ def compile_sources(args, record: dict) -> None:
                               recovery_input=args.build_recovery_input,
                               button_keys=args.build_button_keys,
                               full_root=args.build_full_root,
-                              touch=args.build_touch)
+                              touch=args.build_touch,
+                              cpufreq=args.build_cpufreq)
             save(record)
 
 
@@ -662,6 +663,9 @@ def main() -> None:
                         help='include the default-off QEMU VirtIO HID input companion')
     parser.add_argument('--build-button-keys', action='store_true',
                         help='include the default-off hardware power/volume key companion (SPMI, read-only)')
+    parser.add_argument('--build-cpufreq', action='store_true',
+                        help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
+                             'sheng-cpufreq=1 is read-only)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
@@ -679,6 +683,8 @@ def main() -> None:
         parser.error('--build-recovery-input requires --build-gop-display')
     if args.build_button_keys and not args.build_gop_display:
         parser.error('--build-button-keys requires --build-gop-display')
+    if args.build_cpufreq and not args.build_ufs_driver:
+        parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:

@@ -175,6 +175,14 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                     or info['IOKitPersonalities'].get('NativeTouchHIDEventDriver') != native_touch.EVENT_DRIVER):
                 raise ValueError('touch companion provider or original event driver identity differs')
             allowed |= {'NativeTouch', 'IOHIDEventDriver'}
+        cpufreq = evidence.get('native_cpufreq')
+        if cpufreq:
+            import native_cpufreq
+            native_cpufreq.validate(cpufreq)
+            if info['IOKitPersonalities'].get('NativeCpuFreq') != dict(native_cpufreq.PERSONALITY,
+                                                                       CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('CPU frequency companion personality differs')
+            allowed |= {'NativeCpuFreq'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
