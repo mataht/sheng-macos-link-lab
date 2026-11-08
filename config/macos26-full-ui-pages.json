@@ -12,6 +12,26 @@
  "pages": [
   {
    "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 720896,
+   "edits": [
+    {
+     "offset": 6612,
+     "before": "e1ab40b93f04003160010054e2c30291",
+     "after": "880300d008b10591890280d268a605a9",
+     "policy": "dyld-cryptex-root"
+    },
+    {
+     "offset": 6628,
+     "before": "e00314aa",
+     "after": "09000014",
+     "policy": "dyld-cryptex-root"
+    }
+   ],
+   "before_sha256": "0a718c98fc3c2a7d65273a1008bf200970b1efe8e8beb7ae9ab16c059e2491f3",
+   "after_sha256": "7dfed3b0a5b971f300ccffc06748b3d58835eb3f3dcafd0d7c814aaec6c0515e"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
    "file_offset": 1687552,
    "edits": [
     {
@@ -88,7 +108,8 @@
    "native-bgra-framebuffer",
    "software-pool-bgra",
    "legacy-syslog",
-   "activity-stream"
+   "activity-stream",
+   "dyld-cryptex-root"
   ],
   "provenance": [
    {
@@ -159,6 +180,16 @@
     "target": {
      "file": "dyld_shared_cache_arm64e.01",
      "offset": 117870508
+    }
+   },
+   {
+    "policy": "dyld-cryptex-root",
+    "image": "/usr/lib/dyld",
+    "function": "dyld4::ProcessConfig::DyldCache::DyldCache",
+    "function_offset": 1136,
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 727508
     }
    }
   ]

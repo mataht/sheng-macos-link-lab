@@ -84,6 +84,8 @@ def main() -> None:
                         help='allow the kernel exception hook to retain the first fault before a bounded stop')
     parser.add_argument('--qemu-platform-uuid', type=uuid.UUID,
                         help='explicit identity of this owned VM; never an Apple device identity')
+    parser.add_argument('--process-output-name', default='WindowServer',
+                        help='process whose stdout/stderr --boot-progress mirrors to the kernel log (p_comm, at most 16 characters)')
     parser.add_argument('--stream-retained-log', action='store_true',
                         help='copy the real log ring at one-second debugger stops; report gaps explicitly')
     parser.add_argument('--capture-screen', action='store_true', help='save the actual QEMU framebuffer')
@@ -437,7 +439,10 @@ def main() -> None:
         if args.boot_progress:
             from package_macos26_ufs import qualify_boot_progress
             record['boot_progress'] = qualify_boot_progress(args.kernel_build)
-            boot_args += ' sheng-boot-progress=1 sheng-stderr-log=2 sheng-stderr-name=WindowServer'
+            if not args.process_output_name or len(args.process_output_name) > 16 or ' ' in args.process_output_name:
+                raise ValueError('--process-output-name must be one p_comm of at most 16 characters without spaces')
+            record['boot_progress']['process_output_filter'] = args.process_output_name
+            boot_args += f' sheng-boot-progress=1 sheng-stderr-log=2 sheng-stderr-name={args.process_output_name}'
         if args.qemu_no_ignition:
             if '_sheng_qemu_no_ignition_enabled' not in addresses:
                 raise ValueError('kernel lacks the guarded QEMU skipIgnition path')
