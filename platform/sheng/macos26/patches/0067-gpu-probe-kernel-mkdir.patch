@@ -1,0 +1,27 @@
+diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
+--- a/bsd/vfs/vfs_syscalls.c
++++ b/bsd/vfs/vfs_syscalls.c
+@@ -10567,6 +10567,23 @@ mkdirat(proc_t p, struct mkdirat_args *uap, __unused int32_t *retval)
+ 	           UIO_USERSPACE);
+ }
+
++/*
++ * For the default-off, QEMU-only GPU trust-path probe: creates a directory for a kernel thread, which the mkdir
++ * system call cannot do because copyinstr refuses kernel-to-kernel copies. Nothing calls this unless the probe runs.
++ */
++int sheng_kernel_mkdir(const char *path, int mode);
++int
++sheng_kernel_mkdir(const char *path, int mode)
++{
++	struct vnode_attr va;
++
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, mode & ACCESSPERMS);
++
++	return mkdir1at(vfs_context_kernel(), CAST_USER_ADDR_T(path), &va, AT_FDCWD,
++	           UIO_SYSSPACE);
++}
++
+ static int
+ rmdirat_internal(vfs_context_t ctx, int fd, user_addr_t dirpath,
+     enum uio_seg segflg, int unlink_flags)

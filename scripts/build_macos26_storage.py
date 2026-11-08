@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_gpu_probe
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -49,11 +50,13 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu_probe=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
+    if gpu_probe and (transport != 'virtio' or not gop_display):
+        raise ValueError('the GPU probe belongs to the QEMU-only VirtIO display bundle')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -254,6 +257,23 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-cpufreq-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    probe_plugin = None
+    if gpu_probe:
+        probe_dir = destination / 'gpu-probe'
+        probe_plugin = native_gpu_probe.build_plugin(root, probe_dir, directory, run, record, env, sdk)
+        probe_base = list(command)
+        user_headers = probe_base.index(str(sdk / 'usr/include'))
+        if probe_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del probe_base[user_headers - 1:user_headers + 1]
+        probe_base[1:1] = ['-I', str(probe_dir)]
+        probe_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        probe_object = probe_dir / 'NativeGpuProbe.o'
+        probe_command = [str(probe_object) if arg == str(obj) else
+                         str(probe_dir / native_gpu_probe.DRIVER_SOURCE) if arg == str(wrapper) else arg
+                         for arg in probe_base]
+        run(probe_command, directory + '-gpu-probe-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(probe_object))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -309,6 +329,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     if cpufreq:
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
+    if gpu_probe:
+        info['IOKitPersonalities']['NativeGpuProbe'] = dict(native_gpu_probe.PERSONALITY, CFBundleIdentifier=bundle)
+        info['OSBundleLibraries'][native_gpu_probe.IOGRAPHICS_BUNDLE] = native_gpu_probe.IOGRAPHICS_COMPATIBLE
+        info['OSBundleLibraries']['com.apple.kpi.bsd'] = '25.0'
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -328,6 +352,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_touch'] = native_touch.evidence(root)
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
+    if gpu_probe:
+        evidence['native_gpu_probe'] = native_gpu_probe.evidence(root, probe_plugin)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

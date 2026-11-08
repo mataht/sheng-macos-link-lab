@@ -89,6 +89,10 @@ def main() -> None:
     parser.add_argument('--stream-retained-log', action='store_true',
                         help='copy the real log ring at one-second debugger stops; report gaps explicitly')
     parser.add_argument('--capture-screen', action='store_true', help='save the actual QEMU framebuffer')
+    parser.add_argument('--gpu-probe', action='store_true',
+                        help='enable the QEMU-only Metal plugin trust-path probe of the VirtIO bundle (sheng-gpu-probe=1)')
+    parser.add_argument('--full-system-csr-unrestricted-fs', action='store_true',
+                        help='full-system experiment: boot policy with CSR_ALLOW_UNRESTRICTED_FS, as Recovery gets automatically')
     parser.add_argument('--handoff-pause', action='store_true', help='exercise the ten-second hardware handoff capture window')
     parser.add_argument('--boot-progress', action='store_true',
                         help='enable compiled stage, service and per-core diagnostics')
@@ -431,6 +435,10 @@ def main() -> None:
             boot_args += ' native-gop-vm-keep-awake=1'
         record['vm_keep_awake'] = args.vm_keep_awake
         record['qemu_disable_sleep'] = args.qemu_disable_sleep
+        if args.gpu_probe:
+            boot_args += ' sheng-gpu-probe=1'
+            record['gpu_probe'] = dict(qemu_only=True, hardware_admitted=False,
+                                       csr_unrestricted_fs=args.full_system_csr_unrestricted_fs)
         if args.qemu_smp_timeouts:
             boot_args += ' interrupt-masked-debug-mode=1 slto_us=1000000 tlto_us=1000000'
             record['qemu_smp_timing'] = dict(irq_hygiene='trace', lock_timeout_us=1000000,
@@ -525,7 +533,8 @@ def main() -> None:
                                     full_system_root_snapshot=(full_system['root_snapshot']
                                                                if full_system and args.full_system_adt_snapshot_name
                                                                else None),
-                                    trust_cache_slot=bool(full_system and full_system.get('trust_cache')))
+                                    trust_cache_slot=bool(full_system and full_system.get('trust_cache')),
+                                    full_system_lp_sip0=0x2 if args.full_system_csr_unrestricted_fs else 0)
         record['qemu_development_root'] = args.qemu_development_root
         record['qemu_platform_uuid'] = str(args.qemu_platform_uuid) if args.qemu_platform_uuid else None
         record['qemu_memory_mib'] = args.qemu_memory_mib

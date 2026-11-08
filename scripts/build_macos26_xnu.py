@@ -92,6 +92,7 @@ PATCHES = [
     ROOT / 'platform/sheng/macos26/patches/0064-native-language-chooser-trace.patch',
     ROOT / 'platform/sheng/macos26/patches/0065-native-panic-framebuffer-owner.patch',
     ROOT / 'platform/sheng/macos26/patches/0066-native-smp-progress.patch',
+    ROOT / 'platform/sheng/macos26/patches/0067-gpu-probe-kernel-mkdir.patch',
 ]
 MACHINE_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-driver-declarations.patch'
 CPU_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-cpu-registration.patch'
@@ -574,7 +575,8 @@ def compile_sources(args, record: dict) -> None:
             # QEMU-only VirtIO bundle; with --build-gop-display it carries the same display and QEMU input
             # companions so the installed full system (a virtio disk in QEMU) can be observed with a screen.
             build_storage(ROOT, OUT, compile_record, source, run, record, env,
-                          gop_display=args.build_gop_display, recovery_input=args.build_recovery_input)
+                          gop_display=args.build_gop_display, recovery_input=args.build_recovery_input,
+                          gpu_probe=args.build_gpu_probe)
             if args.build_ufs_driver:
                 build_storage(ROOT, OUT, compile_record, source, run, record, env,
                               transport='ufs', gop_display=args.build_gop_display,
@@ -673,6 +675,8 @@ def main() -> None:
                         help='include the default-off QEMU VirtIO HID input companion')
     parser.add_argument('--build-button-keys', action='store_true',
                         help='include the default-off hardware power/volume key companion (SPMI, read-only)')
+    parser.add_argument('--build-gpu-probe', action='store_true',
+                        help='add the default-off QEMU-only Metal plugin trust-path probe to the VirtIO bundle')
     parser.add_argument('--build-cpufreq', action='store_true',
                         help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
                              'sheng-cpufreq=1 is read-only)')
@@ -693,6 +697,8 @@ def main() -> None:
         parser.error('--build-recovery-input requires --build-gop-display')
     if args.build_button_keys and not args.build_gop_display:
         parser.error('--build-button-keys requires --build-gop-display')
+    if args.build_gpu_probe and not args.build_gop_display:
+        parser.error('--build-gpu-probe requires --build-gop-display')
     if args.build_cpufreq and not args.build_ufs_driver:
         parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:

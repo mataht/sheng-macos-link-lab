@@ -38,7 +38,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 full_system_volume_group: uuid.UUID | None = None,
                                 full_system_root_snapshot: str | None = None,
                                 touch_node: dict | None = None,
-                                trust_cache_slot: bool = False) -> None:
+                                trust_cache_slot: bool = False,
+                                full_system_lp_sip0: int = 0) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
@@ -48,6 +49,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
         raise ValueError('the touch node needs its firmware and belongs to the hardware tree')
     defaults = 0
     input_nodes = 0
+    if full_system_lp_sip0 and full_system_volume_group is None:
+        raise ValueError('a boot-policy SIP value is a full-system experiment')
     if qemu_disable_sleep and not development_root:
         raise ValueError('sleep policy is restricted to the development fixture')
     if qemu_virtio_input and not development_root:
@@ -176,7 +179,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                     ensure('root-snapshot-name', full_system_root_snapshot.encode('ascii') + b'\0')
         if development_root and location == ('device-tree', 'chosen', 'asmb'):
             asmb += 1
-            ensure('lp-sip0', struct.pack('<Q', 0))
+            ensure('lp-sip0', struct.pack('<Q', full_system_lp_sip0))
             ensure('lp-sip1', struct.pack('<I', 1))
         descendants = bytearray()
         for _ in range(children):
@@ -220,7 +223,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             children += 1
             gop_nodes += 1
         if development_root and is_chosen and asmb == 0:
-            entries = (('name', b'asmb\0'), ('lp-sip0', struct.pack('<Q', 0)),
+            entries = (('name', b'asmb\0'), ('lp-sip0', struct.pack('<Q', full_system_lp_sip0)),
                        ('lp-sip1', struct.pack('<I', 1)))
             descendants.extend(struct.pack('<II', len(entries), 0))
             for key, value in entries:

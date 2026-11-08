@@ -169,6 +169,18 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
                 allowed |= {'NativeRecoveryInput', 'IOHIDEventDriver'}
+            probe = evidence.get('native_gpu_probe')
+            if probe:
+                import native_gpu_probe
+                native_gpu_probe.validate(probe)
+                if (native_gpu_probe.IOGRAPHICS_BUNDLE not in selected
+                        or info['IOKitPersonalities'].get('NativeGpuProbe') != dict(native_gpu_probe.PERSONALITY,
+                                                                                    CFBundleIdentifier=evidence['bundle'])):
+                    raise ValueError('GPU probe requires the original IOGraphicsFamily and its reviewed personality')
+                for name, digest in probe['source_sha256'].items():
+                    if hashlib.sha256((directory / 'gpu-probe' / name).read_bytes()).hexdigest() != digest:
+                        raise ValueError('GPU probe source differs from the compiled record')
+                allowed |= {'NativeGpuProbeAccelerator'}
             if info['CFBundleExecutable'] != component or any(
                     item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
                 raise ValueError('VirtIO display personality differs from the qualified components')
@@ -414,6 +426,14 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != contract['device_slots']:
             raise ValueError('touch HID vtable slot count differs')
         driver['touch_vtable_abi'] = audit
+    if evidence.get('native_gpu_probe'):
+        import native_gpu_probe
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle=native_gpu_probe.IOGRAPHICS_BUNDLE, base_class='IOAccelerator',
+            own_class='NativeGpuProbeAccelerator')
+        if audit['slots'] != native_gpu_probe.IOACCELERATOR_SLOTS:
+            raise ValueError('GPU probe IOAccelerator vtable slot count differs')
+        driver['gpu_probe_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {
