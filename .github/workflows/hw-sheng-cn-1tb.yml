@@ -38,7 +38,7 @@ jobs:
                    test_package_macos26_ufs test_native_devtree test_recovery_ui_evidence \
                    test_native_button_keys test_display_diagnostic_evidence test_display_waiver_evidence \
                    test_qualification_reuse test_inspect_macos26_full_image test_full_system_qemu \
-                   test_repartition_macos26_full test_full_root_install; do
+                   test_repartition_macos26_full test_full_root_install test_full_system_package; do
             python3 -m unittest discover -s tests -p "$t.py" -v
           done
       - name: Full suite (informational; some baseline tests need local-only observers)

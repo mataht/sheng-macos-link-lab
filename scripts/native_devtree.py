@@ -148,8 +148,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                 ensure('boot-uuid', identity)
                 ensure('apfs-preboot-uuid', identity)
             if full_system_volume_group is not None:
-                if 'osenvironment' in properties:
-                    raise ValueError('full-system root refuses an existing osenvironment')
+                if properties.get('osenvironment', b'main\0') != b'main\0':
+                    raise ValueError('full-system root refuses a non-main osenvironment')
                 group = str(full_system_volume_group).upper().encode('ascii') + b'\0'
                 ensure('boot-uuid', group)
                 ensure('apfs-preboot-uuid', group)

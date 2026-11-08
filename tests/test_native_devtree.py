@@ -142,6 +142,10 @@ class NativeTree(unittest.TestCase):
         self.path.write_bytes(node('device-tree', children=(node('chosen', (('osenvironment', b'recoveryos\0'),)),)))
         with self.assertRaisesRegex(ValueError, 'osenvironment'):
             configure_native_text_state(self.path, development_root=True, full_system_volume_group=group)
+        # The hardware ADT generator always writes osenvironment; "main" is the normal system.
+        self.path.write_bytes(node('device-tree', children=(node('chosen', (('osenvironment', b'main\0'),)),)))
+        configure_native_text_state(self.path, development_root=True, full_system_volume_group=group)
+        self.assertEqual(read_tree(self.path.read_bytes())[('device-tree', 'chosen')]['osenvironment'], b'main\0')
 
     def test_vm_identity_cannot_leak_into_hardware_tree(self):
         before = self.path.read_bytes()

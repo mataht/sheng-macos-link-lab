@@ -52,7 +52,8 @@ def stock_version_for_v0(boot: bytes, image_bytes: int, target_header_version: i
     return os_version
 
 
-def qualify(build, observation, bootstrap, default_off, installed, plan, root_build, *, with_isc=False):
+def qualify_kernel(build, observation, bootstrap, default_off):
+    """Root-independent evidence: this kernel at IOFindBSDRoot, its sheng placement trace, default-off UFS."""
     kernel, symbols, identity = identify(build)
     kernel_build = json.loads((build / 'build.json').read_text())
     for name in ('0051-native-multiline-panic-panel.patch', '0052-native-independent-panic-surface.patch'):
@@ -65,9 +66,6 @@ def qualify(build, observation, bootstrap, default_off, installed, plan, root_bu
     traced = json.loads((bootstrap / 'result.json').read_text())
     refused = json.loads((default_off / 'gdb-stop.json').read_text())
     relink = json.loads((build / 'security-relink.json').read_text())
-    media = json.loads(installed.read_text())
-    partition = json.loads(plan.read_text())
-    root = json.loads(root_build.read_text())
     if (observed.get('kernel_sha256') != identity['kernel_sha256']
             or observed.get('uuid') != identity['uuid'] or observed.get('reached') is not True
             or observed.get('checkpoint') != 'IOFindBSDRoot'
@@ -91,14 +89,17 @@ def qualify(build, observation, bootstrap, default_off, installed, plan, root_bu
             # The trace must reproduce this candidate's physical placement for the packaged 12 GiB window.
             or traced.get('placement') != 'cn-16gb-12gib' or traced.get('owned_window_bytes') != hex(OWNED_MEMORY)):
         raise ValueError('requires matching sheng physical-placement and framebuffer bootstrap execution')
+    return kernel, symbols, identity, relink, refused
+
+
+def qualify_ufs_driver(relink, refused, identity, partition_name, contract):
     driver = relink['storage_driver']
-    recovery = json.loads((ROOT / 'config/macos26-recovery-root.json').read_text())
     if (relink.get('candidate_sha256') != identity['kernel_sha256']
             or driver['bundle'] != 'org.blu-sharky.NativeUfs'
-            or driver['build'].get('root_partition') != 'macosroot'
+            or driver['build'].get('root_partition') != partition_name
             or driver['build'].get('root_lun') != 0
             or driver['build'].get('android_userdata_used') is not False
-            or driver['build'].get('recovery_root') != recovery
+            or driver['build'].get('recovery_root') != contract
             or driver['build'].get('recovery_disk_image_protocol') != PROTOCOL_CHARACTERISTICS
             or driver['build'].get('recovery_transport_is_not_authentication') is not True
             or driver['vtable_abi'].get('block_class') != 'NativeUfsBlock'
@@ -111,6 +112,16 @@ def qualify(build, observation, bootstrap, default_off, installed, plan, root_bu
         address = driver['symbols'][name]
         if refused['memory'].get(f'{address:x}:4') != '00000000':
             raise ValueError('UFS default-off runtime touched hardware or published media')
+    return driver
+
+
+def qualify(build, observation, bootstrap, default_off, installed, plan, root_build, *, with_isc=False):
+    kernel, symbols, identity, relink, refused = qualify_kernel(build, observation, bootstrap, default_off)
+    recovery = json.loads((ROOT / 'config/macos26-recovery-root.json').read_text())
+    driver = qualify_ufs_driver(relink, refused, identity, 'macosroot', recovery)
+    media = json.loads(installed.read_text())
+    partition = json.loads(plan.read_text())
+    root = json.loads(root_build.read_text())
     if (media.get('status') != 'verified' or media.get('readback_verified') is not True
             or media.get('destination') != '/dev/block/by-name/macosroot'
             or media.get('destination_guid') != partition.get('root_unique_guid')
@@ -139,6 +150,68 @@ def qualify(build, observation, bootstrap, default_off, installed, plan, root_bu
                     (ROOT / 'UniXNU/drivers/NativeRamBlock/SparseDisk.h').read_bytes()).hexdigest()):
             raise ValueError('requires the paired isolated ISC seed and bounded volatile overlay')
     return kernel, symbols, identity, media, partition
+
+
+FULL_PARTITION = '/dev/block/by-name/macossystem'
+
+
+def qualify_full_deployment(plan_dir, package_dir, install_dir, contract):
+    """The macossystem partition was created and written from exactly the contracted full-install window."""
+    plan = json.loads((plan_dir / 'plan.json').read_text())
+    package = json.loads((package_dir / 'build.json').read_text())
+    packaged = json.loads((package_dir / 'macos26-full-root.json').read_text())
+    install = json.loads((install_dir / 'install.json').read_text())
+    manifest = (package_dir / 'manifest.bin').read_bytes()
+    window = package.get('window', {})
+    if (plan.get('applied') is not True or plan.get('gpt_readback_verified') is not True
+            or plan.get('full_name') != 'macossystem'
+            or package.get('schema') != 'sheng-full-root-package-v1' or package.get('partition') != 'macossystem'
+            or plan.get('full_bytes', 0) < package.get('partition_bytes_minimum', 1 << 62)
+            or any(packaged.get(k) != contract.get(k) for k in contract)
+            or window.get('name') != 'OS' or window.get('bytes') != contract['bytes']
+            or window.get('sha256') != contract['sha256']
+            or hashlib.sha256(manifest).hexdigest() != package.get('manifest_sha256')
+            or install.get('verified') is not True or install.get('destination') != FULL_PARTITION
+            or install.get('destination_guid') != plan.get('full_unique_guid')
+            or install.get('manifest_sha256') != package.get('manifest_sha256')
+            or install.get('window') != window):
+        raise ValueError('requires the applied macossystem partition written from the contracted full-install window')
+    media = dict(sha256=window['sha256'], bytes=window['bytes'], install=str(install_dir.resolve()))
+    return media, dict(root_unique_guid=plan['full_unique_guid'], full_bytes=plan['full_bytes'])
+
+
+def qualify_full_driver(driver, contract):
+    overlay = driver['build'].get('full_root_overlay', {})
+    header = ROOT / 'platform/sheng/macos26/storage/full_root_overlay.h'
+    if (driver['build'].get('full_system_root') is not True
+            or {k: overlay.get(k) for k in contract['overlay']} != contract['overlay']
+            or overlay.get('volume_group') != contract['volume_group']
+            or overlay.get('seed_read_only') is not True
+            or overlay.get('header_sha256') != hashlib.sha256(header.read_bytes()).hexdigest()):
+        raise ValueError('requires the compiled full-system root identity and its volatile overlay')
+
+
+def qualify_full_system_dyld(build, observation, identity, contract):
+    """Same kernel, full-system image in QEMU: skipIgnition published and the original launchd main reached."""
+    patch = ROOT / 'platform/sheng/macos26/patches/0053-development-dyld-commpage.patch'
+    compiled = json.loads((build / 'build.json').read_text())
+    if compiled.get('patches', {}).get(str(patch.relative_to(ROOT))) != hashlib.sha256(patch.read_bytes()).hexdigest():
+        raise ValueError('requires the compiled explicit development dyld path')
+    observed = json.loads((observation / 'result.json').read_text())
+    globals_ = observed.get('observed_globals', {})
+    image = observed.get('full_system', {})
+    if (observed.get('uuid') != identity['uuid'] or observed.get('kernel_sha256') != identity['kernel_sha256']
+            or observed.get('development_no_ignition') is not True or observed.get('qemu_no_ignition') is not False
+            or globals_.get('_sheng_development_no_ignition_enabled') != '0x1'
+            or not int(observed.get('actual_commpage_dyld_flags', '0x0'), 16) & 8
+            or '-nobsdmgroot' not in observed.get('boot_args', '').split()
+            or image.get('system_volume') != contract['volume_uuid']
+            or image.get('volume_group') != contract['volume_group']
+            or image.get('root_snapshot') != contract['root_snapshot']
+            or image.get('bytes') != contract['bytes']
+            or observed.get('userland_started') is not True or observed.get('launchd_main_started') is not True):
+        raise ValueError('requires this kernel booting the contracted full-system image to the original launchd main')
+    return observed
 
 
 def qualify_development_dyld(build, observation, identity, root_uuid):
@@ -397,11 +470,21 @@ def main():
     parser.add_argument('--qemu-observation', type=Path, required=True)
     parser.add_argument('--bootstrap-observation', type=Path, required=True)
     parser.add_argument('--default-off-observation', type=Path, required=True)
-    parser.add_argument('--root-deployment', type=Path, required=True)
-    parser.add_argument('--partition-plan', type=Path, required=True)
-    parser.add_argument('--root-build', type=Path, required=True)
-    parser.add_argument('--root-hash', type=Path, required=True)
-    parser.add_argument('--root-volume-uuid', type=uuid.UUID, required=True)
+    # Recovery root inputs (required unless --full-system).
+    parser.add_argument('--root-deployment', type=Path)
+    parser.add_argument('--partition-plan', type=Path)
+    parser.add_argument('--root-build', type=Path)
+    parser.add_argument('--root-hash', type=Path)
+    parser.add_argument('--root-volume-uuid', type=uuid.UUID)
+    parser.add_argument('--full-system', action='store_true',
+                        help='package the full-system root (macossystem) instead of Recovery; text console only')
+    parser.add_argument('--full-system-plan', type=Path, help='applied repartition_macos26_full.py directory')
+    parser.add_argument('--full-system-package', type=Path, help='prepare_macos26_full_root.py output')
+    parser.add_argument('--full-system-install', type=Path, help='verified install_macos26_full_system.py output')
+    parser.add_argument('--root-overlay-mib', type=int,
+                        help='volatile RAM overlay for the full-system root (256..8192 MiB; writes never reach UFS)')
+    parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
+                        help='experiment: also publish chosen/root-snapshot-name')
     parser.add_argument('--firmware-build', type=Path, required=True)
     parser.add_argument('--backup-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -445,6 +528,32 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    recovery_inputs = ('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
+    if args.full_system:
+        missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install', 'root_overlay_mib')
+                   if getattr(args, n) is None]
+        if missing:
+            parser.error('--full-system requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
+        excluded = [n for n in recovery_inputs + ('recovery_ui_observation', 'display_observation', 'display_waiver',
+                                                  'qualification_reference', 'reference_dyld_observation',
+                                                  'panel_size_mm', 'platform_uuid')
+                    if getattr(args, n) is not None]
+        excluded += [n for n in ('isc_overlay', 'display_keep_awake', 'display_hardware_verification', 'button_keys',
+                                 'boot_progress') if getattr(args, n)]
+        if excluded:
+            parser.error('--full-system excludes Recovery and display inputs: '
+                         + ', '.join('--' + n.replace('_', '-') for n in excluded))
+        if not 256 <= args.root_overlay_mib <= 8192:
+            parser.error('--root-overlay-mib must be within 256..8192')
+        if not args.development_no_ignition or not args.dyld_observation:
+            parser.error('--full-system requires --development-no-ignition with its full-system --dyld-observation')
+    else:
+        missing = [n for n in recovery_inputs if getattr(args, n) is None]
+        if missing:
+            parser.error('the Recovery root requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
+        if any(getattr(args, n) for n in ('full_system_plan', 'full_system_package', 'full_system_install',
+                                          'root_overlay_mib', 'full_system_adt_snapshot_name')):
+            parser.error('full-system inputs require --full-system')
     gui = (args.recovery_ui_observation or args.display_observation or args.display_waiver
            or args.display_hardware_verification)
     if args.display_keep_awake and not gui:
@@ -477,19 +586,31 @@ def main():
     log_options = (args.macoslog_observation, args.macoslog_readonly_observation, args.macoslog_deployment)
     if any(log_options) and not all(log_options):
         parser.error('macoslog requires write, readonly and deployment evidence together')
-    kernel, symbols, identity, media, partition = qualify(args.kernel_build,
-        args.qemu_observation, args.bootstrap_observation, args.default_off_observation,
-        args.root_deployment, args.partition_plan, args.root_build, with_isc=args.isc_overlay)
-    root_hash = args.root_hash.read_bytes()
-    hash_evidence = json.loads(args.root_hash.with_suffix(args.root_hash.suffix + '.json').read_text())
-    root = json.loads(args.root_build.read_text())
-    recovery = json.loads((ROOT / 'config/macos26-recovery-root.json').read_text())
-    if args.root_volume_uuid != uuid.UUID(recovery['volume_uuid']):
-        raise ValueError('root UUID differs from the compiled recovery transport')
-    if (hash_evidence.get('build') != '25F71' or hash_evidence.get('manifest_digest_matches') is not True
-            or hash_evidence.get('payload_sha256') != hashlib.sha256(root_hash).hexdigest()
-            or hash_evidence.get('raw_disk_sha256') != root['windows'][0]['sha256']):
-        raise ValueError('root-hash payload does not belong to the installed BaseSystem')
+    full_contract = None
+    if args.full_system:
+        from build_macos26_storage import full_root_contract
+        full_contract = full_root_contract(ROOT)
+        kernel, symbols, identity, relink, refused = qualify_kernel(args.kernel_build, args.qemu_observation,
+            args.bootstrap_observation, args.default_off_observation)
+        qualify_full_driver(qualify_ufs_driver(relink, refused, identity, 'macossystem', full_contract), full_contract)
+        media, partition = qualify_full_deployment(args.full_system_plan, args.full_system_package,
+                                                   args.full_system_install, full_contract)
+        root_hash = None
+        args.root_volume_uuid = uuid.UUID(full_contract['volume_uuid'])
+    else:
+        kernel, symbols, identity, media, partition = qualify(args.kernel_build,
+            args.qemu_observation, args.bootstrap_observation, args.default_off_observation,
+            args.root_deployment, args.partition_plan, args.root_build, with_isc=args.isc_overlay)
+        root_hash = args.root_hash.read_bytes()
+        hash_evidence = json.loads(args.root_hash.with_suffix(args.root_hash.suffix + '.json').read_text())
+        root = json.loads(args.root_build.read_text())
+        recovery = json.loads((ROOT / 'config/macos26-recovery-root.json').read_text())
+        if args.root_volume_uuid != uuid.UUID(recovery['volume_uuid']):
+            raise ValueError('root UUID differs from the compiled recovery transport')
+        if (hash_evidence.get('build') != '25F71' or hash_evidence.get('manifest_digest_matches') is not True
+                or hash_evidence.get('payload_sha256') != hashlib.sha256(root_hash).hexdigest()
+                or hash_evidence.get('raw_disk_sha256') != root['windows'][0]['sha256']):
+            raise ValueError('root-hash payload does not belong to the installed BaseSystem')
     firmware = json.loads(args.firmware_build.read_text())
     required = ['UniXNU/' + name for name in (
                 '0007-native-16k-bootstrap-congruence', '0011-native-arm64e-loader',
@@ -528,7 +649,10 @@ def main():
         dyld_identity = identify(args.qualification_reference)[2]
         reuse['reference_identity'] = dyld_identity
         reuse['reference_dyld_observation'] = str(args.reference_dyld_observation.resolve())
-    if args.development_no_ignition:
+    if args.development_no_ignition and full_contract:
+        qualify_full_system_dyld(dyld_build, dyld_observation, dyld_identity, full_contract)
+        boot_args += f' -sheng-development-no-ignition -nobsdmgroot native-ufs-root-overlay-mib={args.root_overlay_mib}'
+    elif args.development_no_ignition:
         qualify_development_dyld(dyld_build, dyld_observation, dyld_identity, args.root_volume_uuid)
         boot_args += ' -sheng-development-no-ignition'
     if args.isc_overlay:
@@ -589,13 +713,19 @@ def main():
                 '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', ','.join(cpu_regs),
                 *[part for compatible in cpu_compatible for part in ('--cpu-compatible', compatible)],
                 '--random-seed-bytes', '256',
-                '--os-environment', 'recoveryos',
+                '--os-environment', 'main' if full_contract else 'recoveryos',
                 '--root-match-volume-uuid', str(args.root_volume_uuid)], check=True)
-            configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
-                                        root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
-                                        platform_uuid=args.platform_uuid,
-                                        native_gop_display=gop_enabled)
-            transport_title = 'UFS+ISC' if args.isc_overlay else 'UFS'
+            if full_contract:
+                configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
+                    full_system_volume_group=uuid.UUID(full_contract['volume_group']),
+                    full_system_root_snapshot=(full_contract['root_snapshot']
+                                               if args.full_system_adt_snapshot_name else None))
+            else:
+                configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
+                                            root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
+                                            platform_uuid=args.platform_uuid,
+                                            native_gop_display=gop_enabled)
+            transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
             if ui_qualification:
@@ -667,7 +797,12 @@ def main():
                 boot_progress=progress_qualification,
                 native_recovery_input=False, physical_input_qualified=False,
                 dyld_observation=str(dyld_observation.resolve()) if dyld_observation else None,
-                root_variant='recoveryos', recovery_transport_is_not_authentication=True,
+                root_variant='full-system' if full_contract else 'recoveryos',
+                full_system=dict(contract=full_contract, root_overlay_mib=args.root_overlay_mib,
+                                 overlay_disk_writes=False, overlay_persistent=False,
+                                 adt_root_snapshot_name=args.full_system_adt_snapshot_name,
+                                 deployment=media) if full_contract else None,
+                recovery_transport_is_not_authentication=True,
                 deployment_scope='fastboot boot only; no boot/recovery/UEFI partition flashing')
             (args.output / 'build.json').write_text(json.dumps(record, indent=2) + '\n')
             print(args.output / image.name)
