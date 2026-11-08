@@ -165,6 +165,8 @@ def main() -> None:
                         help='real contiguous DarwinBoot allocation inside QEMU RAM')
     parser.add_argument('--timeout', type=int, default=60, metavar='SECONDS',
                         help='15..180 seconds, or up to 900 for explicit continued service observation')
+    parser.add_argument('--qemu-irq-trace', action='store_true',
+                        help='QEMU only: log long interrupt masking instead of panicking (slow TCG trips the default watchdog)')
     parser.add_argument('--qemu-smp-timeouts', action='store_true',
                         help='record IRQ latency violations and use finite one-second locks for TCG SMP')
     parser.add_argument('--smp', type=int, choices=(1, 2, 4, 8), default=1,
@@ -431,6 +433,9 @@ def main() -> None:
             boot_args += ' native-gop-vm-keep-awake=1'
         record['vm_keep_awake'] = args.vm_keep_awake
         record['qemu_disable_sleep'] = args.qemu_disable_sleep
+        if args.qemu_irq_trace and not args.qemu_smp_timeouts:
+            boot_args += ' interrupt-masked-debug-mode=1'
+            record['qemu_irq_trace'] = dict(irq_hygiene='trace', hardware_qualified=False)
         if args.qemu_smp_timeouts:
             boot_args += ' interrupt-masked-debug-mode=1 slto_us=1000000 tlto_us=1000000'
             record['qemu_smp_timing'] = dict(irq_hygiene='trace', lock_timeout_us=1000000,

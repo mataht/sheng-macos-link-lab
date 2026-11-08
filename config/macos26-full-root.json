@@ -1,0 +1,19 @@
+{
+ "build": "25F71",
+ "variant": "full-system",
+ "window": "OS",
+ "bytes": 64000000000,
+ "sha256": "9201b0314fda1e3a7bc0a2aff2d27964ebf5170cef3fce4c1dc4e88de0ac094b",
+ "volume_uuid": "96097F77-03EE-4252-860C-6793772BC017",
+ "volume_group": "9CEB49C5-9F60-452E-A36D-EFA800E927A6",
+ "root_snapshot": "com.apple.bless.8907A728-882A-4FC4-8005-18BBE0226219",
+ "partition": "macossystem",
+ "overlay": {
+  "boot_argument": "native-ufs-root-overlay-mib",
+  "default_off": true,
+  "minimum_mib": 256,
+  "maximum_mib": 8192,
+  "persistent": false,
+  "disk_writes": false
+ }
+}
