@@ -56,8 +56,9 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
     if boot_volume_uuid is not None and root_hash is None:
         raise ValueError('boot volume identity requires the paired recovery root hash')
 
-    # Full-system mode: an unsealed, user-built root snapshot boots under the development
-    # unauthenticated-root policy. It never carries the Recovery environment or root hash.
+    # Full-system mode: the root snapshot of the delivered image boots under the development
+    # unauthenticated-root policy; its seal flag is inherited from the installer and broken, never
+    # verified. It never carries the Recovery environment or root hash.
     if full_system_root_snapshot is not None and full_system_volume_group is None:
         raise ValueError('a root snapshot name requires the full-system volume group')
     if full_system_volume_group is not None:

@@ -19,11 +19,15 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
-def variant(*, root_to_xid=4, data_flags=1):
+def variant(*, root_to_xid=4, data_flags=1, inherited_seal=False):
     payload = bytearray(fixture.container(data_flags=data_flags))
     at = 6 * fixture.BLOCK
     struct.pack_into('<Q', payload, at + 968, root_to_xid)
     payload[at:at + 8] = inspector.checksum(payload[at:at + fixture.BLOCK])
+    if inherited_seal:   # the real 25F71 image keeps SEALED_VOLUME on its root snapshot (seal broken)
+        at = 10 * fixture.BLOCK
+        struct.pack_into('<Q', payload, at + 56, 0x21)
+        payload[at:at + 8] = inspector.checksum(payload[at:at + fixture.BLOCK])
     return fixture.gpt_disk(bytes(payload))
 
 
@@ -47,14 +51,23 @@ class FullSystemQemuTests(unittest.TestCase):
         self.assertEqual(identity['volume_group'], fixture.GROUP)
         self.assertEqual(identity['root_snapshot'], 'com.apple.root.MODIFIED')
         self.assertEqual(identity['sealed_snapshots'], ['com.apple.os.update-ORIGINAL'])
+        self.assertEqual(identity['installer_snapshot'], 'com.apple.os.update-ORIGINAL')
+        self.assertEqual(identity['root_seal'], 'unsealed')
         described = full.describe(identity)
         self.assertEqual(described['system_volume'], str(fixture.SYSTEM).upper())
         json.dumps(described)
 
+    def test_accepts_root_snapshot_with_inherited_broken_seal(self):
+        image, report = self.image(variant(inherited_seal=True))
+        self.assertTrue(json.loads(report.read_text())['assessment']['system_data_groups'][0]['root_snapshot_sealed'])
+        identity = full.qualify_inspection(image, report)
+        self.assertEqual(identity['root_snapshot'], 'com.apple.root.MODIFIED')
+        self.assertEqual(identity['root_seal'], 'inherited-broken')
+
     def test_refuses_original_sealed_or_missing_root_snapshot(self):
         for root, name in ((2, 'sealed.img'), (0, 'none.img')):
             image, report = self.image(variant(root_to_xid=root), name)
-            with self.assertRaisesRegex(ValueError, 'new unsealed snapshot'):
+            with self.assertRaisesRegex(ValueError, 'made after the installer'):
                 full.qualify_inspection(image, report)
 
     def test_refuses_encrypted_data(self):

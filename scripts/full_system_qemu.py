@@ -47,12 +47,26 @@ def qualify_inspection(image: Path, report_path: Path) -> dict:
         raise ValueError('System and Data must share one container')
     if group.get('data_encrypted') is not False:
         raise ValueError('the Data volume is encrypted; this platform has no SEP to unlock it')
-    if not group.get('root_snapshot') or group.get('root_snapshot_sealed') is not False:
-        raise ValueError('the root snapshot must be the new unsealed snapshot of the delivered image')
+    # APFS keeps SEALED_VOLUME and the installer's integrity metadata on the root snapshot (seen on the 25F71 image,
+    # 2026-11-08: both snapshots flagged sealed with the same integrity_meta_oid), so the seal flag cannot tell the two
+    # apart. Identify the root by name and order instead: one installer snapshot, and a newer snapshot that APFS will
+    # mount (root_to_xid). The seal is never verified on these paths: the development root policy (no root hash) is
+    # required.
+    system = uuid.UUID(group['system_volume'])
+    volumes = [v for c in report.get('containers', []) for v in c.get('volumes', [])
+               if v.get('uuid') and uuid.UUID(v['uuid']) == system]
+    snapshots = {s.get('name'): s for s in (volumes[0].get('snapshots', []) if len(volumes) == 1 else [])}
+    root = snapshots.get(group.get('root_snapshot'))
+    installer = [s for name, s in snapshots.items() if str(name).startswith('com.apple.os.update-')]
+    if (not root or root.get('xid') != group.get('root_to_xid')
+            or len(installer) != 1 or not installer[0].get('xid', 0) < root['xid']):
+        raise ValueError('the root snapshot must be the one made after the installer snapshot')
     return dict(image=str(image), bytes=status.st_size, mtime_ns=status.st_mtime_ns,
                 inspection=str(report_path.resolve()), inspection_sha256=hashlib.sha256(report_bytes).hexdigest(),
-                volume_group=uuid.UUID(group['volume_group']), system_volume=uuid.UUID(group['system_volume']),
+                volume_group=uuid.UUID(group['volume_group']), system_volume=system,
                 data_volume=uuid.UUID(group['data_volume']), root_snapshot=group['root_snapshot'],
+                installer_snapshot=installer[0]['name'],
+                root_seal='inherited-broken' if root.get('sealed') else 'unsealed',
                 sealed_snapshots=list(group.get('sealed_snapshots', [])))
 
 
