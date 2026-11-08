@@ -40,7 +40,8 @@ jobs:
                    test_qualification_reuse test_inspect_macos26_full_image test_full_system_qemu \
                    test_repartition_macos26_full test_full_root_install test_full_system_package \
                    test_native_touch \
-                   test_system_trust_cache test_native_cpufreq; do
+                   test_system_trust_cache test_native_cpufreq \
+                   test_native_recovery_ui test_native_display_bindings; do
             python3 -m unittest discover -s tests -p "$t.py" -v
           done
       - name: Full suite (informational; some baseline tests need local-only observers)

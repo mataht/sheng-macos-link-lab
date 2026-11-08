@@ -1,0 +1,166 @@
+{
+ "schema": "sheng-recovery-ui-pages-v1",
+ "build": "25F71",
+ "architecture": "arm64e",
+ "default_off": true,
+ "disk_writes": false,
+ "authentication_success_fabricated": false,
+ "original_signature_validation_required": true,
+ "boot_argument": "sheng-full-ui=1",
+ "runtime_qualified": false,
+ "hardware_admitted": false,
+ "pages": [
+  {
+   "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 1687552,
+   "edits": [
+    {
+     "offset": 3848,
+     "before": "ff8304d1fc6f0ca9fa670da9f85f0ea9",
+     "after": "ff2303d5c0035fd61f2003d51f2003d5",
+     "policy": "activity-stream"
+    }
+   ],
+   "before_sha256": "61697dac01c6549a632e224e94b59914b9cea5f8e12aae175b065f4ea974f70b",
+   "after_sha256": "d0a188164d94ea84dea44342cbd74c3a0509848045c03e48be3a9024d8a198a4"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 1720320,
+   "edits": [
+    {
+     "offset": 7744,
+     "before": "ffc301d1fa6702a9f85f03a9f65704a9",
+     "after": "ff2303d5c0035fd61f2003d51f2003d5",
+     "policy": "legacy-syslog"
+    }
+   ],
+   "before_sha256": "a5cfb2a5cf624362a94a970d1890d28df3daf216a019ca9b1d8038ab411e6931",
+   "after_sha256": "43901e5d54d7c356ff5aef03b2d48cdadcdefac0ff16e77bccc3e10a70f1e15d"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 115998720,
+   "edits": [
+    {
+     "offset": 6348,
+     "before": "ff4302d1f65706a9f44f07a9fd7b08a9",
+     "after": "ff2303d5c0035fd61f2003d51f2003d5",
+     "policy": "native-no-metal-scaled-plan-40270321747"
+    }
+   ],
+   "before_sha256": "41989a0cecf2b58bcd361c77e467e4eaa02053d50a27ac62d06b99350ebe9f46",
+   "after_sha256": "7ac4cb9f499a688d664be2dcefb32a2a7b52bc9bfffae31f05054334bfe17b24"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 117866496,
+   "edits": [
+    {
+     "offset": 4012,
+     "before": "f40300aa",
+     "after": "140a80d2",
+     "policy": "software-pool-bgra"
+    }
+   ],
+   "before_sha256": "fc90dc40b51e8506f8d8a371c10810d78b932d66936569f4418aa418f55e6d68",
+   "after_sha256": "0f34ab34626e345364343dfe876f293cddc86caf1645d1d1053c6b788962509d"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 176832512,
+   "edits": [
+    {
+     "offset": 10980,
+     "before": "e923bc6df65701a9f44f02a9fd7b03a9",
+     "after": "20488a52e048a872ff2303d5c0035fd6",
+     "policy": "native-bgra-framebuffer"
+    }
+   ],
+   "before_sha256": "7159ed4bc4165dc9ac5db41923c4ccd24ee736efc9c161ac102f1bad1d0e83d2",
+   "after_sha256": "df774ff2cc6020b9f0f66f768708b3455a40fa3a61c4c4afa45fa93aa85f99ed"
+  }
+ ],
+ "derived_from": {
+  "manifest_sha256": "b43c8839fbda9376f99a8e30e3adaf9aef02e445fbf09c870491f43ed5f13282",
+  "policies": [
+   "native-no-metal-scaled-plan-40270321747",
+   "native-bgra-framebuffer",
+   "software-pool-bgra",
+   "legacy-syslog",
+   "activity-stream"
+  ],
+  "provenance": [
+   {
+    "policy": "native-no-metal-scaled-plan-40270321747",
+    "image": "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+    "function": "___WSSystemCanCompositeWithMetal_block_invoke",
+    "function_offset": 4,
+    "base": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 113354956
+    },
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 116005068
+    }
+   },
+   {
+    "policy": "native-bgra-framebuffer",
+    "image": "/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore",
+    "function": "__ZN2CA12WindowServer12IOMFBDisplay24framebuffer_pixel_formatEv",
+    "function_offset": 4,
+    "base": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 170097380
+    },
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 176843492
+    }
+   },
+   {
+    "policy": "legacy-syslog",
+    "image": "/usr/lib/system/libsystem_trace.dylib",
+    "function": "__os_log_mirror_syslog",
+    "function_offset": 4,
+    "base": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 1728064
+    },
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 1728064
+    }
+   },
+   {
+    "policy": "activity-stream",
+    "image": "/usr/lib/system/libsystem_trace.dylib",
+    "function": "__os_activity_stream_reflect",
+    "function_offset": 4,
+    "base": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 1691400
+    },
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 1691400
+    }
+   },
+   {
+    "policy": "software-pool-bgra",
+    "image": "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+    "function": "__ZN2WS8Displays11SLCADisplay12begin_updateERNS0_6UpdateE",
+    "function_offset": 5744,
+    "base": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 115220396
+    },
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 117870508
+    }
+   }
+  ]
+ }
+}

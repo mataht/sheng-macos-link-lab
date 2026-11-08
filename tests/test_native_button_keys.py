@@ -112,6 +112,52 @@ class NativeButtonKeys(unittest.TestCase):
             self.assertIn(str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers'), compile_cmd)
             self.assertNotIn(str(sdk / 'usr/include'), compile_cmd)
 
+    def test_virtio_bundle_carries_only_the_qemu_display_and_input(self):
+        import build_macos26_storage
+        import plistlib
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temp_root, out = Path(temporary) / 'root', Path(temporary) / 'out'
+            out.mkdir()
+            upstream = temp_root / 'UniXNU/drivers/NativeVirtioBlock/NativeVirtioBlock.cpp'
+            upstream.parent.mkdir(parents=True)
+            upstream.write_text('// stub\n')
+            (temp_root / 'sources/macos26/IOStorageFamily').mkdir(parents=True)
+            sdk = Path('/sdk')
+            commands = {}
+
+            def record_run(command, label, record, cwd=None, env=None):
+                commands[label] = list(command)
+                if label.endswith('-link'):
+                    Path(command[command.index('-o') + 1]).write_bytes(b'macho')
+
+            compile_record = dict(directory=str(out), file='IOPlatformExpert.cpp',
+                                  arguments=['clang++', '-c', 'IOPlatformExpert.cpp', '-o', 'IOPlatformExpert.o'])
+            record = {}
+            with (patch('prepare_macos26_gop.prepare', return_value={'source': 'NativeGOPDisplay.cpp'}),
+                  patch('prepare_macos26_input.prepare', return_value={'source': 'NativeRecoveryInput.cpp'}),
+                  patch('subprocess.check_output', return_value=str(sdk) + '\n'),
+                  patch('build_macos26_storage.macho', return_value={
+                      'kind': 11, 'subtype': 0x40000002, 'commands': [(0x80000034, 0, 0)]})):
+                for refused in (dict(button_keys=True), dict(touch=True)):
+                    with self.subTest(refused=refused), self.assertRaisesRegex(ValueError, 'UFS bundle'):
+                        build_macos26_storage.build(temp_root, out, compile_record, out / 'source', record_run, {}, {},
+                                                    gop_display=True, **refused)
+                build_macos26_storage.build(temp_root, out, compile_record, out / 'source', record_run, record, {},
+                                            gop_display=True, recovery_input=True)
+            evidence = record['storage_driver']
+            self.assertIs(evidence['qemu_only_display'], True)
+            self.assertIs(evidence['explicit_qemu_scratch_writes'], True)
+            self.assertIs(evidence['hardware_admitted'], False)
+            self.assertNotIn('ufs_driver', record)
+            info = plistlib.loads((out / 'storage-driver/Info.plist').read_bytes())
+            self.assertEqual(set(info['IOKitPersonalities']), {'NativeVirtioBlock', 'NativeGOPDisplay',
+                                                               'NativeRecoveryInput', 'NativeRecoveryHIDEventDriver'})
+            self.assertIn('#include "NativeGOPDisplay.cpp"',
+                          (out / 'storage-driver/NativeVirtioBlock.cpp').read_text())
+            self.assertIn('-DNATIVE_QEMU_SCRATCH_BLOCK=1', commands['storage-driver-compile'])
+            self.assertIn('storage-driver-input-compile', commands)
+
 
 if __name__ == '__main__':
     unittest.main()

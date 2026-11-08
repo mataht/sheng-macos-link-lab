@@ -131,6 +131,13 @@ def main() -> None:
                         help="system_trust_cache.py bundle of the image's original trust caches (DarwinBoot loads it)")
     parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
                         help='experiment: also publish chosen/root-snapshot-name (default off)')
+    parser.add_argument('--full-ui', action='store_true',
+                        help='full system with the GOP display: enable the compiled full-system UI page table '
+                             '(sheng-full-ui=1, SystemOS cache pages, memory only)')
+    parser.add_argument('--vm-keep-awake', action='store_true',
+                        help='VMM-only display user-activity request (native-gop-vm-keep-awake=1)')
+    parser.add_argument('--qemu-disable-sleep', action='store_true',
+                        help='ADT defaults/sleep-disabled for the owned development fixture')
     parser.add_argument('--process-layout', type=Path,
                         help='matching DWARF process-list layout for read-only snapshots')
     parser.add_argument('--mount-layout', type=Path,
@@ -244,6 +251,24 @@ def main() -> None:
                 or display.get('display_vtable_abi', {}).get('slots') != 473
                 or not display.get('display_vtable_abi', {}).get('pac_metadata_matches')):
             parser.error('GOP observation requires the actual paired, ABI-audited display companion')
+    if (args.full_ui or args.vm_keep_awake) and not args.native_gop_display:
+        parser.error('--full-ui and --vm-keep-awake require --native-gop-display')
+    if args.qemu_disable_sleep and not args.qemu_development_root:
+        parser.error('--qemu-disable-sleep is restricted to the QEMU development fixture')
+    if args.full_ui:
+        if not full_system:
+            parser.error('--full-ui pages belong to the installed full system (use the full-system inputs)')
+        policy = json.loads((args.kernel_build / 'build.json').read_text()).get('full_ui_policy', {})
+        current = {key: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for key, name in (
+            ('manifest_sha256', 'config/macos26-full-ui-pages.json'),
+            ('engine_sha256', 'platform/sheng/macos26/recovery/ui_policy.h'),
+            ('kernel_hook_sha256', 'platform/sheng/macos26/recovery/ui_policy_kernel.h'))}
+        if (policy.get('default_off') is not True or policy.get('boot_argument') != 'sheng-full-ui=1'
+                or policy.get('disk_writes') is not False
+                or policy.get('original_signature_validation_required') is not True
+                or any(policy.get(key) != value for key, value in current.items())):
+            parser.error('--full-ui requires the candidate to have compiled the current full-system UI page table')
+        record['full_ui_policy'] = dict(policy, boot_argument_enabled=True)
     if args.follow_init_entry and args.checkpoint != 'thread_setentrypoint':
         parser.error('following init requires the thread_setentrypoint checkpoint')
     if args.follow_init_entry and (args.root_hash_payload or full_system):
@@ -398,6 +423,12 @@ def main() -> None:
         boot_args = smp['boot_args']
         if args.native_gop_display:
             boot_args += ' native-gop-display=1'
+        if args.full_ui:
+            boot_args += ' sheng-full-ui=1'
+        if args.vm_keep_awake:
+            boot_args += ' native-gop-vm-keep-awake=1'
+        record['vm_keep_awake'] = args.vm_keep_awake
+        record['qemu_disable_sleep'] = args.qemu_disable_sleep
         if args.qemu_smp_timeouts:
             boot_args += ' interrupt-masked-debug-mode=1 slto_us=1000000 tlto_us=1000000'
             record['qemu_smp_timing'] = dict(irq_hygiene='trace', lock_timeout_us=1000000,
@@ -484,6 +515,7 @@ def main() -> None:
                                     boot_volume_uuid=args.root_volume_uuid if root_hash is not None else None,
                                     platform_uuid=args.qemu_platform_uuid,
                                     native_gop_display=args.native_gop_display,
+                                    qemu_disable_sleep=args.qemu_disable_sleep,
                                     full_system_volume_group=full_system['volume_group'] if full_system else None,
                                     full_system_root_snapshot=(full_system['root_snapshot']
                                                                if full_system and args.full_system_adt_snapshot_name
@@ -630,7 +662,8 @@ def main() -> None:
                             ('_sheng_status_witness', 8), ('_sheng_status_message', 45),
                             ('_sheng_status_pixels', 8), ('_sheng_status_row_pa', 8), ('_sheng_status_scale', 8),
                             ('_sheng_console_columns', 8), ('_sheng_console_rows', 8), ('_sheng_first_sync_displayed', 8),
-                            ('_sheng_bootstrap_capture_enabled', 4)):
+                            ('_sheng_bootstrap_capture_enabled', 4),
+                            ('_sheng_recovery_ui_pages_applied', 4), ('_sheng_recovery_ui_page_mask', 4)):
             if name in addresses:
                 command += ['--read-memory', f'{addresses[name]:x}:{count:x}']
         cpu_handler_request = None
@@ -743,7 +776,8 @@ def main() -> None:
                         ('_sheng_panel_ready', 8), ('_sheng_panel_bound_rows', 8), ('_sheng_panel_characters', 8), ('_sheng_panel_witness', 8),
                         ('_sheng_status_witness', 8), ('_sheng_status_pixels', 8),
                         ('_sheng_status_row_pa', 8), ('_sheng_status_scale', 8),
-                        ('_sheng_console_columns', 8), ('_sheng_console_rows', 8), ('_sheng_first_sync_displayed', 8)):
+                        ('_sheng_console_columns', 8), ('_sheng_console_rows', 8), ('_sheng_first_sync_displayed', 8),
+                        ('_sheng_recovery_ui_pages_applied', 4), ('_sheng_recovery_ui_page_mask', 4)):
         if name in addresses:
             key = f'{addresses[name]:x}:{width:x}'
             value = snapshot['memory'].get(key, 'not captured')

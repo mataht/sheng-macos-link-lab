@@ -68,12 +68,15 @@ def verify_page(page: bytes, rule: dict) -> bytes:
     return bytes(result)
 
 
-def render(document: dict) -> str:
+def render(document: dict, name: str = 'sheng_ui_pages', preamble: bool = True) -> str:
     pages = validate(document)
+    if not re.fullmatch(r'sheng_[a-z_]+', name):
+        raise ValueError('Invalid UI page table name')
     def array(value: str) -> str:
         return '{' + ', '.join(f'0x{x:02x}' for x in bytes.fromhex(value)) + '}'
-    lines = ['// SPDX-License-Identifier: MIT', '// Generated from the pinned Recovery UI page manifest.',
-             '#pragma once', 'static const struct sheng_ui_page sheng_ui_pages[] = {']
+    lines = (['// SPDX-License-Identifier: MIT', '// Generated from the pinned Recovery UI page manifest.',
+              '#pragma once'] if preamble else [])
+    lines.append(f'static const struct sheng_ui_page {name}[] = {{')
     for page in pages:
         lines.extend(['    {', f'        .file = "{page["file"]}",',
                       f'        .file_offset = {page["file_offset"]}ULL,',
@@ -86,6 +89,13 @@ def render(document: dict) -> str:
         lines.extend(['        },', '    },'])
     lines.extend(['};', ''])
     return '\n'.join(lines)
+
+
+def render_sets(recovery: dict, full: dict) -> str:
+    """Both pinned page sets in one header; the kernel applies exactly one, chosen by boot argument
+    (sheng-recovery-ui=1: BaseSystem cache pages, sheng-full-ui=1: full-system SystemOS cache pages)."""
+    return (render(recovery) + '// Generated from the pinned full-system UI page manifest.\n'
+            + render(full, 'sheng_full_ui_pages', preamble=False))
 
 
 def main() -> None:

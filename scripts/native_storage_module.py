@@ -102,6 +102,37 @@ def validate_display(directory, evidence, info, original, kc, selected):
         raise ValueError('GOP private field layout requires the reviewed paired framebuffer family')
 
 
+def validate_input(directory, evidence, info, original, kc, selected):
+    input_driver = evidence['native_recovery_input']
+    contract = json.loads((Path(__file__).resolve().parents[1] /
+                           'config/macos26-input-reference.json').read_text())['abi']
+    if (not evidence.get('native_gop_display') or 'com.apple.iokit.IOHIDFamily' not in selected
+            or input_driver.get('abi') != contract or input_driver.get('default_off') is not True
+            or input_driver.get('qemu_only') is not True
+            or input_driver.get('hardware_admitted') is not False
+            or input_driver.get('boot_argument') != 'native-recovery-input=1'
+            or input_driver.get('provider_compatible') != 'sheng,qemu-virtio-input'):
+        raise ValueError('input companion requires the paired default-off QEMU HID contract')
+    expected = dict(CFBundleIdentifier=evidence['bundle'], IOClass='NativeRecoveryInput',
+        IOProviderClass='IOPlatformDevice', IONameMatch='native-recovery-input',
+        IOMatchCategory='NativeRecoveryInput', IOProbeScore=500)
+    event_driver = dict(CFBundleIdentifier='com.apple.iokit.IOHIDFamily', IOClass='IOHIDEventDriver',
+        IOProviderClass='IOHIDInterface', VendorID=6900, ProductID=4178, IOProbeScore=3000)
+    if (info['IOKitPersonalities'].get('NativeRecoveryInput') != expected
+            or info['IOKitPersonalities'].get('NativeRecoveryHIDEventDriver') != event_driver):
+        raise ValueError('input companion provider or original event driver identity differs')
+    for name, key in (('NativeRecoveryInput.cpp', 'source_sha256'),
+                      ('NativeVirtioPci.h', 'header_sha256')):
+        if hashlib.sha256((directory / 'recovery-input' / name).read_bytes()).hexdigest() != input_driver.get(key):
+            raise ValueError('input source differs from compiled record')
+    family = kc_macho(original, kc['entries']['com.apple.iokit.IOHIDFamily'][1])
+    text = next(s for s in family['segments'] if s['name'] == '__TEXT_EXEC')
+    if (family['uuid'] != contract['family_uuid'] or
+            hashlib.sha256(original[text['fileoff']:text['fileoff'] + text['filesize']]).hexdigest()
+            != contract['family_text_sha256']):
+        raise ValueError('input companion requires the reviewed original HID family')
+
+
 def prepare(directory: Path, base: int, native: dict, original: bytes,
             kc: dict, selected: dict, slide: int, *, allow_combined_virtio_gop=False,
             native_data=None) -> dict:
@@ -130,8 +161,23 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     if component == 'NativeVirtioBlock':
         from native_combined_driver import validate_combined
         validate_combined(directory, evidence, info, allow_combined_virtio_gop)
+        if evidence.get('qemu_only_display') is True and not evidence.get('combined_driver'):
+            # Display (and optionally the QEMU input companion) compiled directly into the QEMU-only bundle.
+            if (not evidence.get('native_gop_display') or evidence.get('hardware_admitted') is not False
+                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq'))):
+                raise ValueError('the QEMU display bundle may carry only the GOP display and QEMU input companions')
+            allowed = {component, 'NativeGOPDisplay'}
+            if evidence.get('native_recovery_input'):
+                allowed |= {'NativeRecoveryInput', 'IOHIDEventDriver'}
+            if info['CFBundleExecutable'] != component or any(
+                    item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
+                raise ValueError('VirtIO display personality differs from the qualified components')
+        elif evidence.get('native_recovery_input'):
+            raise ValueError('the VirtIO input companion requires the directly compiled QEMU display')
         if evidence.get('native_gop_display'):
             validate_display(directory, evidence, info, original, kc, selected)
+        if evidence.get('native_recovery_input'):
+            validate_input(directory, evidence, info, original, kc, selected)
         from build_macos26_storage import PROTOCOL_CHARACTERISTICS
         personality = info['IOKitPersonalities']['NativeVirtioBlock']
         existing = personality.get('Protocol Characteristics')
@@ -189,33 +235,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if display:
             validate_display(directory, evidence, info, original, kc, selected)
         if input_driver:
-            contract = json.loads((Path(__file__).resolve().parents[1] /
-                                   'config/macos26-input-reference.json').read_text())['abi']
-            if (not display or 'com.apple.iokit.IOHIDFamily' not in selected
-                    or input_driver.get('abi') != contract or input_driver.get('default_off') is not True
-                    or input_driver.get('qemu_only') is not True
-                    or input_driver.get('hardware_admitted') is not False
-                    or input_driver.get('boot_argument') != 'native-recovery-input=1'
-                    or input_driver.get('provider_compatible') != 'sheng,qemu-virtio-input'):
-                raise ValueError('input companion requires the paired default-off QEMU HID contract')
-            expected = dict(CFBundleIdentifier=evidence['bundle'], IOClass='NativeRecoveryInput',
-                IOProviderClass='IOPlatformDevice', IONameMatch='native-recovery-input',
-                IOMatchCategory='NativeRecoveryInput', IOProbeScore=500)
-            event_driver = dict(CFBundleIdentifier='com.apple.iokit.IOHIDFamily', IOClass='IOHIDEventDriver',
-                IOProviderClass='IOHIDInterface', VendorID=6900, ProductID=4178, IOProbeScore=3000)
-            if (info['IOKitPersonalities'].get('NativeRecoveryInput') != expected
-                    or info['IOKitPersonalities'].get('NativeRecoveryHIDEventDriver') != event_driver):
-                raise ValueError('input companion provider or original event driver identity differs')
-            for name, key in (('NativeRecoveryInput.cpp', 'source_sha256'),
-                              ('NativeVirtioPci.h', 'header_sha256')):
-                if hashlib.sha256((directory / 'recovery-input' / name).read_bytes()).hexdigest() != input_driver.get(key):
-                    raise ValueError('input source differs from compiled record')
-            family = kc_macho(original, kc['entries']['com.apple.iokit.IOHIDFamily'][1])
-            text = next(s for s in family['segments'] if s['name'] == '__TEXT_EXEC')
-            if (family['uuid'] != contract['family_uuid'] or
-                    hashlib.sha256(original[text['fileoff']:text['fileoff'] + text['filesize']]).hexdigest()
-                    != contract['family_text_sha256']):
-                raise ValueError('input companion requires the reviewed original HID family')
+            validate_input(directory, evidence, info, original, kc, selected)
 
     if 'com.apple.iokit.IOStorageFamily' not in selected:
         raise ValueError('transport needs the original IOStorageFamily dependency')

@@ -58,8 +58,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
         raise ValueError('the full-system root identity belongs to the UFS transport')
-    if gop_display and transport != 'ufs':
-        raise ValueError('the board GOP companion requires the UFS bundle')
+    if (button_keys or touch) and transport != 'ufs':
+        raise ValueError('the hardware input companions belong to the UFS bundle')
+    # The VirtIO bundle may carry the same GOP display and QEMU input companions (QEMU only: the full system's
+    # image is a virtio disk there); the hardware never links the VirtIO bundle.
     if recovery_input and not gop_display:
         raise ValueError('the QEMU input experiment requires the GOP companion')
     if button_keys and not gop_display:
@@ -316,6 +318,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
                     original_storage_runtime_qualified=False, hardware_admitted=False)
     if display:
         evidence['native_gop_display'] = display
+        if transport == 'virtio':
+            evidence['qemu_only_display'] = True
     if input_driver:
         evidence['native_recovery_input'] = input_driver
     if button_keys:

@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from native_recovery_ui import PAGE, render, validate, verify_page
+from native_recovery_ui import PAGE, render, render_sets, validate, verify_page
 
 
 class RecoveryUiPolicy(unittest.TestCase):
@@ -56,6 +56,26 @@ class RecoveryUiPolicy(unittest.TestCase):
         self.assertEqual(len(validate(document)), 11)
         self.assertEqual(sum(len(p['edits']) for p in document['pages']), 14)
 
+    def test_full_system_table_is_separate_and_exclusive(self):
+        recovery = json.loads((ROOT / 'config/macos26-recovery-ui-pages.json').read_text())
+        full = json.loads((ROOT / 'config/macos26-full-ui-pages.json').read_text())
+        self.assertEqual(len(validate(full)), 5)
+        self.assertEqual(full['boot_argument'], 'sheng-full-ui=1')
+        self.assertTrue(full['default_off'] and not full['disk_writes'] and not full['hardware_admitted'])
+        header = render_sets(recovery, full)
+        self.assertEqual(header.count('#pragma once'), 1)
+        self.assertEqual(header.count('static const struct sheng_ui_page sheng_ui_pages[] = {'), 1)
+        self.assertEqual(header.count('static const struct sheng_ui_page sheng_full_ui_pages[] = {'), 1)
+        self.assertTrue(header.startswith(render(recovery)))
+        with self.assertRaises(ValueError):
+            render(full, 'bad name')
+        hook = (ROOT / 'platform/sheng/macos26/recovery/ui_policy_kernel.h').read_text()
+        self.assertIn('TUNABLE(uint32_t, sheng_full_ui_enabled, "sheng-full-ui", 0);', hook)
+        # One table only: the full table needs sheng-full-ui=1 without sheng-recovery-ui, else the first match stops.
+        self.assertIn('sheng_full_ui_enabled == 1 && !sheng_recovery_ui_enabled', hook)
+        self.assertIn('if (!one_table ||', hook)
+        self.assertIn('if (sheng_recovery_ui_enabled == 1 && !full)', hook)
+
     def test_actual_c_engine_refuses_partial_writes_and_is_idempotent(self):
         compiler = shutil.which('cc')
         pkg = shutil.which('pkg-config')
@@ -67,7 +87,8 @@ class RecoveryUiPolicy(unittest.TestCase):
         import shlex
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
-            (target / 'sheng_recovery_ui_pages.h').write_text(render(self.document))
+            # Both tables in one header, as the kernel build stages it; the engine test uses the first.
+            (target / 'sheng_recovery_ui_pages.h').write_text(render_sets(self.document, self.document))
             (target / 'page.bin').write_bytes(self.original)
             executable = target / 'policy'
             subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',

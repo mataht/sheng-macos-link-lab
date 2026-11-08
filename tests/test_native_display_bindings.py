@@ -26,3 +26,17 @@ class PrivateDisplaySlot(unittest.TestCase):
     def test_ambiguous_original_slot_is_rejected(self):
         with self.assertRaises(ValueError):
             validate_private_slot(self.item, self.allowed + copy.deepcopy(self.allowed))
+
+
+class VirtioDisplayProvenance(unittest.TestCase):
+    def test_direct_qemu_display_is_distinct_from_the_combined_driver(self):
+        from native_combined_driver import validate_combined
+        display = dict(build='25F71')
+        validate_combined(Path('.'), dict(native_gop_display=display, qemu_only_display=True), {}, False)
+        validate_combined(Path('.'), {}, {}, False)
+        for evidence, enabled in ((dict(native_gop_display=display), False), ({}, True),
+                                  (dict(native_gop_display=display, qemu_only_display=True), True),
+                                  (dict(native_gop_display=display, qemu_only_display=True,
+                                        combined_driver=dict(schema='sheng-virtio-gop-combined-v1')), True)):
+            with self.subTest(evidence=evidence, enabled=enabled), self.assertRaises(ValueError):
+                validate_combined(Path('.'), evidence, {}, enabled)

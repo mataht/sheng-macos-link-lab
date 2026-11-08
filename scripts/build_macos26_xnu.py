@@ -19,7 +19,6 @@ OUT = ROOT / 'out/macos26-xnu'
 ARCH = 'arm64'
 RECOVERY_UI_MANIFEST = 'config/macos26-recovery-ui-pages.json'
 FULL_UI_MANIFEST = 'config/macos26-full-ui-pages.json'  # page table of the full-system shared cache
-UI_MANIFEST = RECOVERY_UI_MANIFEST
 PATCHES = [
     ROOT / 'platform/sheng/macos26/patches/0001-native-sheng-target.patch',
     ROOT / 'platform/sheng/macos26/patches/0002-non-apple-machine-paths.patch',
@@ -269,12 +268,13 @@ def prepare() -> dict:
     stage_file(vm_trace, source / 'osfmk/arm64/sheng_vm_trace.h')
     crypto_image = ROOT / 'platform/sheng/macos26/crypto/native_image.h'
     stage_file(crypto_image, source / 'osfmk/prng/sheng_crypto_image.h')
-    from native_recovery_ui import render as render_recovery_ui
+    from native_recovery_ui import render_sets as render_ui_sets
     recovery_ui = ROOT / 'platform/sheng/macos26/recovery/ui_policy.h'
     recovery_ui_kernel = ROOT / 'platform/sheng/macos26/recovery/ui_policy_kernel.h'
-    recovery_ui_manifest = ROOT / UI_MANIFEST
+    recovery_ui_manifest = ROOT / RECOVERY_UI_MANIFEST
+    full_ui_manifest = ROOT / FULL_UI_MANIFEST
     recovery_ui_generated = OUT / 'sheng_recovery_ui_pages.h'
-    rendered = render_recovery_ui(json.loads(recovery_ui_manifest.read_text()))
+    rendered = render_ui_sets(json.loads(recovery_ui_manifest.read_text()), json.loads(full_ui_manifest.read_text()))
     if not recovery_ui_generated.exists() or recovery_ui_generated.read_text() != rendered:
         recovery_ui_generated.write_text(rendered)
     stage_file(recovery_ui, source / 'osfmk/vm/sheng_recovery_ui.h')
@@ -347,7 +347,14 @@ def prepare() -> dict:
                   recovery_ui_policy=dict(default_off=True, boot_argument='sheng-recovery-ui=1',
                       page_count=len(json.loads(recovery_ui_manifest.read_text())['pages']),
                       manifest_sha256=sha(recovery_ui_manifest), engine_sha256=sha(recovery_ui),
-                      **({} if UI_MANIFEST == RECOVERY_UI_MANIFEST else dict(manifest=UI_MANIFEST)),
+                      kernel_hook_sha256=sha(recovery_ui_kernel), generated_sha256=sha(recovery_ui_generated),
+                      original_signature_validation_required=True, disk_writes=False,
+                      runtime_qualified=False, hardware_admitted=False),
+                  # Second pinned table in the same generated header, for the installed system's SystemOS cache.
+                  full_ui_policy=dict(default_off=True, boot_argument='sheng-full-ui=1',
+                      exclusive_with='sheng-recovery-ui', manifest=FULL_UI_MANIFEST,
+                      page_count=len(json.loads(full_ui_manifest.read_text())['pages']),
+                      manifest_sha256=sha(full_ui_manifest), engine_sha256=sha(recovery_ui),
                       kernel_hook_sha256=sha(recovery_ui_kernel), generated_sha256=sha(recovery_ui_generated),
                       original_signature_validation_required=True, disk_writes=False,
                       runtime_qualified=False, hardware_admitted=False),
@@ -564,7 +571,10 @@ def compile_sources(args, record: dict) -> None:
         link_kernel(args, record, common, sdk, source, env)
         if ARCH == 'arm64e':
             from build_macos26_storage import build as build_storage
-            build_storage(ROOT, OUT, compile_record, source, run, record, env)
+            # QEMU-only VirtIO bundle; with --build-gop-display it carries the same display and QEMU input
+            # companions so the installed full system (a virtio disk in QEMU) can be observed with a screen.
+            build_storage(ROOT, OUT, compile_record, source, run, record, env,
+                          gop_display=args.build_gop_display, recovery_input=args.build_recovery_input)
             if args.build_ufs_driver:
                 build_storage(ROOT, OUT, compile_record, source, run, record, env,
                               transport='ufs', gop_display=args.build_gop_display,
@@ -651,7 +661,7 @@ def link_kernel(args, record, common, sdk, source, env):
 
 
 def main() -> None:
-    global OUT, ARCH, UI_MANIFEST
+    global OUT, ARCH
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--link-kernel', action='store_true', help='build runtime and attempt the native executable link')
@@ -690,9 +700,6 @@ def main() -> None:
     if args.build_full_root and not args.build_ufs_driver:
         parser.error('--build-full-root requires --build-ufs-driver')
     ARCH = args.arch
-    if args.build_full_root and (ROOT / FULL_UI_MANIFEST).is_file():
-        # Same engine and boot argument; only the pinned pages differ (SystemOS cache instead of BaseSystem).
-        UI_MANIFEST = FULL_UI_MANIFEST
     if ARCH == 'arm64e':
         OUT = ROOT / 'out/macos26-xnu-arm64e'
         before = PATCHES.index(ROOT / 'platform/sheng/macos26/patches/0040-native-prelink-structor-signing.patch')

@@ -49,9 +49,12 @@ def validate_ci_source(ci_inputs, source_commit, hashes):
 def validate_combined(directory, evidence, info, enabled):
     combined = evidence.get('combined_driver')
     if not combined:
-        if enabled or evidence.get('native_gop_display'):
+        # A display compiled directly into the VirtIO bundle (QEMU only) is checked by the storage-module validator.
+        if enabled or evidence.get('native_gop_display') and evidence.get('qemu_only_display') is not True:
             raise ValueError('VirtIO GOP requires explicit combined-driver provenance')
         return
+    if evidence.get('qemu_only_display'):
+        raise ValueError('a combined driver cannot also claim a directly compiled display')
     if (not enabled or combined.get('schema') != 'sheng-virtio-gop-combined-v1'
             or combined.get('qemu_only') is not True or combined.get('hardware_admitted') is not False
             or combined.get('link_exit_code') != 0
