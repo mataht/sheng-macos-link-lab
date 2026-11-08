@@ -100,6 +100,49 @@ class NativeTree(unittest.TestCase):
             configure_native_text_state(self.path, **(options | dict(platform_uuid=self.root)))
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_full_system_root_uses_volume_group_without_recovery_environment(self):
+        group = uuid.UUID('6a2c7f1e-1111-4222-8333-944455556666')
+        options = dict(development_root=True, full_system_volume_group=group,
+                       full_system_root_snapshot='com.apple.root.0123ABCD')
+        configure_native_text_state(self.path, **options)
+        before = self.path.read_bytes()
+        tree = read_tree(before)
+        chosen = tree[('device-tree', 'chosen')]
+        self.assertEqual(chosen['boot-uuid'], str(group).upper().encode() + b'\0')
+        self.assertEqual(chosen['apfs-preboot-uuid'], chosen['boot-uuid'])
+        self.assertEqual(chosen['root-snapshot-name'], b'com.apple.root.0123ABCD\0')
+        self.assertNotIn('osenvironment', chosen)
+        self.assertNotIn(('device-tree', 'chosen', 'secure-boot-hashes'), tree)
+        asmb = tree[('device-tree', 'chosen', 'asmb')]
+        self.assertEqual((asmb['lp-sip0'], asmb['lp-sip1']), (struct.pack('<Q', 0), struct.pack('<I', 1)))
+        configure_native_text_state(self.path, **options)
+        self.assertEqual(self.path.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            configure_native_text_state(self.path, **(options | dict(full_system_root_snapshot='other')))
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_full_system_root_refuses_recovery_identity_and_hardware_policy(self):
+        group = uuid.UUID('6a2c7f1e-1111-4222-8333-944455556666')
+        before = self.path.read_bytes()
+        cases = (
+            (dict(full_system_volume_group=group), 'unauthenticated-root'),
+            (dict(development_root=True, full_system_volume_group=group, root_hash=bytes(range(32))),
+             'Recovery identity'),
+            (dict(development_root=True, full_system_volume_group=group, root_hash=bytes(range(32)),
+                  boot_volume_uuid=self.root), 'Recovery identity'),
+            (dict(development_root=True, full_system_volume_group=uuid.UUID(int=0)), 'nil'),
+            (dict(development_root=True, full_system_root_snapshot='x'), 'volume group'),
+            (dict(development_root=True, full_system_volume_group=group,
+                  full_system_root_snapshot='bad name'), 'printable'),
+        )
+        for options, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                configure_native_text_state(self.path, **options)
+            self.assertEqual(self.path.read_bytes(), before)
+        self.path.write_bytes(node('device-tree', children=(node('chosen', (('osenvironment', b'recoveryos\0'),)),)))
+        with self.assertRaisesRegex(ValueError, 'osenvironment'):
+            configure_native_text_state(self.path, development_root=True, full_system_volume_group=group)
+
     def test_vm_identity_cannot_leak_into_hardware_tree(self):
         before = self.path.read_bytes()
         with self.assertRaisesRegex(ValueError, 'development fixture'):

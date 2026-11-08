@@ -34,7 +34,9 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 platform_uuid: uuid.UUID | None = None,
                                 qemu_disable_sleep: bool = False,
                                 native_gop_display: bool = False,
-                                qemu_virtio_input: bool = False) -> None:
+                                qemu_virtio_input: bool = False,
+                                full_system_volume_group: uuid.UUID | None = None,
+                                full_system_root_snapshot: str | None = None) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
@@ -49,6 +51,22 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
 
     if boot_volume_uuid is not None and root_hash is None:
         raise ValueError('boot volume identity requires the paired recovery root hash')
+
+    # Full-system mode: an unsealed, user-built root snapshot boots under the development
+    # unauthenticated-root policy. It never carries the Recovery environment or root hash.
+    if full_system_root_snapshot is not None and full_system_volume_group is None:
+        raise ValueError('a root snapshot name requires the full-system volume group')
+    if full_system_volume_group is not None:
+        if not development_root:
+            raise ValueError('full-system root requires the development unauthenticated-root policy')
+        if root_hash is not None or boot_volume_uuid is not None:
+            raise ValueError('full-system root cannot reuse the Recovery identity or root hash')
+        if full_system_volume_group.int == 0:
+            raise ValueError('full-system volume group cannot be nil')
+        if full_system_root_snapshot is not None and (
+                not 0 < len(full_system_root_snapshot) <= 255
+                or not all(0x20 < ord(c) < 0x7f for c in full_system_root_snapshot)):
+            raise ValueError('root snapshot name must be printable ASCII without spaces')
 
     if platform_uuid is not None and platform_uuid.int == 0:
         raise ValueError('VM platform UUID cannot be nil')
@@ -129,6 +147,14 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                 identity = str(boot_volume_uuid).upper().encode('ascii') + b'\0'
                 ensure('boot-uuid', identity)
                 ensure('apfs-preboot-uuid', identity)
+            if full_system_volume_group is not None:
+                if 'osenvironment' in properties:
+                    raise ValueError('full-system root refuses an existing osenvironment')
+                group = str(full_system_volume_group).upper().encode('ascii') + b'\0'
+                ensure('boot-uuid', group)
+                ensure('apfs-preboot-uuid', group)
+                if full_system_root_snapshot is not None:
+                    ensure('root-snapshot-name', full_system_root_snapshot.encode('ascii') + b'\0')
         if development_root and location == ('device-tree', 'chosen', 'asmb'):
             asmb += 1
             ensure('lp-sip0', struct.pack('<Q', 0))
