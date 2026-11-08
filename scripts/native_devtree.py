@@ -37,11 +37,13 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 qemu_virtio_input: bool = False,
                                 full_system_volume_group: uuid.UUID | None = None,
                                 full_system_root_snapshot: str | None = None,
-                                touch_node: dict | None = None) -> None:
+                                touch_node: dict | None = None,
+                                trust_cache_slot: bool = False) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
     touch_arm_io = touch_nodes = 0
+    memory_maps = 0
     if touch_node is not None and (development_root and qemu_virtio_input or not touch_node.get('firmware')):
         raise ValueError('the touch node needs its firmware and belongs to the hardware tree')
     defaults = 0
@@ -80,7 +82,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
 
     def node(at: int, parents: tuple[str, ...] = ()) -> tuple[bytes, int]:
         nonlocal chosen, asmb, auth, options, proxies, arm_io, gop_nodes, defaults, input_nodes
-        nonlocal touch_arm_io, touch_nodes
+        nonlocal touch_arm_io, touch_nodes, memory_maps
         if len(parents) > 32 or at + 8 > len(data):
             raise ValueError('invalid generated device-tree node')
         count, children = struct.unpack_from('<II', data, at)
@@ -135,6 +137,11 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             # IOPMrootDomain reads this policy before accepting idle or demand sleep.
             ensure('sleep-disabled', struct.pack('<I', 1))
         is_chosen = location == ('device-tree', 'chosen')
+        if trust_cache_slot and location == ('device-tree', 'chosen', 'memory-map'):
+            # Empty slot: DarwinBoot copies kernel.macho.trustcache into the kernel window and writes its physical
+            # address and size here; XNU loads module 0 of it as the static trust cache.
+            memory_maps += 1
+            ensure('TrustCache', bytes(16))
         if native_gop_display and location == ('device-tree', 'arm-io'):
             arm_io += 1
         if touch_node is not None and location == ('device-tree', 'arm-io'):
@@ -238,6 +245,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             or qemu_disable_sleep and defaults != 1
             or qemu_virtio_input and input_nodes != 1
             or native_gop_display and (arm_io != 1 or gop_nodes != 1)
-            or touch_node is not None and (touch_arm_io != 1 or touch_nodes != 1)):
+            or touch_node is not None and (touch_arm_io != 1 or touch_nodes != 1)
+            or trust_cache_slot and memory_maps != 1):
         raise ValueError('requires one complete generated /chosen node')
     path.write_bytes(result)

@@ -127,6 +127,8 @@ def main() -> None:
                         help='inspect_macos26_full_image.py report of exactly this unchanged image')
     parser.add_argument('--full-system-launchd', type=Path,
                         help='launchd sample extracted by full_system_qemu.py from the verified 25F71 OS image')
+    parser.add_argument('--full-system-trust-cache', type=Path,
+                        help="system_trust_cache.py bundle of the image's original trust caches (DarwinBoot loads it)")
     parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
                         help='experiment: also publish chosen/root-snapshot-name (default off)')
     parser.add_argument('--process-layout', type=Path,
@@ -171,7 +173,7 @@ def main() -> None:
         parser.error('--read-saved-user-register requires the handle_pac_fail checkpoint')
     full_system = None
     if args.full_system_image or args.full_system_inspection or args.full_system_launchd \
-            or args.full_system_adt_snapshot_name:
+            or args.full_system_adt_snapshot_name or args.full_system_trust_cache:
         from full_system_qemu import qualify_inspection
         if not args.full_system_image or not args.full_system_inspection:
             parser.error('full-system mode requires both the image and its inspection report')
@@ -195,6 +197,18 @@ def main() -> None:
         if linked != storage.get('bundle') or linked != 'org.unixnu.driver.NativeVirtioBlock':
             parser.error(f'full-system QEMU needs the virtio storage driver linked into the candidate (linked: {linked})')
         full_system = qualify_inspection(args.full_system_image, args.full_system_inspection)
+        if args.full_system_trust_cache:
+            from system_trust_cache import check_bundle
+            trust = args.full_system_trust_cache.read_bytes()
+            trust_record = json.loads(Path(str(args.full_system_trust_cache) + '.json').read_text())
+            check_bundle(trust)
+            if (trust_record.get('schema') != 'sheng-system-trust-cache-v1' or trust_record.get('build') != '25F71'
+                    or trust_record.get('bundle_sha256') != hashlib.sha256(trust).hexdigest()
+                    or trust_record.get('own_entries_added') is not False):
+                parser.error('trust cache bundle does not match its original-module record')
+            full_system['trust_cache'] = dict(path=str(args.full_system_trust_cache.resolve()), bytes=len(trust),
+                                              sha256=trust_record['bundle_sha256'],
+                                              entries=trust_record['merged']['entries'])
     maximum_timeout = (3600 if full_system and args.continue_after_launchd_main else
                        900 if args.continue_after_launchd_main else 180)
     if not 15 <= args.timeout <= maximum_timeout:
@@ -379,6 +393,8 @@ def main() -> None:
         shutil.copy2(loader_path, payload / 'DarwinBoot.efi')
         record['loader_sha256'] = loader['sha256']
         shutil.copy2(kernel, payload / 'kernel.macho')
+        if full_system and full_system.get('trust_cache'):
+            shutil.copy2(full_system['trust_cache']['path'], payload / 'kernel.macho.trustcache')
         boot_args = smp['boot_args']
         if args.native_gop_display:
             boot_args += ' native-gop-display=1'
@@ -471,7 +487,8 @@ def main() -> None:
                                     full_system_volume_group=full_system['volume_group'] if full_system else None,
                                     full_system_root_snapshot=(full_system['root_snapshot']
                                                                if full_system and args.full_system_adt_snapshot_name
-                                                               else None))
+                                                               else None),
+                                    trust_cache_slot=bool(full_system and full_system.get('trust_cache')))
         record['qemu_development_root'] = args.qemu_development_root
         record['qemu_platform_uuid'] = str(args.qemu_platform_uuid) if args.qemu_platform_uuid else None
         record['qemu_memory_mib'] = args.qemu_memory_mib
