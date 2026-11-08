@@ -66,8 +66,12 @@ class AdbTransport:
         return remote
 
     def write(self, remote, offset, length):
-        self.device.shell(f'dd if={remote} of={PARTITION} bs={DD_BLOCK} seek={offset // DD_BLOCK} '
-                          f'count={length // DD_BLOCK} conv=notrunc,fsync 2>/dev/null', timeout=300)
+        command = (f'dd if={remote} of={PARTITION} bs={DD_BLOCK} seek={offset // DD_BLOCK} '
+                   f'count={length // DD_BLOCK} conv=notrunc,fsync 2>&1')
+        try:
+            self.device.shell(command, timeout=300)
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f'dd failed at offset {offset}: exit {error.returncode}: {error.output!r}') from error
 
     def digest(self, offset, length):
         output = self.device.shell(f'dd if={PARTITION} bs={DD_BLOCK} skip={offset // DD_BLOCK} '
@@ -89,7 +93,22 @@ def verify_image(image, chunk_map):
             raise ValueError('image is longer than the chunk map')
 
 
-def write_partition(transport, image, chunk_map, header, window_sha256, journal):
+def verified_prefix(journal_path):
+    """How many leading chunks an interrupted run verified on the device; any gap or mismatch record stops the resume."""
+    count = 0
+    with Path(journal_path).open() as journal:
+        for line in journal:
+            entry = json.loads(line)
+            if entry.get('operation') == 'mismatch':
+                raise ValueError('the interrupted run recorded a readback mismatch; do not resume it')
+            if entry.get('operation') in ('verified', 'zero-verified') and 'chunk' in entry:
+                if entry['chunk'] != count:
+                    raise ValueError('the interrupted journal is not a contiguous prefix')
+                count += 1
+    return count
+
+
+def write_partition(transport, image, chunk_map, header, window_sha256, journal, resume_from=0):
     window = chunk_map['window_offset']
     if window % DD_BLOCK or len(header) != DD_BLOCK or any(c['bytes'] % DD_BLOCK for c in chunk_map['chunks']):
         raise ValueError('partition layout is not aligned to the device write block')
@@ -99,10 +118,17 @@ def write_partition(transport, image, chunk_map, header, window_sha256, journal)
         journal.flush()
 
     counts = dict(written=0, zero_verified=0, zero_written=0)
-    log(operation='discard', tool=transport.discard())
+    if resume_from:
+        # The earlier run discarded the partition and verified these chunks; the whole-window digest below re-checks them.
+        log(operation='resume', first_chunk=resume_from)
+    else:
+        log(operation='discard', tool=transport.discard())
     zeros = {}
     with Path(image).open('rb') as stream:
         for index, chunk in enumerate(chunk_map['chunks']):
+            if index < resume_from:
+                stream.seek(chunk['bytes'], 1)
+                continue
             data = stream.read(chunk['bytes'])
             if sha(data) != chunk['sha256']:
                 raise ValueError(f'image changed during the write at chunk {index}')
@@ -179,18 +205,30 @@ def qualify(device, plan_dir, package_dir, image):
     return plan, build, header, chunk_map
 
 
-def install(device, plan_dir, package_dir, image, output, staging):
+def install(device, plan_dir, package_dir, image, output, staging, resume=None):
     plan, build, header, chunk_map = qualify(device, plan_dir, package_dir, image)
     verify_image(image, chunk_map)
+    resume_from = 0
+    if resume is not None:
+        previous = json.loads((Path(resume) / 'install.json').read_text())
+        if (previous.get('verified') is not False or previous.get('destination_guid') != plan['full_unique_guid']
+                or previous.get('manifest_sha256') != build['manifest_sha256'] or previous.get('window') != build['window']
+                or previous.get('serial') != device.serial):
+            raise ValueError('the interrupted install does not belong to this partition and package')
+        resume_from = verified_prefix(Path(resume) / 'install.jsonl')
+        if not 0 < resume_from < len(chunk_map['chunks']):
+            raise ValueError('nothing to resume')
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     record = dict(serial=device.serial, started_at=datetime.now(timezone.utc).isoformat(), destination=PARTITION,
                   destination_guid=plan['full_unique_guid'], manifest_sha256=build['manifest_sha256'],
-                  window=build['window'], chunk_count=len(chunk_map['chunks']), staging=staging, verified=False)
+                  window=build['window'], chunk_count=len(chunk_map['chunks']), staging=staging, verified=False,
+                  resumed_from=str(Path(resume).resolve()) if resume is not None else None, first_chunk=resume_from)
     (output / 'install.json').write_text(json.dumps(record, indent=2) + '\n')
     transport = AdbTransport(device, staging)
     with (output / 'install.jsonl').open('x') as journal:
-        counts = write_partition(transport, image, chunk_map, header, build['window']['sha256'], journal)
+        counts = write_partition(transport, image, chunk_map, header, build['window']['sha256'], journal,
+                                 resume_from=resume_from)
     record.update(counts, verified=True, finished_at=datetime.now(timezone.utc).isoformat())
     (output / 'install.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
@@ -204,11 +242,12 @@ def main():
     parser.add_argument('--image', required=True, type=Path, help='the delivered raw disk the package describes')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--staging', required=True, help='/tmp/sheng-macossystem-<safe-id> on the device')
+    parser.add_argument('--resume', type=Path, help='output directory of an interrupted install; continues after its verified chunks')
     args = parser.parse_args()
     if not args.output.resolve().is_relative_to((cn.ROOT / 'private').resolve()):
         parser.error('--output must stay in local private/')
     print(json.dumps(install(cn.Device(args.serial), args.plan, args.package, args.image, args.output,
-                             args.staging), indent=2))
+                             args.staging, resume=args.resume), indent=2))
 
 
 if __name__ == '__main__':

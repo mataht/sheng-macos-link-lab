@@ -138,6 +138,47 @@ class FullRootPackageTests(unittest.TestCase):
         self.assertEqual(transport.writes, [(MIB, 8192)])
         self.assertNotEqual(bytes(transport.partition[:8]), b'SHNGROOT')
 
+    def prepared(self):
+        prepare.prepare(self.image, self.report, self.dir / 'package')
+        build = json.loads((self.dir / 'package/build.json').read_text())
+        chunk_map = json.loads((self.dir / 'package/chunks.json').read_text())
+        header = (self.dir / 'package/manifest.bin').read_bytes()
+        return build, header, chunk_map, chunk_map['window_offset'] + sum(c['bytes'] for c in chunk_map['chunks'])
+
+    def test_resume_continues_after_the_verified_prefix(self):
+        build, header, chunk_map, window = self.prepared()
+        transport = FakeTransport(window)
+        with io.StringIO() as journal:
+            installer.write_partition(transport, self.image, chunk_map, header, build['window']['sha256'], journal)
+        complete = bytes(transport.partition)
+        resumed = FakeTransport(window, discard_zeroes=False)
+        first = len(chunk_map['chunks']) // 2
+        stop = chunk_map['window_offset'] + chunk_map['chunks'][first]['offset']
+        resumed.partition[:stop] = complete[:stop]
+        resumed.partition[:4096] = bytes(4096)
+        with io.StringIO() as journal:
+            installer.write_partition(resumed, self.image, chunk_map, header, build['window']['sha256'], journal, resume_from=first)
+            text = journal.getvalue()
+        self.assertEqual(bytes(resumed.partition), complete)
+        self.assertIn('"resume"', text)
+        self.assertNotIn('"discard"', text)
+        self.assertTrue(all(offset >= stop or offset == 0 for offset, _ in resumed.writes))
+
+    def test_resume_refuses_a_bad_prefix_and_a_corrupt_earlier_chunk(self):
+        path = self.dir / 'journal.jsonl'
+        path.write_text('{"operation": "verified", "chunk": 0}\n{"operation": "verified", "chunk": 2}\n')
+        with self.assertRaisesRegex(ValueError, 'contiguous'):
+            installer.verified_prefix(path)
+        path.write_text('{"operation": "verified", "chunk": 0}\n{"operation": "mismatch", "chunk": 1}\n')
+        with self.assertRaisesRegex(ValueError, 'mismatch'):
+            installer.verified_prefix(path)
+        path.write_text('{"operation": "discard"}\n{"operation": "zero-verified", "chunk": 0}\n{"operation": "starting", "chunk": 1}\n{"operation": "verified", "chunk": 1}\n')
+        self.assertEqual(installer.verified_prefix(path), 2)
+        build, header, chunk_map, window = self.prepared()
+        transport = FakeTransport(window)
+        with io.StringIO() as journal, self.assertRaisesRegex(ValueError, 'whole-window'):
+            installer.write_partition(transport, self.image, chunk_map, header, build['window']['sha256'], journal, resume_from=1)
+
     def test_changed_image_is_refused_before_discard(self):
         prepare.prepare(self.image, self.report, self.dir / 'package')
         chunk_map = json.loads((self.dir / 'package/chunks.json').read_text())
