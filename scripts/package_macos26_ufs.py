@@ -23,6 +23,7 @@ from display_diagnostic_evidence import qualify_display_observation
 from display_waiver_evidence import qualify_display_waiver
 from qualification_reuse import compare_scope, display_hardware_verification
 from capture_persistent_log import RAM_RANGES as LOG_RAM_RANGES
+from system_trust_cache import check_bundle as check_trust_bundle
 
 # 12 GiB of the 13 GiB contiguous run 0x8C0000000..0xC00000000 (uefi-sheng 0004 on the CN 16 GB unit); the
 # last GiB is headroom for UEFI's own top-down allocations. DarwinBoot/ADT accept up to 13 GiB (0041/0009).
@@ -223,6 +224,56 @@ def qualify_full_system_dyld(build, observation, identity, contract):
             or observed.get('userland_started') is not True or observed.get('launchd_main_started') is not True):
         raise ValueError('requires this kernel booting the contracted full-system image to the original launchd main')
     return observed
+
+
+def qualify_full_trust_cache(path):
+    """The image's original trust caches, unchanged: without them AMFI refuses launchd and dyld on this root."""
+    data = path.read_bytes()
+    record = json.loads(Path(str(path) + '.json').read_text())
+    check_trust_bundle(data)
+    digest = hashlib.sha256(data).hexdigest()
+    if (record.get('schema') != 'sheng-system-trust-cache-v1' or record.get('build') != '25F71'
+            or record.get('bundle_sha256') != digest or record.get('own_entries_added') is not False):
+        raise ValueError('trust cache bundle does not match its original-module record')
+    return dict(path=str(path.resolve()), bytes=len(data), sha256=digest, entries=record['merged']['entries'],
+                own_entries_added=False)
+
+
+def qualify_full_sibling(kernel_build, sibling):
+    """Evidence rule for the full-system package (user decision 2026-11-09, recorded with the package).
+
+    NativeUfs cannot read this image in QEMU, so the launchd evidence comes from the VirtIO candidate of the same CI
+    build. Both must link the same kernel into the same kernel collection with the same module set; the storage bundle
+    is the only permitted difference, so UFS itself stays unqualified until the tablet runs it.
+    """
+    ours = json.loads((kernel_build / 'security-relink.json').read_text())
+    theirs = json.loads((sibling / 'security-relink.json').read_text())
+    for key in ('kernel_sha256', 'bootkc_sha256', 'native_kernel_uuid'):
+        if not ours.get(key) or ours.get(key) != theirs.get(key):
+            raise ValueError('the QEMU candidate is not from the same CI kernel: ' + key)
+    if set(ours['modules']) != set(theirs['modules']):
+        raise ValueError('the QEMU candidate links a different module set')
+    driver = theirs['storage_driver']
+    if (driver.get('bundle') != 'org.unixnu.driver.NativeVirtioBlock' or theirs.get('qemu_only') is not True
+            or driver.get('build', {}).get('qemu_only_display') is not True
+            or ours['storage_driver'].get('bundle') == driver.get('bundle')):
+        raise ValueError('the QEMU candidate must be the VirtIO display build; the package must link the UFS driver')
+    return dict(rule='same CI kernel and module set, storage driver differs', decided_by='user 2026-11-09',
+                candidate_sha256=theirs['candidate_sha256'], kernel_sha256=ours['kernel_sha256'],
+                ufs_runtime_qualified=False)
+
+
+def qualify_full_display(kernel_build, driver, observed):
+    """GOP display plus the compiled full-system page table; the display itself is verified on the tablet."""
+    manifest = hashlib.sha256((ROOT / 'config/macos26-full-ui-pages.json').read_bytes()).hexdigest()
+    compiled = json.loads((kernel_build / 'build.json').read_text()).get('full_ui_policy', {})
+    seen = observed.get('full_ui_policy', {})
+    pages = int(observed.get('observed_globals', {}).get('_sheng_recovery_ui_pages_applied', '0x0'), 16)
+    if (not driver['build'].get('native_gop_display') or compiled.get('manifest_sha256') != manifest
+            or seen.get('manifest_sha256') != manifest or seen.get('boot_argument_enabled') is not True or pages < 1):
+        raise ValueError('requires the compiled GOP display and the full-system page table applied in the QEMU run')
+    return dict(display_hardware_verification(), boot_argument='native-gop-display=1 sheng-full-ui=1',
+                full_ui_manifest_sha256=manifest, qemu_pages_applied=pages)
 
 
 def qualify_development_dyld(build, observation, identity, root_uuid):
@@ -510,7 +561,7 @@ def main():
     parser.add_argument('--root-hash', type=Path)
     parser.add_argument('--root-volume-uuid', type=uuid.UUID)
     parser.add_argument('--full-system', action='store_true',
-                        help='package the full-system root (macossystem) instead of Recovery; text console only')
+                        help='package the full-system root (macossystem) instead of Recovery')
     parser.add_argument('--full-system-plan', type=Path, help='applied repartition_macos26_full.py directory')
     parser.add_argument('--full-system-package', type=Path, help='prepare_macos26_full_root.py output')
     parser.add_argument('--full-system-install', type=Path, help='verified install_macos26_full_system.py output')
@@ -521,6 +572,12 @@ def main():
                              '(native-ufs-root-writes=1; fail-stop); exclusive with --root-overlay-mib')
     parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
                         help='experiment: also publish chosen/root-snapshot-name')
+    parser.add_argument('--full-system-trust-cache', type=Path,
+                        help="system_trust_cache.py bundle of the image's original trust caches (DarwinBoot loads it)")
+    parser.add_argument('--full-system-sibling', type=Path,
+                        help='VirtIO candidate of the same CI build; --dyld-observation is its full-system QEMU run')
+    parser.add_argument('--full-system-display', action='store_true',
+                        help='GOP display and the compiled full-system page table (sheng-full-ui=1); verified on the tablet')
     parser.add_argument('--firmware-build', type=Path, required=True)
     parser.add_argument('--backup-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -585,11 +642,9 @@ def main():
         if (args.root_overlay_mib is None) == (not args.root_writes):
             parser.error('--full-system needs exactly one of --root-overlay-mib (volatile) or --root-writes (persistent)')
         excluded = [n for n in recovery_inputs + ('recovery_ui_observation', 'display_observation', 'display_waiver',
-                                                  'qualification_reference', 'reference_dyld_observation',
-                                                  'panel_size_mm', 'platform_uuid')
+                                                  'qualification_reference', 'reference_dyld_observation')
                     if getattr(args, n) is not None]
-        excluded += [n for n in ('isc_overlay', 'display_keep_awake', 'display_hardware_verification', 'button_keys',
-                                 'boot_progress') if getattr(args, n)]
+        excluded += [n for n in ('isc_overlay', 'display_hardware_verification') if getattr(args, n)]
         if excluded:
             parser.error('--full-system excludes Recovery and display inputs: '
                          + ', '.join('--' + n.replace('_', '-') for n in excluded))
@@ -597,15 +652,19 @@ def main():
             parser.error('--root-overlay-mib must be within 256..8192')
         if not args.development_no_ignition or not args.dyld_observation:
             parser.error('--full-system requires --development-no-ignition with its full-system --dyld-observation')
+        missing = [n for n in ('full_system_trust_cache', 'full_system_sibling', 'platform_uuid') if getattr(args, n) is None]
+        if missing:
+            parser.error('--full-system also requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
     else:
         missing = [n for n in recovery_inputs if getattr(args, n) is None]
         if missing:
             parser.error('the Recovery root requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
         if any(getattr(args, n) for n in ('full_system_plan', 'full_system_package', 'full_system_install',
-                                          'root_overlay_mib', 'root_writes', 'full_system_adt_snapshot_name')):
+                                          'root_overlay_mib', 'root_writes', 'full_system_adt_snapshot_name',
+                                          'full_system_trust_cache', 'full_system_sibling', 'full_system_display')):
             parser.error('full-system inputs require --full-system')
     gui = (args.recovery_ui_observation or args.display_observation or args.display_waiver
-           or args.display_hardware_verification)
+           or args.display_hardware_verification or args.full_system_display)
     if args.display_keep_awake and not gui:
         parser.error('--display-keep-awake requires --recovery-ui-observation or --display-observation')
     if (args.button_keys or args.panel_size_mm) and not gui:
@@ -633,16 +692,17 @@ def main():
         parser.error('--development-no-ignition and --dyld-observation must be used together')
     if args.isc_overlay and not args.development_no_ignition:
         parser.error('--isc-overlay requires the qualified explicit development root')
-    if gui and not args.isc_overlay:
+    if gui and not (args.isc_overlay or args.full_system):
         parser.error('Recovery UI and the display diagnostic require the qualified ISC development root')
     if args.boot_progress and not gui:
         parser.error('--boot-progress requires the qualified Recovery UI candidate or the display diagnostic')
     log_options = (args.macoslog_observation, args.macoslog_readonly_observation, args.macoslog_deployment)
     if any(log_options) and not all(log_options):
         parser.error('macoslog requires write, readonly and deployment evidence together')
-    full_contract = None
+    full_contract = full_trust = full_sibling = full_observed = None
     if args.full_system:
         from build_macos26_storage import full_root_contract
+        full_trust = qualify_full_trust_cache(args.full_system_trust_cache)
         full_contract = full_root_contract(ROOT)
         kernel, symbols, identity, relink, refused = qualify_kernel(args.kernel_build, args.qemu_observation,
             args.bootstrap_observation, args.default_off_observation)
@@ -707,7 +767,11 @@ def main():
         reuse['reference_identity'] = dyld_identity
         reuse['reference_dyld_observation'] = str(args.reference_dyld_observation.resolve())
     if args.development_no_ignition and full_contract:
-        qualify_full_system_dyld(dyld_build, dyld_observation, dyld_identity, full_contract)
+        full_sibling = qualify_full_sibling(args.kernel_build, args.full_system_sibling)
+        dyld_build, dyld_identity = args.full_system_sibling, identify(args.full_system_sibling)[2]
+        full_observed = qualify_full_system_dyld(dyld_build, dyld_observation, dyld_identity, full_contract)
+        if full_observed.get('full_system', {}).get('trust_cache', {}).get('sha256') != full_trust['sha256']:
+            raise ValueError('the QEMU run did not load this trust cache bundle')
         boot_args += ' -sheng-development-no-ignition -nobsdmgroot ' + (
             'native-ufs-root-writes=1' if args.root_writes else f'native-ufs-root-overlay-mib={args.root_overlay_mib}')
     elif args.development_no_ignition:
@@ -734,6 +798,9 @@ def main():
         boot_args += ' ' + display_qualification['boot_argument']
     elif args.display_hardware_verification:
         display_qualification = display_hardware_verification()
+        boot_args += ' ' + display_qualification['boot_argument']
+    elif args.full_system_display:
+        display_qualification = qualify_full_display(args.kernel_build, full_driver, full_observed)
         boot_args += ' ' + display_qualification['boot_argument']
     gop_enabled = bool(ui_qualification or display_qualification)
     cpufreq = None
@@ -781,6 +848,8 @@ def main():
             files = stage / 'Payloads'
             files.mkdir(parents=True)
             shutil.copy2(kernel, files / 'kernel.macho')
+            if full_contract:
+                shutil.copy2(args.full_system_trust_cache, files / 'kernel.macho.trustcache')
             subprocess.run(['python3', ROOT / 'UniXNU-sheng/scripts/make-sheng-adt.py',
                 '--output', files / 'kernel.macho.adt', '--dram-size', '0x200000000',
                 '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', ','.join(cpu_regs),
@@ -793,7 +862,10 @@ def main():
                     full_system_volume_group=uuid.UUID(full_contract['volume_group']),
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
-                    touch_node=touch_node)
+                    platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
+                    trust_cache_slot=True,
+                    # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
+                    qemu_disable_sleep=True)
             else:
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
@@ -877,6 +949,7 @@ def main():
                                  persistent_root_writes=args.root_writes, disk_writes=args.root_writes,
                                  overlay_disk_writes=False, overlay_persistent=False,
                                  adt_root_snapshot_name=args.full_system_adt_snapshot_name,
+                                 trust_cache=full_trust, evidence_rule=full_sibling, sleep_disabled_adt=True,
                                  deployment=media) if full_contract else None,
                 recovery_transport_is_not_authentication=True,
                 deployment_scope='fastboot boot only; no boot/recovery/UEFI partition flashing')

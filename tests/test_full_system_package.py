@@ -117,13 +117,58 @@ class FullSystemPackageTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         return stderr.getvalue()
 
+    def write_candidates(self, **changes):
+        base = dict(kernel_sha256='k', bootkc_sha256='b', native_kernel_uuid='u', modules={'a': {}, 'b': {}}, qemu_only=False,
+                    candidate_sha256='hw', storage_driver=dict(bundle='org.unixnu.driver.NativeUfs', build={}))
+        sibling = dict(base, qemu_only=True, candidate_sha256='vm', storage_driver=dict(
+            bundle='org.unixnu.driver.NativeVirtioBlock', build=dict(qemu_only_display=True)))
+        sibling.update(changes)
+        ours, theirs = self.dir / 'hw', self.dir / 'vm'
+        for path, value in ((ours, base), (theirs, sibling)):
+            path.mkdir(exist_ok=True)
+            (path / 'security-relink.json').write_text(json.dumps(value))
+        return ours, theirs
+
+    def test_sibling_must_be_the_same_ci_kernel_and_modules(self):
+        ours, theirs = self.write_candidates()
+        self.assertEqual(packager.qualify_full_sibling(ours, theirs)['candidate_sha256'], 'vm')
+        ours, theirs = self.write_candidates(kernel_sha256='other')
+        with self.assertRaisesRegex(ValueError, 'same CI kernel'):
+            packager.qualify_full_sibling(ours, theirs)
+        ours, theirs = self.write_candidates(modules={'a': {}, 'c': {}})
+        with self.assertRaisesRegex(ValueError, 'module set'):
+            packager.qualify_full_sibling(ours, theirs)
+        ours, theirs = self.write_candidates(storage_driver=dict(bundle='org.unixnu.driver.NativeUfs', build={}))
+        with self.assertRaisesRegex(ValueError, 'VirtIO display build'):
+            packager.qualify_full_sibling(ours, theirs)
+
+    def test_display_needs_the_table_seen_in_qemu(self):
+        manifest = hashlib.sha256((ROOT / 'config/macos26-full-ui-pages.json').read_bytes()).hexdigest()
+        build = self.dir / 'display'
+        build.mkdir()
+        (build / 'build.json').write_text(json.dumps(dict(full_ui_policy=dict(manifest_sha256=manifest))))
+        driver = dict(build=dict(native_gop_display={'x': 1}))
+        seen = dict(full_ui_policy=dict(manifest_sha256=manifest, boot_argument_enabled=True),
+                    observed_globals={'_sheng_recovery_ui_pages_applied': '0x6'})
+        record = packager.qualify_full_display(build, driver, seen)
+        self.assertEqual(record['boot_argument'], 'native-gop-display=1 sheng-full-ui=1')
+        self.assertEqual(record['qemu_pages_applied'], 6)
+        with self.assertRaises(ValueError):
+            packager.qualify_full_display(build, driver, dict(seen, observed_globals={}))
+        with self.assertRaises(ValueError):
+            packager.qualify_full_display(build, dict(build={}), seen)
+
     def test_mode_arguments_are_exclusive(self):
         self.assertIn('Recovery root requires', self.run_main())
         self.assertIn('--full-system requires', self.run_main('--full-system'))
         full = ['--full-system', '--full-system-plan', 'p', '--full-system-package', 'k', '--full-system-install', 'i',
                 '--root-overlay-mib', '1024', '--development-no-ignition', '--dyld-observation', 'o']
         self.assertIn('excludes Recovery', self.run_main(*full, '--root-hash', 'h'))
-        self.assertIn('excludes Recovery', self.run_main(*full, '--button-keys'))
+        self.assertIn('excludes Recovery', self.run_main(*full, '--isc-overlay'))
+        self.assertIn('also requires --full-system-trust-cache', self.run_main(*full))
+        ready = full + ['--full-system-trust-cache', 't', '--full-system-sibling', 's',
+                        '--platform-uuid', 'c6de5fe2-c2a3-4a1d-b2c8-92a28a45383a']
+        self.assertIn('require the GOP display', self.run_main(*ready, '--button-keys'))
         self.assertIn('256..8192', self.run_main(*full[:-4], '128', '--development-no-ignition', '--dyld-observation', 'o'))
         self.assertIn('exactly one', self.run_main(*full, '--root-writes'))
         no_mode = [a for a in full if a not in ('--root-overlay-mib', '1024')]
