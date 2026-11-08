@@ -113,6 +113,48 @@
       "url": "https://github.com/LongSoft/UEFITool.git",
       "commit": "dac91b26733ca21cb204e41614c1b8c81cc50860",
       "group": "feeds"
+    },
+    {
+      "path": "gpu/Adreno740",
+      "url": "https://github.com/UniXNU/Adreno740.git",
+      "commit": "6fa7bae2a5b3b523e790eb3e0348af4d98969e4d",
+      "group": "core",
+      "submodules": false
+    },
+    {
+      "path": "gpu/AdrenoPM4",
+      "url": "https://github.com/UniXNU/AdrenoPM4.git",
+      "commit": "282606b528b2595bc4274ea7490b62b323f35a5f",
+      "group": "core",
+      "submodules": false
+    },
+    {
+      "path": "gpu/AdrenoFirmware",
+      "url": "https://github.com/UniXNU/AdrenoFirmware.git",
+      "commit": "20ad3d7aca14bd46aecab6335c780f5413fa054b",
+      "group": "core",
+      "submodules": false
+    },
+    {
+      "path": "gpu/ArmSmmu4K",
+      "url": "https://github.com/UniXNU/ArmSmmu4K.git",
+      "commit": "83969cd874503e65997ff7639f7dcf3d0a92cd17",
+      "group": "core",
+      "submodules": false
+    },
+    {
+      "path": "gpu/UniXNU-sm8550-common",
+      "url": "https://github.com/UniXNU/UniXNU-sm8550-common.git",
+      "commit": "97665e28578483082b674e8375a8fa65f4cf49cf",
+      "group": "core",
+      "submodules": false
+    },
+    {
+      "path": "gpu/UniXNU-sheng",
+      "url": "https://github.com/UniXNU/UniXNU-sheng.git",
+      "commit": "d916640693b87c59d91e6e1f272d562accc7536c",
+      "group": "core",
+      "submodules": false
     }
   ]
 }

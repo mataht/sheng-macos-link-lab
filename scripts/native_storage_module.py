@@ -229,6 +229,17 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                        CFBundleIdentifier=evidence['bundle']):
                 raise ValueError('CPU frequency companion personality differs')
             allowed |= {'NativeCpuFreq'}
+        adreno = evidence.get('native_adreno')
+        if adreno:
+            import native_adreno
+            native_adreno.validate(adreno)
+            if (not display or native_adreno.IOGRAPHICS_BUNDLE not in selected
+                    or info['IOKitPersonalities'].get('NativeGpuStart') != dict(native_adreno.START_PERSONALITY,
+                                                                                CFBundleIdentifier=evidence['bundle'])
+                    or info['IOKitPersonalities'].get('AGXAccelerator') != dict(native_adreno.ACCELERATOR_PERSONALITY,
+                                                                                CFBundleIdentifier=evidence['bundle'])):
+                raise ValueError('Adreno stack requires the GOP companion, IOGraphicsFamily and its reviewed personalities')
+            allowed |= {'NativeGpuStart', 'AGXAccelerator'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -414,6 +425,13 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != contract['device_slots']:
             raise ValueError('touch HID vtable slot count differs')
         driver['touch_vtable_abi'] = audit
+    if evidence.get('native_adreno'):
+        import native_adreno
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle=native_adreno.IOGRAPHICS_BUNDLE, base_class='IOAccelerator', own_class='AGXAccelerator')
+        if audit['slots'] != native_adreno.IOACCELERATOR_SLOTS:
+            raise ValueError('Adreno IOAccelerator vtable slot count differs')
+        driver['adreno_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {

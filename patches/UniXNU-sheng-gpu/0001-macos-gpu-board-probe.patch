@@ -1,0 +1,125 @@
+diff --git a/package/GpuPowerProbe.cpp b/package/GpuPowerProbe.cpp
+index 358049e..410c258 100644
+--- a/package/GpuPowerProbe.cpp
++++ b/package/GpuPowerProbe.cpp
+@@ -102,11 +102,6 @@ extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak)
+ extern "C" void native_adreno_set_restart(NativeAdrenoRestart, void *) __attribute__((weak));
+ // The staged AGXAccelerator (drivers/Adreno740/NativeAdrenoAccelerator.cpp): its static initializer runs only after the
+ // original IOGPUFamily kext has loaded, because the parent metaclass does not exist before that.
+-extern "C" void native_adreno_accelerator_static_init(void) __asm__("__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp") __attribute__((weak));
+-extern "C" IOService *native_adreno_accelerator_allocate(void) __attribute__((weak));
+-extern "C" unsigned native_adreno_accelerator_instance_size(void) __attribute__((weak));
+-extern "C" kern_return_t OSKextLoadKextWithIdentifier(const char *);
+-extern "C" kmod_info_t g_kernel_kmod_info;
+ extern "C" volatile int native_gpu_addon_stage, native_gpu_addon_status, native_gpu_addon2_stage, native_gpu_addon2_status;
+ struct NativeAdrenoMetalDiagView {
+     uint32_t opens, busy, bad, closes, reports, property_reads, foreign_opens, foreign_type, name_reads, calls, last_selector, last_status, ext_entries, ext_selector, ext_status, ext_in, ext_out, tunnel_calls, probes, sel_bits[8], mb_maps, mb_calls, marks_total, marks[16], chk_macf, chk_res, chk_type, type_pass_lo, type_pass_hi, attach_status, inflight, inflight_since_calls, forced_unmaps;
+@@ -124,23 +119,23 @@ extern "C" volatile uint32_t native_adreno_trace_stage;
+ extern "C" volatile uint32_t native_adreno_open_log_count;
+ extern "C" int proc_iterate(unsigned flags, int (*callout)(void *, void *), void *arg, int (*filter)(void *, void *), void *filterarg);
+ extern "C" const char *proc_name_address(void *p);
+-extern "C" volatile uint64_t armcpu_ipi_interrupts __attribute__((weak));
+-extern "C" volatile uint64_t armcpu_ipi_sent __attribute__((weak));
+-extern "C" volatile uint64_t armcpu_ipi_selftest_sent __attribute__((weak));
+-extern "C" void armcpu_ipi_selftest(uint64_t aff) __attribute__((weak));
+-extern "C" void armcpu_gic_diag(uint64_t aff, uint32_t *out) __attribute__((weak));
+-extern "C" volatile uint32_t armcpu_gic_diag_stage __attribute__((weak));
+-extern "C" void armcpu_sgi_selfprobe(uint64_t *out) __attribute__((weak));
++extern "C" volatile uint64_t armcpu_ipi_interrupts;
++extern "C" volatile uint64_t armcpu_ipi_sent;
++extern "C" volatile uint64_t armcpu_ipi_selftest_sent;
++extern "C" void armcpu_ipi_selftest(uint64_t aff);
++extern "C" void armcpu_gic_diag(uint64_t aff, uint32_t *out);
++extern "C" volatile uint32_t armcpu_gic_diag_stage;
++extern "C" void armcpu_sgi_selfprobe(uint64_t *out);
+ extern "C" volatile uint32_t armcpu_core_timer[8], armcpu_core_sgi[8], armcpu_gic_boot[8];
+ extern "C" IOService *native_adreno_published_service() __attribute__((weak));
+ extern "C" volatile uint32_t native_adreno_wc_enabled, native_adreno_owned_coherent;
+ extern "C" volatile uint64_t native_adreno_fence_phys;
+-extern "C" const uint8_t native_adreno_sqe_firmware_image[] __attribute__((weak));
+-extern "C" const uint64_t native_adreno_sqe_firmware_image_size __attribute__((weak));
+-extern "C" const uint8_t native_adreno_zap_image[] __attribute__((weak));
+-extern "C" const uint64_t native_adreno_zap_image_size __attribute__((weak));
+-extern "C" const uint8_t native_adreno_firmware_image[] __attribute__((weak));
+-extern "C" const uint64_t native_adreno_firmware_image_size __attribute__((weak));
++extern "C" const uint8_t *native_adreno_sqe_firmware_image;
++extern "C" uint64_t native_adreno_sqe_firmware_image_size;
++extern "C" const uint8_t *native_adreno_zap_image;
++extern "C" uint64_t native_adreno_zap_image_size;
++extern "C" const uint8_t *native_adreno_firmware_image;
++extern "C" uint64_t native_adreno_firmware_image_size;
+ extern "C" ShengGmuDbStatus ShengGmuCommandDbInputs(const uint8_t *, size_t, uint32_t, ShengGmuVoteInputs *) __attribute__((weak));
+ extern "C" AdrenoHfiStartupStatus ShengGmuBuildStartup(const ShengGmuVoteInputs *, AdrenoHfiStartupConfig *) __attribute__((weak));
+ extern "C" unsigned ShengGmuPerfVote(unsigned, unsigned *) __attribute__((weak));
+@@ -580,7 +575,7 @@ extern "C" {
+ int32_t native_gpu_zap[8];
+ // per SMC (init, mem_setup, auth): milliseconds and INTERRUPTED resumes; free pages before the zap and 2 s after its last step
+ uint32_t native_gpu_zap_cost[6], native_gpu_zap_free[2];
+-extern unsigned int vm_page_free_count __attribute__((weak));
++extern unsigned int vm_page_free_count;
+ }
+ uint32_t rd32le(const uint8_t *p) {return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;}
+ uint16_t rd16le(const uint8_t *p) {return uint16_t(p[0] | p[1] << 8);}
+@@ -694,8 +689,8 @@ extern "C" {
+ // GPU interrupt (row 3): attach status, GICD readback, handled interrupts, OR of the INT_0_STATUS words they cleared
+ uint32_t native_gpu_irq[6];
+ IOReturn armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback,
+-                           uint64_t *router) __attribute__((weak));
+-extern volatile uint64_t armcpu_spi_unhandled __attribute__((weak));
++                           uint64_t *router);
++extern volatile uint64_t armcpu_spi_unhandled;
+ }
+ volatile uint32_t gIrqLast, gIrqSeen, gIrqEmpty;
+ static thread_call_t gPreemptCall;
+@@ -1355,28 +1350,12 @@ volatile uint32_t gMetalStage = 0, gMetalRegistered = 0;
+ volatile int gMetalKext = -99, gMetalStatus = 0;
+ // Stages: 1 kext load attempted, 2 parent metaclass found, 3 own class registered, 4 object created and initialised, 5 published.
+ void publishMetal() {
+-    gMetalStage = 1;
+-    if (!native_adreno_accelerator_static_init || !native_adreno_accelerator_allocate || !native_adreno_accelerator_instance_size) {
+-        gMetalStatus = kIOReturnUnsupported;
+-        return;
+-    }
+-    gMetalKext = OSKextLoadKextWithIdentifier("com.apple.iokit.IOGPUFamily");
+-    if (gMetalKext) {gMetalStatus = gMetalKext; return;}
+-    const OSSymbol *name = OSSymbol::withCString("IOAcceleratorES");
+-    const OSMetaClass *parent = name ? OSMetaClass::getMetaClassWithName(name) : nullptr;
+-    OSSafeReleaseNULL(name);
+-    if (!parent || parent->getClassSize() != 136) {gMetalStatus = kIOReturnNotFound; return;}
+-    gMetalStage = 2;
+-    void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
+-    if (!handle) {gMetalStatus = kIOReturnNoResources; return;}
+-    native_adreno_accelerator_static_init();
+-    gMetalStatus = OSMetaClass::postModLoad(handle);
+-    if (gMetalStatus) return;
+-    if (native_adreno_accelerator_instance_size() != 136) {gMetalStatus = kIOReturnInvalid; return;}
+-    gMetalStage = 3;
+-    IOService *accelerator = native_adreno_accelerator_allocate();
+-    if (!accelerator) {gMetalStatus = kIOReturnNoMemory; return;}
+-    if (!accelerator->init()) {accelerator->release(); gMetalStatus = kIOReturnError; return;}
++    // macOS: AGXAccelerator (an IOAccelerator) is matched by personality on the service native_adreno_publish registers.
++    gMetalStage = 5;
++    gMetalRegistered = native_adreno_published_service && native_adreno_published_service() ? 1 : 0;
++}
++#if 0 /* iPadOS staged registration of the accelerator */
++static void publishMetalIpad(IOService *accelerator) {
+     // The two keys the original _MTLRegisterDevices helper reads. The plugin name is ours: the bundle exists only through the
+     // addon mount, and no Apple device identity (gpu,t8011 and the like) is claimed.
+     accelerator->setProperty("MetalPluginName", "NativeAdrenoMetal");
+@@ -1390,6 +1369,7 @@ void publishMetal() {
+     gMetalRegistered = 1;
+     gMetalStage = 5;
+ }
++#endif
+ // Rows refreshed by the heartbeat thread: 6 = the stage chain, 7 = who reached the driver, 5 = the plugin's own report.
+ // M a<addon stage>.<status> k<kext load> s<publish stage>/<status> r<registered>
+ // D o<opened>/<busy>/<closed> p<property reads> <latest reader>><latest opener>   R<plugin report>
+@@ -1507,8 +1487,6 @@ int vnodeObserver(void *, void *, unsigned action, uintptr_t, uintptr_t vnode, u
+     return 3;
+ }
+ void registerExecObserver() {
+-    if (!gExecListener) gExecListener = kauth_listen_scope("com.apple.kauth.fileop", execObserver, nullptr);
+-    if (!gVnodeListener) gVnodeListener = kauth_listen_scope("com.apple.kauth.vnode", vnodeObserver, nullptr);
+ }
+ // Does the interrupt controller deliver SGI 0 between cores? The kernel sends IPIs through ArmCpu::signalCPU, but every boot page has shown
+ // ipi=0 received, and the restartable-ranges panic (a thread waiting for an IPI acknowledgement) says delivery may be broken. This sends
