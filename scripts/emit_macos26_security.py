@@ -451,6 +451,8 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
             report['storage_driver']['input_vtable_abi'] = driver['input_vtable_abi']
         if 'button_keys_vtable_abi' in driver:
             report['storage_driver']['button_keys_vtable_abi'] = driver['button_keys_vtable_abi']
+        if 'touch_vtable_abi' in driver:
+            report['storage_driver']['touch_vtable_abi'] = driver['touch_vtable_abi']
     return final_data, report
 
 

@@ -165,6 +165,16 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                 if hashlib.sha256((directory / 'button-keys' / name).read_bytes()).hexdigest() != digest:
                     raise ValueError('hardware key source differs from compiled record')
             allowed |= {'NativeButtonKeys', 'IOHIDEventDriver'}
+        touch = evidence.get('native_touch')
+        if touch:
+            import native_touch
+            if not display or 'com.apple.iokit.IOHIDFamily' not in selected:
+                raise ValueError('touch companion requires the GOP companion and the original HID family')
+            native_touch.validate(touch)
+            if (info['IOKitPersonalities'].get('NativeTouch') != dict(native_touch.PERSONALITY, CFBundleIdentifier=evidence['bundle'])
+                    or info['IOKitPersonalities'].get('NativeTouchHIDEventDriver') != native_touch.EVENT_DRIVER):
+                raise ValueError('touch companion provider or original event driver identity differs')
+            allowed |= {'NativeTouch', 'IOHIDEventDriver'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -367,6 +377,15 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != contract['device_slots']:
             raise ValueError('hardware key HID vtable slot count differs')
         driver['button_keys_vtable_abi'] = audit
+    if evidence.get('native_touch'):
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle='com.apple.iokit.IOHIDFamily', base_class='IOHIDDevice',
+            own_class='NativeTouchHID')
+        contract = json.loads((Path(__file__).resolve().parents[1] /
+                               'config/macos26-input-reference.json').read_text())['abi']
+        if audit['slots'] != contract['device_slots']:
+            raise ValueError('touch HID vtable slot count differs')
+        driver['touch_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {

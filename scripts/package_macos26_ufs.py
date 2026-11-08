@@ -427,6 +427,17 @@ def qualify_button_keys(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_touch(build) -> dict:
+    """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_touch
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_touch')
+    if not record or 'touch_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited touch companion')
+    native_touch.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def display_copy_forward(panel_patch_sha256):
     """The reviewed always-on copy-forward step chained on the panel-size patch, or None (derive_hw_display_copy_forward.py)."""
     path = ROOT / 'platform/sheng/macos26/display/hw-copy-forward.json'
@@ -539,9 +550,19 @@ def main():
     parser.add_argument('--button-keys', action='store_true',
                         help='enable the compiled hardware key companion (native-button-keys=1): volume up/down = Up/Down, '
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
+    parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
+                        help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
+    parser.add_argument('--touch-firmware', type=Path,
+                        help='local NT36532 firmware placed in /arm-io/native-touch (the package then contains vendor '
+                             'firmware and must stay local)')
+    parser.add_argument('--touch-orient', type=int, choices=range(8), help='native-touch-orient bits (swap/mirror)')
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
+        parser.error('--touch-firmware and --touch-orient require --touch-stage')
+    if args.touch_stage == 4 and not args.touch_firmware:
+        parser.error('--touch-stage 4 downloads firmware: give --touch-firmware')
     recovery_inputs = ('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
     if args.full_system:
         missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install')
@@ -698,6 +719,17 @@ def main():
         display_qualification = display_hardware_verification()
         boot_args += ' ' + display_qualification['boot_argument']
     gop_enabled = bool(ui_qualification or display_qualification)
+    touch = touch_node = None
+    if args.touch_stage:
+        import native_touch
+        touch = qualify_touch(args.kernel_build)
+        boot_args += f' sheng-touch={args.touch_stage}'
+        if args.touch_orient is not None:
+            boot_args += f' native-touch-orient={args.touch_orient}'
+        if args.touch_firmware:
+            touch_node = native_touch.node_properties(args.touch_firmware.read_bytes())
+        touch = dict(touch, stage=args.touch_stage, firmware_included=touch_node is not None,
+                     package_contains_vendor_firmware=touch_node is not None)
     button_keys = None
     if args.button_keys:
         button_keys = qualify_button_keys(args.kernel_build)
@@ -739,12 +771,13 @@ def main():
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                     full_system_volume_group=uuid.UUID(full_contract['volume_group']),
                     full_system_root_snapshot=(full_contract['root_snapshot']
-                                               if args.full_system_adt_snapshot_name else None))
+                                               if args.full_system_adt_snapshot_name else None),
+                    touch_node=touch_node)
             else:
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled)
+                                            native_gop_display=gop_enabled, touch_node=touch_node)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
@@ -810,6 +843,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
+                touch=touch,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

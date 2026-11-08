@@ -1,0 +1,48 @@
+diff --git a/package/TouchProbe.cpp b/package/TouchProbe.cpp
+--- a/package/TouchProbe.cpp
++++ b/package/TouchProbe.cpp
+@@ -21,8 +21,9 @@
+ #include "NvtTouchCore.h"
+ #include "TouchBoard.h"
+ #include "SmmuBypass.h"
+-extern const uint8_t native_touch_firmware[] __attribute__((weak_import));
+-extern const uint32_t native_touch_firmware_size __attribute__((weak_import));
++// Vendor firmware is not compiled in: the platform front end supplies the copy it verified (size and SHA-256)
++// from the device tree, or nullptr.
++const uint8_t *native_touch_firmware_bytes(uint32_t *size) __attribute__((weak_import));
+ }
+ 
+ extern "C" {
+@@ -404,8 +405,11 @@
+     s.vals[4] = rd32(s.gccHalt.va, TB_HALT_CORE_2X & 0xfff);
+     s.vals[5] = rd32(s.gccS4.va, TB_HALT_S4 & 0xfff);
+     if (!ok) {fail(2, -110); return false;}   // never touch the engine without running clocks
+-    const uint32_t cfg = tb_pin_cfg(TB_FUNC_QUP1_SE4, TB_DRIVE_6MA);
+-    for (unsigned i = 0; i < 4; ++i) wr32(s.tlmmSpi.va, i * TB_GPIO_STRIDE, cfg);
++    // CN 1 TB unit, live device tree (qup1_se4): MISO and MOSI 6 mA pull-down, CLK 8 mA pull-down, CS 6 mA no pull.
++    // TLMM pull field bits 1:0 (0 none, 1 down); drive code (mA / 2) - 1.
++    const uint32_t cfg[4] = {tb_pin_cfg(TB_FUNC_QUP1_SE4, TB_DRIVE_6MA) | 1u, tb_pin_cfg(TB_FUNC_QUP1_SE4, TB_DRIVE_6MA) | 1u,
++                             tb_pin_cfg(TB_FUNC_QUP1_SE4, 3) | 1u, tb_pin_cfg(TB_FUNC_QUP1_SE4, TB_DRIVE_6MA)};
++    for (unsigned i = 0; i < 4; ++i) wr32(s.tlmmSpi.va, i * TB_GPIO_STRIDE, cfg[i]);
+     for (unsigned i = 0; i < 4; ++i) s.vals[9 + i] = rd32(s.tlmmSpi.va, i * TB_GPIO_STRIDE);
+     mark(s, 3);   // the next accesses touch the engine: if the page freezes here, the engine access hung
+     if (!mapRegion(TB_QUP_WRAPPER_BASE, 0x2000, s.wrapper) || !mapRegion(TB_SE_BASE, TB_SE_SIZE, s.se)) {fail(3, -12); return false;}
+@@ -590,13 +594,15 @@
+         native_touch_stage_done = 3;
+         rows(*s);
+         if (stage < 4) break;
+-        if (!&native_touch_firmware || !&native_touch_firmware_size || !native_touch_firmware_size) {fail(8, -2); break;}
++        uint32_t firmwareSize = 0;
++        const uint8_t *firmware = native_touch_firmware_bytes ? native_touch_firmware_bytes(&firmwareSize) : nullptr;
++        if (!firmware || !firmwareSize) {fail(8, -2); break;}
+         mark(*s, 8);
+         struct nvt_fw fw;
+-        r = nvt_fw_parse(&fw, native_touch_firmware, native_touch_firmware_size);
++        r = nvt_fw_parse(&fw, firmware, firmwareSize);
+         if (r) {fail(8, r); break;}
+         s->fwParts = fw.count; s->fwCasc = static_cast<unsigned>(fw.cascade_2nd_header);
+-        s->fwIlm = fw.part[0].size; s->fwDlm = fw.part[1].size; s->fwSize = static_cast<unsigned>(native_touch_firmware_size);
++        s->fwIlm = fw.part[0].size; s->fwDlm = fw.part[1].size; s->fwSize = static_cast<unsigned>(firmwareSize);
+         mark(*s, 9);
+         s->chip.reset_retries = 60;   // vendor: 10 polls of 10 ms; longer here to tell "slow" from "never"
+         r = nvt_download_firmware(&s->chip, &fw);

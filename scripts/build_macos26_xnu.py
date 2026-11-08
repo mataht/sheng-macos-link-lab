@@ -570,7 +570,8 @@ def compile_sources(args, record: dict) -> None:
                               transport='ufs', gop_display=args.build_gop_display,
                               recovery_input=args.build_recovery_input,
                               button_keys=args.build_button_keys,
-                              full_root=args.build_full_root)
+                              full_root=args.build_full_root,
+                              touch=args.build_touch)
             save(record)
 
 
@@ -661,6 +662,8 @@ def main() -> None:
                         help='include the default-off QEMU VirtIO HID input companion')
     parser.add_argument('--build-button-keys', action='store_true',
                         help='include the default-off hardware power/volume key companion (SPMI, read-only)')
+    parser.add_argument('--build-touch', action='store_true',
+                        help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
                         help='compile the UFS transport for the full-system root (config/macos26-full-root.json, '
                              'partition macossystem, default-off volatile RAM overlay) instead of Recovery')
@@ -676,6 +679,8 @@ def main() -> None:
         parser.error('--build-recovery-input requires --build-gop-display')
     if args.build_button_keys and not args.build_gop_display:
         parser.error('--build-button-keys requires --build-gop-display')
+    if args.build_touch and not args.build_gop_display:
+        parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:
         parser.error('--build-full-root requires --build-ufs-driver')
     ARCH = args.arch

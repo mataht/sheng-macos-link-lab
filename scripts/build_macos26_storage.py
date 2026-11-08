@@ -12,6 +12,7 @@ from native_macho import macho
 from native_log_file import geometry_defines, layout_of, validate_contract
 from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONALITY as BUTTON_KEYS_PERSONALITY
 from native_button_keys import evidence as button_keys_evidence
+import native_touch
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -47,9 +48,11 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if touch and not gop_display:
+        raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
         raise ValueError('the full-system root identity belongs to the UFS transport')
     if gop_display and transport != 'ufs':
@@ -194,6 +197,39 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         keys_command += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
         run(keys_command, directory + '-button-keys-compile', record, cwd=Path(compile_record['directory']), env=env)
         objects.append(str(keys_object))
+    if touch:
+        from prepare_macos26_input import prepare_apple_hid_headers
+        touch_dir = destination / 'touch'
+        touch_dir.mkdir(exist_ok=True)
+        prepare_apple_hid_headers(root, touch_dir)
+        for name in native_touch.PLATFORM_SOURCES:
+            (touch_dir / name).write_bytes((root / 'platform/sheng/macos26/input' / name).read_bytes())
+        include_dirs = sorted({str((root / name).parent) for name in (native_touch.UPSTREAM_CPP, *native_touch.UPSTREAM_HEADERS)})
+        base = list(command)
+        user_headers = base.index(str(sdk / 'usr/include'))
+        if base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del base[user_headers - 1:user_headers + 1]
+        base[1:1] = ['-I', str(touch_dir / 'include'), '-I', str(touch_dir)]
+        base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        for include in include_dirs:
+            base += ['-I', include]
+
+        def compile_one(source_file, object_file, language):
+            one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg for arg in base]
+            if language == 'c':
+                one = ['-xc' if arg == '-xc++' else '-std=gnu17' if arg.startswith('-std=gnu++') else arg for arg in one
+                       if arg not in ('--driver-mode=g++', '-fsized-deallocation', '-fapple-kext',
+                                      '-fc++-static-destructors=none')]
+                one += ['-Wno-unused-command-line-argument']
+            run(one, directory + '-touch-' + object_file.stem + '-compile', record,
+                cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
+
+        compile_one(touch_dir / 'native_touch.cpp', touch_dir / 'NativeTouch.o', 'c++')
+        compile_one(root / native_touch.UPSTREAM_CPP, touch_dir / 'TouchProbe.o', 'c++')
+        for source_file in native_touch.UPSTREAM_C:
+            compile_one(root / source_file, touch_dir / (Path(source_file).stem + '.o'), 'c')
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -243,6 +279,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeButtonKeys'] = dict(BUTTON_KEYS_PERSONALITY, CFBundleIdentifier=bundle)
         info['IOKitPersonalities']['NativeButtonHIDEventDriver'] = dict(BUTTON_KEYS_EVENT_DRIVER)
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
+    if touch:
+        info['IOKitPersonalities']['NativeTouch'] = dict(native_touch.PERSONALITY, CFBundleIdentifier=bundle)
+        info['IOKitPersonalities']['NativeTouchHIDEventDriver'] = dict(native_touch.EVENT_DRIVER)
+        info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -256,6 +296,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_recovery_input'] = input_driver
     if button_keys:
         evidence['native_button_keys'] = button_keys_evidence(root)
+    if touch:
+        evidence['native_touch'] = native_touch.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

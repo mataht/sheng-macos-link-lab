@@ -59,7 +59,7 @@ def compare_scope(build, reference) -> dict:
     for key in RELINK_SAME:
         if new_relink.get(key) != old_relink.get(key):
             raise ValueError('assembled candidate differs from the reference in ' + key)
-    for key in ('input_vtable_abi', 'button_keys_vtable_abi', 'display_vtable_abi', 'vtable_abi'):
+    for key in ('input_vtable_abi', 'button_keys_vtable_abi', 'touch_vtable_abi', 'display_vtable_abi', 'vtable_abi'):
         new_abi = new_relink['storage_driver'].get(key)
         if new_abi is None:
             continue
