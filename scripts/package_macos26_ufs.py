@@ -606,8 +606,12 @@ def main():
         parser.error('--display-hardware-verification replaces the display evidence; do not combine it')
     if bool(args.qualification_reference) != bool(args.reference_dyld_observation):
         parser.error('--qualification-reference and --reference-dyld-observation must be used together')
-    if args.display_hardware_verification and not args.qualification_reference:
-        parser.error('--display-hardware-verification is part of the tiered qualification (--qualification-reference)')
+    # Tiered policy (user, 2026-11-08): display is verified on the tablet; QEMU display runs only for early boot /
+    # WindowServer changes. The ISC/dyld evidence is either reused from a reference (only display/input changed) or,
+    # when storage/kernel sources changed, this kernel's own same-kernel run -- the stronger of the two.
+    if args.display_hardware_verification and not (args.qualification_reference or args.dyld_observation):
+        parser.error('--display-hardware-verification needs ISC/dyld evidence: --qualification-reference with '
+                     '--reference-dyld-observation, or the same-kernel --dyld-observation')
     if args.qualification_reference and args.dyld_observation:
         parser.error('use either the same-kernel --dyld-observation or the reference observation, not both')
     if args.platform_uuid is not None and args.platform_uuid.int == 0:

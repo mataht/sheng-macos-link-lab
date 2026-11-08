@@ -101,6 +101,31 @@ class QualificationReuseTest(unittest.TestCase):
         self.assertEqual(record['boot_argument'], 'native-gop-display=1 sheng-recovery-ui=1')
         self.assertFalse(record['hardware_display_qualified'] or record['input_qualified'])
 
+    def test_packager_hardware_display_needs_isc_evidence(self):
+        # Hardware display verification is accepted with either kind of ISC/dyld evidence (reused reference or this
+        # kernel's own run), never without one.
+        import contextlib
+        import io
+        from unittest import mock
+        import package_macos26_ufs as packager
+        common = ['--kernel-build', 'k', '--qemu-observation', 'q', '--bootstrap-observation', 'b',
+                  '--default-off-observation', 'd', '--firmware-build', 'f', '--backup-dir', 'x', '--output', 'o',
+                  '--root-deployment', 'a', '--partition-plan', 'b', '--root-build', 'c', '--root-hash', 'd',
+                  '--root-volume-uuid', '808eac5e-8275-478d-814c-2229d8eb8d07', '--display-hardware-verification']
+
+        def run(*arguments):
+            stderr = io.StringIO()
+            with mock.patch.object(sys, 'argv', ['package', *common, *arguments]), contextlib.redirect_stderr(stderr), \
+                    mock.patch.object(packager, 'qualify', side_effect=AssertionError('qualification reached')):
+                with self.assertRaises((SystemExit, AssertionError, OSError, ValueError)):
+                    packager.main()
+            return stderr.getvalue()
+
+        self.assertIn('needs ISC/dyld evidence', run())
+        self.assertNotIn('needs ISC/dyld evidence', run('--development-no-ignition', '--dyld-observation', 'i'))
+        self.assertNotIn('needs ISC/dyld evidence', run('--development-no-ignition', '--qualification-reference', 'r',
+                                                         '--reference-dyld-observation', 'i'))
+
 
 if __name__ == '__main__':
     unittest.main()
