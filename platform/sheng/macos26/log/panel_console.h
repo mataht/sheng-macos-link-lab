@@ -147,31 +147,39 @@ static void sheng_panel_reset(void)
     for (unsigned row = 0; row < sheng_panel.rows; row++) sheng_panel_clear_row(row);
 }
 
+/* A thin line through the row written next shows where a wrapped log ends. */
+static void sheng_panel_mark_row(unsigned row)
+{
+    if (row >= sheng_panel.rows) return;
+    for (unsigned y = 0; y < sheng_panel.scale; y++) {
+        uint64_t saved;
+        if (!sheng_fb_begin(SHENG_FB_BOOT, &saved)) return;
+        volatile uint32_t *p = (volatile uint32_t *)(sheng_panel.base +
+            ((row * 16 + 8) * sheng_panel.scale + y) * sheng_panel.stride);
+        for (unsigned x = 0; x < sheng_panel.columns * 8 * sheng_panel.scale; x++) {
+            p[x] = 0xff808080u;
+        }
+        sheng_fb_end(saved);
+    }
+}
+
+static unsigned sheng_panel_following_row(unsigned row)
+{
+    return row + 1 >= sheng_panel.rows ? sheng_panel.pinned : row + 1;
+}
+
+/* Wrap instead of scrolling: a scroll reads and rewrites every pixel through the Device
+   mapping, which took about 0.25 s per row on sheng and dominated the boot time. */
 static void sheng_panel_newline(void)
 {
     sheng_panel.x = 0;
     if (!sheng_panel.rows) return;
-    if (sheng_panel.y >= sheng_panel.rows - 1) {
-        /* Commit a valid cursor before any try-only scanline can skip the scroll. */
-        sheng_panel.y = sheng_panel.rows - 1;
-        /* Access the I/O mapping word by word; avoid memory routines that may use SIMD or DC ZVA. */
-        const unsigned pixels = sheng_panel.columns * 8 * sheng_panel.scale;
-        for (unsigned row = sheng_panel.pinned; row + 1 < sheng_panel.rows; row++) {
-            for (unsigned y = 0; y < 16 * sheng_panel.scale; y++) {
-                uint64_t saved;
-                if (!sheng_fb_begin(SHENG_FB_BOOT, &saved)) return;
-                volatile uint32_t *dst = (volatile uint32_t *)(sheng_panel.base +
-                    (row * 16 * sheng_panel.scale + y) * sheng_panel.stride);
-                volatile uint32_t *src = (volatile uint32_t *)((uintptr_t)dst +
-                    16 * sheng_panel.scale * sheng_panel.stride);
-                for (unsigned x = 0; x < pixels; x++) dst[x] = src[x];
-                sheng_fb_end(saved);
-            }
-        }
-    } else {
-        sheng_panel.y++;
-    }
+    /* Commit a valid cursor before any try-only scanline can skip the drawing. */
+    sheng_panel.y = sheng_panel_following_row(sheng_panel.y);
     sheng_panel_clear_row(sheng_panel.y);
+    const unsigned next = sheng_panel_following_row(sheng_panel.y);
+    sheng_panel_clear_row(next);
+    sheng_panel_mark_row(next);
 }
 
 static void sheng_panel_putc(unsigned char byte)

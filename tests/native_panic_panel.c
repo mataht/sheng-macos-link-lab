@@ -43,7 +43,7 @@ void run_trace(void)
         12192, 88, (unsigned)sheng_console_rows, 2);
     sheng_log_bind_panic_panel(sheng_status_pixels + (32 + 16 * sheng_console_rows) *
         sheng_status_scale * sheng_bootstrap_vm_stride, 12192, 88, (unsigned)sheng_console_panic_rows, 2);
-    /* A busy progress scanline must never leave the scroll cursor outside its region. */
+    /* A busy progress scanline must never leave the wrapped cursor outside its region. */
     const uintptr_t after_panel = sheng_panel.base + sheng_panel.rows * 16 *
         sheng_panel.scale * sheng_panel.stride;
     volatile uint32_t *guard = (volatile uint32_t *)after_panel;
@@ -51,7 +51,7 @@ void run_trace(void)
     sheng_panel.y = sheng_panel.rows - 1;
     sheng_framebuffer.writer = 1;
     sheng_panel_putc('\n');
-    if (sheng_panel.y == sheng_panel.rows - 1) scroll_bounds_test_checks |= 1;
+    if (sheng_panel.y == 0) scroll_bounds_test_checks |= 1;
     sheng_framebuffer.writer = 0;
     sheng_panel_putc('X');
     sheng_panel_putc('\n');
