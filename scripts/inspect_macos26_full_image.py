@@ -289,7 +289,7 @@ def inspect(path, *, hash_partitions=False):
     with path.open('rb') as stream:
         image = Window(stream, 0, path.stat().st_size)
         report = dict(schema='sheng-full-image-inspection-v1', image=str(path.resolve()),
-                      bytes=image.size, read_only=True)
+                      bytes=image.size, mtime_ns=path.stat().st_mtime_ns, read_only=True)
         gpt = parse_gpt(image)
         report['gpt'] = gpt
         containers = []

@@ -121,6 +121,14 @@ def main() -> None:
                         help='fresh isolated ISC fixture attached as a second read-only disk')
     parser.add_argument('--isc-write-overlay', action='store_true',
                         help='enable guest writes only in a new disposable ISC qcow2 overlay')
+    parser.add_argument('--full-system-image', type=Path,
+                        help='delivered full-install raw GPT disk; guest writes reach only a new fixture qcow2 overlay')
+    parser.add_argument('--full-system-inspection', type=Path,
+                        help='inspect_macos26_full_image.py report of exactly this unchanged image')
+    parser.add_argument('--full-system-launchd', type=Path,
+                        help='launchd sample extracted by full_system_qemu.py from the verified 25F71 OS image')
+    parser.add_argument('--full-system-adt-snapshot-name', action='store_true',
+                        help='experiment: also publish chosen/root-snapshot-name (default off)')
     parser.add_argument('--process-layout', type=Path,
                         help='matching DWARF process-list layout for read-only snapshots')
     parser.add_argument('--mount-layout', type=Path,
@@ -161,7 +169,26 @@ def main() -> None:
         parser.error('--capture-threads requires --process-layout')
     if args.read_saved_user_register and args.checkpoint != 'handle_pac_fail':
         parser.error('--read-saved-user-register requires the handle_pac_fail checkpoint')
-    maximum_timeout = 900 if args.continue_after_launchd_main else 180
+    full_system = None
+    if args.full_system_image or args.full_system_inspection or args.full_system_launchd \
+            or args.full_system_adt_snapshot_name:
+        from full_system_qemu import qualify_inspection
+        if not args.full_system_image or not args.full_system_inspection:
+            parser.error('full-system mode requires both the image and its inspection report')
+        conflicts = [flag for flag, value in (
+            ('--virtio-block-image', args.virtio_block_image), ('--isc-block-image', args.isc_block_image),
+            ('--isc-write-overlay', args.isc_write_overlay), ('--root-hash-payload', args.root_hash_payload),
+            ('--root-volume-uuid', args.root_volume_uuid), ('--qemu-no-ignition', args.qemu_no_ignition)) if value]
+        if conflicts:
+            parser.error('full-system mode excludes the Recovery inputs: ' + ', '.join(conflicts))
+        if not args.qemu_development_root:
+            parser.error('full-system mode requires the explicit QEMU development root policy')
+        storage = json.loads((args.kernel_build / 'build.json').read_text()).get('storage_driver', {})
+        if storage.get('explicit_qemu_scratch_writes') is not True:
+            parser.error('the actual candidate lacks explicit scratch write support')
+        full_system = qualify_inspection(args.full_system_image, args.full_system_inspection)
+    maximum_timeout = (3600 if full_system and args.continue_after_launchd_main else
+                       900 if args.continue_after_launchd_main else 180)
     if not 15 <= args.timeout <= maximum_timeout:
         parser.error(f'--timeout must be between 15 and {maximum_timeout} seconds for this observation')
     if args.kext_log is not None and not 0 <= args.kext_log <= 0xffffffff:
@@ -197,12 +224,12 @@ def main() -> None:
             parser.error('GOP observation requires the actual paired, ABI-audited display companion')
     if args.follow_init_entry and args.checkpoint != 'thread_setentrypoint':
         parser.error('following init requires the thread_setentrypoint checkpoint')
-    if args.follow_init_entry and args.root_hash_payload:
+    if args.follow_init_entry and (args.root_hash_payload or full_system):
         required = {'com.apple.kec.pthread', 'com.apple.filesystems.apfs',
                     'com.apple.AppleFSCompression.AppleFSCompressionTypeZlib'}
         missing = required - component_map.get('modules', {}).keys()
         if missing:
-            parser.error('paired BaseSystem launchd requires original components: ' + ', '.join(sorted(missing)))
+            parser.error('original launchd requires original components: ' + ', '.join(sorted(missing)))
     if args.root_volume_uuid and not args.virtio_block_image:
         parser.error('APFS volume matching requires the actual block image')
     if args.isc_write_overlay:
@@ -228,8 +255,9 @@ def main() -> None:
             if hashlib.file_digest(stream, 'sha256').hexdigest() != isc['sha256']:
                 raise ValueError('ISC disk differs from its formatting evidence')
         record['isc_format_input'] = isc
-    if (args.qemu_no_ignition or args.development_no_ignition) and (not args.qemu_development_root or not args.root_hash_payload):
-        parser.error('no ignition requires the paired root hash and explicit QEMU development root')
+    if (args.qemu_no_ignition or args.development_no_ignition) and (
+            not args.qemu_development_root or not (args.root_hash_payload or full_system)):
+        parser.error('no ignition requires the paired root hash or full-system image and explicit QEMU development root')
     launchd_main = None
     if args.continue_after_launchd_main and not args.follow_launchd_main:
         parser.error('continuing launchd requires actual main observation')
@@ -238,20 +266,31 @@ def main() -> None:
     if args.follow_launchd_main:
         if not args.follow_init_entry:
             parser.error('launchd main observation requires --follow-init-entry')
-        directory = args.recovery_check_directory.resolve()
-        launchd = (directory / 'sbin/launchd').read_bytes()
-        verification_bytes = (directory / 'verification.json').read_bytes()
-        recovery = json.loads(verification_bytes)
-        if not args.virtio_block_image:
-            parser.error('launchd main observation requires the paired root disk')
-        conversion = json.loads(args.virtio_block_image.with_suffix('.json').read_text())
-        if (recovery['ipsw_build'] != '25F71' or conversion['build'] != '25F71'
-                or conversion['source_dmg_sha256'] != recovery['dmg_sha256']
-                or len(launchd) != recovery['artifacts']['sbin/launchd']['bytes']):
-            raise ValueError('Recovery samples are not paired with the attached root disk')
-        expected = recovery['artifacts']['sbin/launchd']['sha256']
-        if hashlib.sha256(launchd).hexdigest() != expected:
-            raise ValueError('launchd differs from the paired recovery input')
+        if full_system:
+            if not args.full_system_launchd:
+                parser.error('full-system launchd main observation requires --full-system-launchd')
+            from full_system_qemu import load_launchd_sample
+            launchd, provenance = load_launchd_sample(args.full_system_launchd)
+            expected = provenance['sha256']
+            pairing = dict(full_system_launchd=provenance)
+        else:
+            directory = args.recovery_check_directory.resolve()
+            launchd = (directory / 'sbin/launchd').read_bytes()
+            verification_bytes = (directory / 'verification.json').read_bytes()
+            recovery = json.loads(verification_bytes)
+            if not args.virtio_block_image:
+                parser.error('launchd main observation requires the paired root disk')
+            conversion = json.loads(args.virtio_block_image.with_suffix('.json').read_text())
+            if (recovery['ipsw_build'] != '25F71' or conversion['build'] != '25F71'
+                    or conversion['source_dmg_sha256'] != recovery['dmg_sha256']
+                    or len(launchd) != recovery['artifacts']['sbin/launchd']['bytes']):
+                raise ValueError('Recovery samples are not paired with the attached root disk')
+            expected = recovery['artifacts']['sbin/launchd']['sha256']
+            if hashlib.sha256(launchd).hexdigest() != expected:
+                raise ValueError('launchd differs from the paired recovery input')
+            pairing = dict(verification_directory=str(directory),
+                           verification_sha256=hashlib.sha256(verification_bytes).hexdigest(),
+                           source_dmg_sha256=recovery['dmg_sha256'])
         executable = macho(launchd, 'arm64e')
         main = [at for kind, at, size in executable['commands'] if kind == 0x80000028 and size == 24]
         if len(main) != 1:
@@ -259,9 +298,13 @@ def main() -> None:
         launchd_main = struct.unpack_from('<Q', launchd, main[0] + 8)[0]
         record['launchd_main_input'] = dict(sha256=expected, entry_offset=launchd_main,
                                           entry_bytes=launchd[launchd_main:launchd_main + 16].hex(),
-                                          verification_directory=str(directory),
-                                          verification_sha256=hashlib.sha256(verification_bytes).hexdigest(),
-                                          source_dmg_sha256=recovery['dmg_sha256'])
+                                          **pairing)
+    if full_system:
+        from full_system_qemu import describe
+        record['full_system'] = describe(full_system) | dict(
+            adt_root_snapshot_name=args.full_system_adt_snapshot_name,
+            guest_writes='fixture qcow2 overlay only; the delivered image is a read-only backing file',
+            hardware_admitted=False)
     root_hash = None
     if args.root_hash_payload:
         if not args.virtio_block_image or not args.root_volume_uuid:
@@ -350,6 +393,9 @@ def main() -> None:
                 raise ValueError('kernel lacks the explicit development commpage path')
             boot_args += ' -sheng-development-no-ignition'
         record['development_no_ignition'] = args.development_no_ignition
+        if full_system:
+            # arm64 XNU would otherwise mount the Recovery volume and pivot to a BaseSystem dmg it finds.
+            boot_args += ' -nobsdmgroot'
         if args.kext_log is not None:
             boot_args += f' kextlog={args.kext_log:#x}'
         if args.early_console:
@@ -398,12 +444,26 @@ def main() -> None:
                 record['isc_scratch_mmio'] = '0xa000000'
             if args.root_volume_uuid:
                 dt_command += ['--root-match-volume-uuid', str(args.root_volume_uuid)]
+        full_disks = None
+        if full_system:
+            from full_system_qemu import SCRATCH_MMIO, create_blank_disk, qemu_disk_arguments
+            blank = create_blank_disk(args.output.resolve() / 'full-system-first-disk.raw')
+            full_disks = qemu_disk_arguments(full_system, Path(blank['path']),
+                                             args.output.resolve() / 'qemu-block.dtb',
+                                             args.qemu_memory_mib, args.smp)
+            subprocess.run(full_disks['fdt_command'], check=True, timeout=30)
+            dt_command += full_disks['dt_arguments']
+            record['full_system'].update(first_disk=blank, scratch_mmio=SCRATCH_MMIO)
         subprocess.run(dt_command, check=True)
         configure_native_text_state(payload / 'kernel.macho.adt',
                                     development_root=args.qemu_development_root, root_hash=root_hash,
                                     boot_volume_uuid=args.root_volume_uuid if root_hash is not None else None,
                                     platform_uuid=args.qemu_platform_uuid,
-                                    native_gop_display=args.native_gop_display)
+                                    native_gop_display=args.native_gop_display,
+                                    full_system_volume_group=full_system['volume_group'] if full_system else None,
+                                    full_system_root_snapshot=(full_system['root_snapshot']
+                                                               if full_system and args.full_system_adt_snapshot_name
+                                                               else None))
         record['qemu_development_root'] = args.qemu_development_root
         record['qemu_platform_uuid'] = str(args.qemu_platform_uuid) if args.qemu_platform_uuid else None
         record['qemu_memory_mib'] = args.qemu_memory_mib
@@ -464,6 +524,8 @@ def main() -> None:
             command += ['--virtio-extra-block-image', str(args.isc_block_image.resolve())]
         if args.isc_write_overlay:
             command += ['--virtio-extra-block-overlay']
+        if full_disks:
+            command += full_disks['gdb_stop_arguments']
         if args.mount_layout:
             mount_plan = json.loads(args.mount_layout.read_text())
             if (mount_plan.get('schema') != 'native-mount-layout-v1'
@@ -691,6 +753,9 @@ def main() -> None:
             address=hex(addresses['_sheng_framebuffer']), read_validated=False,
             unavailable=record.get('unavailable_globals', {}).get('_sheng_framebuffer', 'not captured'),
             read_only=True, proves_completed_frame=False)
+    if full_system:
+        record['full_system_disk_inputs'] = dict(first=snapshot.get('virtio_block_input'),
+                                                 image=snapshot.get('virtio_extra_block_input'))
     if args.virtio_block_image:
         record['virtio_block_input'] = snapshot['virtio_block_input']
         record['root_volume_uuid'] = str(args.root_volume_uuid) if args.root_volume_uuid else None
