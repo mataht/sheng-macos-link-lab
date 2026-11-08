@@ -18,6 +18,7 @@ import shlex
 import struct
 import subprocess
 import tempfile
+import time
 import uuid
 
 from create_log_partition import geometry
@@ -26,6 +27,7 @@ import repartition_sheng_cn_1tb as cn
 PARTITION = '/dev/block/by-name/macossystem'
 STAGING = re.compile(r'/tmp/sheng-macossystem-[A-Za-z0-9_-]{1,40}')
 DD_BLOCK = 4096
+DAEMON_ATTEMPTS, DAEMON_WAIT = 40, 5  # Windows runs out of loopback ports after thousands of short adb calls; they free up in minutes
 
 
 def sha(data):
@@ -43,6 +45,19 @@ class AdbTransport:
         if [m[2] for m in mounts if len(m) >= 3 and m[1] == '/tmp'] != ['tmpfs']:
             raise ValueError('staging requires /tmp on tmpfs')
         device.shell('mkdir -m 700 ' + shlex.quote(staging))
+        self.daemon_retries = 0
+
+    def call(self, arguments, timeout):
+        """One adb call. Repeated only when the local client cannot reach its own daemon: then nothing left this PC."""
+        for _ in range(DAEMON_ATTEMPTS):
+            result = subprocess.run(self.device.adb + arguments, capture_output=True, text=True, errors='replace', timeout=timeout)
+            if result.returncode == 0:
+                return result.stdout.strip()
+            if 'cannot connect to daemon' not in result.stderr:
+                break
+            self.daemon_retries += 1
+            time.sleep(DAEMON_WAIT)
+        raise ValueError(f'adb {arguments[0]} failed with exit {result.returncode}: {result.stdout[-300:]!r} {result.stderr[-300:]!r}')
 
     def discard(self):
         for tool in ('blkdiscard', 'toybox blkdiscard'):
@@ -59,27 +74,23 @@ class AdbTransport:
         with tempfile.TemporaryDirectory() as folder:
             local = Path(folder) / name
             local.write_bytes(data)
-            subprocess.run(self.device.adb + ['push', str(local), remote], check=True, timeout=300,
-                           stdout=subprocess.DEVNULL)
-        if self.device.shell('sha256sum ' + remote, timeout=60).split() != [sha(data), remote]:
+            self.call(['push', str(local), remote], 300)
+        if self.call(['shell', 'sha256sum ' + remote], 60).split() != [sha(data), remote]:
             raise ValueError('staged chunk differs from the local bytes')
         return remote
 
     def write(self, remote, offset, length):
         command = (f'dd if={remote} of={PARTITION} bs={DD_BLOCK} seek={offset // DD_BLOCK} '
                    f'count={length // DD_BLOCK} conv=notrunc,fsync 2>&1')
-        try:
-            self.device.shell(command, timeout=300)
-        except subprocess.CalledProcessError as error:
-            raise ValueError(f'dd failed at offset {offset}: exit {error.returncode}: {error.output!r}') from error
+        self.call(['shell', command], 300)
 
     def digest(self, offset, length):
-        output = self.device.shell(f'dd if={PARTITION} bs={DD_BLOCK} skip={offset // DD_BLOCK} '
-                                   f'count={length // DD_BLOCK} 2>/dev/null | sha256sum', timeout=3600)
+        output = self.call(['shell', f'dd if={PARTITION} bs={DD_BLOCK} skip={offset // DD_BLOCK} '
+                                     f'count={length // DD_BLOCK} 2>/dev/null | sha256sum'], 3600)
         return output.split()[0]
 
     def remove(self, remote):
-        self.device.shell('rm -f ' + shlex.quote(remote))
+        self.call(['shell', 'rm -f ' + shlex.quote(remote)], 30)
 
 
 def verify_image(image, chunk_map):
@@ -93,9 +104,9 @@ def verify_image(image, chunk_map):
             raise ValueError('image is longer than the chunk map')
 
 
-def verified_prefix(journal_path):
+def verified_prefix(journal_path, start=0):
     """How many leading chunks an interrupted run verified on the device; any gap or mismatch record stops the resume."""
-    count = 0
+    count = start
     with Path(journal_path).open() as journal:
         for line in journal:
             entry = json.loads(line)
@@ -215,7 +226,7 @@ def install(device, plan_dir, package_dir, image, output, staging, resume=None):
                 or previous.get('manifest_sha256') != build['manifest_sha256'] or previous.get('window') != build['window']
                 or previous.get('serial') != device.serial):
             raise ValueError('the interrupted install does not belong to this partition and package')
-        resume_from = verified_prefix(Path(resume) / 'install.jsonl')
+        resume_from = verified_prefix(Path(resume) / 'install.jsonl', previous.get('first_chunk') or 0)
         if not 0 < resume_from < len(chunk_map['chunks']):
             raise ValueError('nothing to resume')
     output = Path(output)
@@ -229,7 +240,7 @@ def install(device, plan_dir, package_dir, image, output, staging, resume=None):
     with (output / 'install.jsonl').open('x') as journal:
         counts = write_partition(transport, image, chunk_map, header, build['window']['sha256'], journal,
                                  resume_from=resume_from)
-    record.update(counts, verified=True, finished_at=datetime.now(timezone.utc).isoformat())
+    record.update(counts, verified=True, daemon_retries=transport.daemon_retries, finished_at=datetime.now(timezone.utc).isoformat())
     (output / 'install.json').write_text(json.dumps(record, indent=2) + '\n')
     return record
 

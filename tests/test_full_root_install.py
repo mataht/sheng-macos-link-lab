@@ -179,6 +179,29 @@ class FullRootPackageTests(unittest.TestCase):
         with io.StringIO() as journal, self.assertRaisesRegex(ValueError, 'whole-window'):
             installer.write_partition(transport, self.image, chunk_map, header, build['window']['sha256'], journal, resume_from=1)
 
+    def transport_with_mock_device(self):
+        device = mock.Mock(adb=['adb'])
+        device.shell.side_effect = ['tmpfs /tmp tmpfs rw 0 0', '']
+        return installer.AdbTransport(device, '/tmp/sheng-macossystem-test')
+
+    def test_only_a_local_daemon_failure_is_repeated(self):
+        transport = self.transport_with_mock_device()
+        answers = [mock.Mock(returncode=1, stdout='', stderr='adb.exe: cannot connect to daemon at tcp:5037: timed out'),
+                   mock.Mock(returncode=0, stdout='abc  -', stderr='')]
+        with mock.patch.object(installer.subprocess, 'run', side_effect=answers) as run, mock.patch.object(installer.time, 'sleep'):
+            self.assertEqual(transport.digest(0, 4096), 'abc')
+        self.assertEqual((run.call_count, transport.daemon_retries), (2, 1))
+        transport = self.transport_with_mock_device()
+        failed = mock.Mock(returncode=1, stdout='dd: write error', stderr='')
+        with mock.patch.object(installer.subprocess, 'run', return_value=failed) as run, self.assertRaisesRegex(ValueError, 'write error'):
+            transport.write('/tmp/x', 4096, 4096)
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_resumed_journal_counts_from_its_first_chunk(self):
+        path = self.dir / 'journal.jsonl'
+        path.write_text('{"operation": "resume", "first_chunk": 5}\n{"operation": "verified", "chunk": 5}\n{"operation": "verified", "chunk": 6}\n')
+        self.assertEqual(installer.verified_prefix(path, 5), 7)
+
     def test_changed_image_is_refused_before_discard(self):
         prepare.prepare(self.image, self.report, self.dir / 'package')
         chunk_map = json.loads((self.dir / 'package/chunks.json').read_text())
