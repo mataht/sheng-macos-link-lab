@@ -42,6 +42,7 @@ char boot_progress_ext_wide[2][112];
 // iPadOS-only diagnostics and integrations: present so the shared code links, inert here.
 volatile int native_gpu_addon_stage, native_gpu_addon_status, native_gpu_addon2_stage, native_gpu_addon2_status;
 volatile uint32_t native_hid_input_events[8];
+volatile uint64_t native_adreno_fence_phys;   // written by the probe; defined upstream in a service file we do not build
 int boot_latency_enabled(void) {return 0;}
 void boot_latency_record(uint32_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {}
 int boot_log_export_put(uint32_t, uint32_t, uint32_t, const void *, uint32_t) {return -1;}
