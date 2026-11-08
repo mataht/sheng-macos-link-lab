@@ -274,7 +274,7 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             gpu_base[1:1] = ['-I', str(include_directory)]
         gpu_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers'),
                      '-DNATIVE_GPU_BUILD_ID=0x' + native_adreno.build_identifier(root) + 'ULL',
-                     '-Wno-incompatible-sysroot', '-Wno-overloaded-virtual']
+                     '-Wno-incompatible-sysroot', '-Wno-overloaded-virtual', '-Wno-pointer-bool-conversion']
 
         def compile_gpu(source_file, object_file, language):
             one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg for arg in gpu_base]
