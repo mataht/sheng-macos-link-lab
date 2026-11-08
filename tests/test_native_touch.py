@@ -87,6 +87,20 @@ class NativeTouchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'captured device firmware'):
                 native_touch.node_properties(firmware)
 
+    def test_touch_probe_has_no_weak_kernel_imports(self):
+        # The kernel collection linker (native_storage_module) accepts only non-weak flat imports; CI 42445927283 was
+        # refused locally for weak armcpu_spi_attach and native_hid_input_command. The only weak declaration left is
+        # the firmware hook, which native_touch.cpp defines inside the same module.
+        source = (ROOT / native_touch.UPSTREAM_CPP)
+        if not source.exists():
+            self.skipTest('upstream checkout not present')
+        weak = [line.strip() for line in source.read_text().splitlines()
+                if 'weak_import' in line and not line.lstrip().startswith('//')]
+        self.assertEqual(len(weak), 1, weak)
+        self.assertIn('native_touch_firmware_bytes', weak[0])
+        glue = (ROOT / 'platform/sheng/macos26/input/native_touch.cpp').read_text()
+        self.assertIn('native_touch_firmware_bytes(uint32_t', glue)
+
     def test_device_tree_node_is_added_once(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'kernel.adt'
