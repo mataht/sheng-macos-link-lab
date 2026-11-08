@@ -186,6 +186,14 @@ def main() -> None:
         storage = json.loads((args.kernel_build / 'build.json').read_text()).get('storage_driver', {})
         if storage.get('explicit_qemu_scratch_writes') is not True:
             parser.error('the actual candidate lacks explicit scratch write support')
+        # build.json describes the CI's virtio storage driver even when the candidate links NativeUfs (hardware
+        # candidates are tested in QEMU through the debugger-emulated UFS backend). The full image is attached as a
+        # virtio disk, so require the virtio driver to be the one actually linked (seen 2026-11-08: attempt 02 waited
+        # 3600 s for the root IOMedia with NativeUfs linked).
+        relink_path = args.kernel_build / 'security-relink.json'
+        linked = json.loads(relink_path.read_text()).get('storage_driver', {}).get('bundle') if relink_path.is_file() else None
+        if linked != storage.get('bundle') or linked != 'org.unixnu.driver.NativeVirtioBlock':
+            parser.error(f'full-system QEMU needs the virtio storage driver linked into the candidate (linked: {linked})')
         full_system = qualify_inspection(args.full_system_image, args.full_system_inspection)
     maximum_timeout = (3600 if full_system and args.continue_after_launchd_main else
                        900 if args.continue_after_launchd_main else 180)
