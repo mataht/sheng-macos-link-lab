@@ -59,7 +59,13 @@ class QualificationReuseTest(unittest.TestCase):
         self.assertIn('/ufs_driver/native_gop_display/patch_sha256', result['changed_display_input_fields'])
         self.assertIn('/ufs_driver/native_button_keys/chord_window_ms', result['changed_display_input_fields'])
         self.assertIn('/corecrypto/archive_sha256', result['changed_output_identities'])
-        self.assertEqual(result['hardware_verified'], ['display', 'recovery input', 'hardware keys'])
+        self.assertEqual(result['hardware_verified'], ['display', 'recovery input', 'hardware keys', 'touch'])
+
+    def test_accepts_an_added_touch_companion(self):
+        def add_touch(kernel):
+            kernel['ufs_driver']['native_touch'] = dict(schema='sheng-touch-v1', default_off=True)
+        result = compare_scope(*self.builds(change=add_touch))
+        self.assertIn('/ufs_driver/native_touch', result['changed_display_input_fields'])
 
     def test_rejects_storage_kernel_and_policy_changes(self):
         cases = [

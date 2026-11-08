@@ -1,7 +1,7 @@
 """Tiered qualification: reuse a reference kernel's long QEMU evidence when only display/input changed.
 
 User policy (2026-11-08): the slow same-kernel QEMU runs exist to protect storage and the boot path. When a new CI build
-differs from an already qualified reference build only in the GOP display, recovery input or hardware key companions, the
+differs from an already qualified reference build only in the GOP display, recovery input, hardware key or touch companions, the
 reference's development/ISC userland evidence still describes this kernel's storage, ISC and boot code, and display/input
 behaviour is checked on the hardware instead. The new kernel always gets its own quick QEMU gates (root discovery, UFS
 default-off, CN placement, 8 cores) through the packager's normal checks.
@@ -23,7 +23,8 @@ OUTPUT_IDENTITY = {
     '/storage_driver/binary_sha256', '/ufs_driver/binary_sha256',
 }
 # Component records whose behaviour is verified on hardware under the tiered policy.
-DISPLAY_INPUT = ('/ufs_driver/native_gop_display', '/ufs_driver/native_recovery_input', '/ufs_driver/native_button_keys')
+DISPLAY_INPUT = ('/ufs_driver/native_gop_display', '/ufs_driver/native_recovery_input', '/ufs_driver/native_button_keys',
+                 '/ufs_driver/native_touch')  # user decision 2026-11-08: the touch companion counts as an input change
 RELINK_SAME = ('modules', 'recovery_components', 'hid_components', 'qemu_only', 'hardware_admitted')
 
 
@@ -72,7 +73,7 @@ def compare_scope(build, reference) -> dict:
                 changed_display_input_fields=components,
                 changed_output_identities=sorted(p for p in changed if p in OUTPUT_IDENTITY),
                 reused=['development dyld / ISC userland observation'],
-                hardware_verified=['display', 'recovery input', 'hardware keys'])
+                hardware_verified=['display', 'recovery input', 'hardware keys', 'touch'])
 
 
 def display_hardware_verification() -> dict:
