@@ -125,6 +125,28 @@ class TrustEntryTests(unittest.TestCase):
                 trust.merge([self.module([low])], (value,))
 
 
+class TrustAdmissionTests(unittest.TestCase):
+    def record(self, bundle, owner=()):
+        record = dict(schema='sheng-system-trust-cache-v1', build='25F71', bundle_sha256=hashlib.sha256(bundle).hexdigest(),
+                      own_entries_added=bool(owner))
+        if owner:
+            record['owner_cdhashes'] = list(owner)
+        return record
+
+    def test_normal_boots_still_refuse_any_added_entry(self):
+        self.assertTrue(trust.admit_record(self.record(b'x'), b'x'))
+        self.assertFalse(trust.admit_record(self.record(b'x', ('a' * 40,)), b'x'))
+        self.assertFalse(trust.admit_record(self.record(b'x') | dict(own_entries_added=True), b'x'))
+        self.assertFalse(trust.admit_record(self.record(b'x'), b'y'))
+
+    def test_probe_boot_allows_only_the_declared_plugin(self):
+        wanted = ('a' * 40,)
+        self.assertTrue(trust.admit_record(self.record(b'x', wanted), b'x', wanted))
+        self.assertFalse(trust.admit_record(self.record(b'x', ('b' * 40,)), b'x', wanted))
+        self.assertFalse(trust.admit_record(self.record(b'x', ('a' * 40, 'b' * 40)), b'x', wanted))
+        self.assertFalse(trust.admit_record(self.record(b'x'), b'x', wanted))
+
+
 class BootPolicyTests(unittest.TestCase):
     def test_unrestricted_fs_only_for_a_full_system_experiment(self):
         group = uuid.UUID('6a2c7f1e-1111-4222-8333-944455556666')

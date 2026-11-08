@@ -169,6 +169,8 @@ def main() -> None:
                         help='real contiguous DarwinBoot allocation inside QEMU RAM')
     parser.add_argument('--timeout', type=int, default=60, metavar='SECONDS',
                         help='15..180 seconds, or up to 900 for explicit continued service observation')
+    parser.add_argument('--qemu-irq-trace', action='store_true',
+                        help='QEMU only: log long interrupt masking instead of panicking (slow TCG trips the default watchdog)')
     parser.add_argument('--qemu-smp-timeouts', action='store_true',
                         help='record IRQ latency violations and use finite one-second locks for TCG SMP')
     parser.add_argument('--smp', type=int, choices=(1, 2, 4, 8), default=1,
@@ -211,13 +213,15 @@ def main() -> None:
             parser.error(f'full-system QEMU needs the virtio storage driver linked into the candidate (linked: {linked})')
         full_system = qualify_inspection(args.full_system_image, args.full_system_inspection)
         if args.full_system_trust_cache:
-            from system_trust_cache import check_bundle
+            from system_trust_cache import admit_record, check_bundle
             trust = args.full_system_trust_cache.read_bytes()
             trust_record = json.loads(Path(str(args.full_system_trust_cache) + '.json').read_text())
             check_bundle(trust)
-            if (trust_record.get('schema') != 'sheng-system-trust-cache-v1' or trust_record.get('build') != '25F71'
-                    or trust_record.get('bundle_sha256') != hashlib.sha256(trust).hexdigest()
-                    or trust_record.get('own_entries_added') is not False):
+            allowed_owner = ()
+            if args.gpu_probe:  # only the plugin CDHash this exact candidate declares
+                relink = json.loads((args.kernel_build / 'security-relink.json').read_text())
+                allowed_owner = (relink['storage_driver']['build']['native_gpu_probe']['plugin_cdhash'],)
+            if not admit_record(trust_record, trust, allowed_owner):
                 parser.error('trust cache bundle does not match its original-module record')
             full_system['trust_cache'] = dict(path=str(args.full_system_trust_cache.resolve()), bytes=len(trust),
                                               sha256=trust_record['bundle_sha256'],
@@ -435,6 +439,9 @@ def main() -> None:
             boot_args += ' native-gop-vm-keep-awake=1'
         record['vm_keep_awake'] = args.vm_keep_awake
         record['qemu_disable_sleep'] = args.qemu_disable_sleep
+        if args.qemu_irq_trace and not args.qemu_smp_timeouts:
+            boot_args += ' interrupt-masked-debug-mode=1'
+            record['qemu_irq_trace'] = dict(irq_hygiene='trace', hardware_qualified=False)
         if args.gpu_probe:
             boot_args += ' sheng-gpu-probe=1'
             record['gpu_probe'] = dict(qemu_only=True, hardware_admitted=False,
