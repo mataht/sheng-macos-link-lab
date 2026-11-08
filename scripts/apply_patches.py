@@ -6,7 +6,9 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKOUTS = {'ShengPreflight': ROOT / 'UniXNU-sheng/drivers/ShengPreflight',
-             'VerifiedRoot': ROOT / 'UniXNU/kits/VerifiedRoot'}
+             'VerifiedRoot': ROOT / 'UniXNU/kits/VerifiedRoot',
+             'Adreno740': ROOT / 'gpu/Adreno740',
+             'UniXNU-sheng-gpu': ROOT / 'gpu/UniXNU-sheng'}
 for directory in sorted((ROOT / 'patches').iterdir()):
     if not directory.is_dir():
         continue

@@ -582,7 +582,8 @@ def compile_sources(args, record: dict) -> None:
                               button_keys=args.build_button_keys,
                               full_root=args.build_full_root,
                               touch=args.build_touch,
-                              cpufreq=args.build_cpufreq)
+                              cpufreq=args.build_cpufreq,
+                              gpu=args.build_gpu)
             save(record)
 
 
@@ -673,6 +674,8 @@ def main() -> None:
                         help='include the default-off QEMU VirtIO HID input companion')
     parser.add_argument('--build-button-keys', action='store_true',
                         help='include the default-off hardware power/volume key companion (SPMI, read-only)')
+    parser.add_argument('--build-gpu', action='store_true',
+                        help='add the default-off Adreno 740 kernel stack to the UFS bundle (sheng-gpu-power=1..9)')
     parser.add_argument('--build-cpufreq', action='store_true',
                         help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
                              'sheng-cpufreq=1 is read-only)')
@@ -693,6 +696,8 @@ def main() -> None:
         parser.error('--build-recovery-input requires --build-gop-display')
     if args.build_button_keys and not args.build_gop_display:
         parser.error('--build-button-keys requires --build-gop-display')
+    if args.build_gpu and not args.build_gop_display:
+        parser.error('--build-gpu requires --build-gop-display')
     if args.build_cpufreq and not args.build_ufs_driver:
         parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
