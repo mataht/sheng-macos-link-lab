@@ -578,6 +578,9 @@ def main():
                         help='VirtIO candidate of the same CI build; --dyld-observation is its full-system QEMU run')
     parser.add_argument('--full-system-display', action='store_true',
                         help='GOP display and the compiled full-system page table (sheng-full-ui=1); verified on the tablet')
+    parser.add_argument('--no-panic-on-service-crash', action='store_true',
+                        help='full-system: XNU panic_on_crash_disabled=1, so a daemon launchd marks panic-on-crash can fail without '
+                             'stopping the boot (watchdogd needs an IOWatchdog driver this kernel does not have)')
     parser.add_argument('--firmware-build', type=Path, required=True)
     parser.add_argument('--backup-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -661,7 +664,8 @@ def main():
             parser.error('the Recovery root requires ' + ', '.join('--' + n.replace('_', '-') for n in missing))
         if any(getattr(args, n) for n in ('full_system_plan', 'full_system_package', 'full_system_install',
                                           'root_overlay_mib', 'root_writes', 'full_system_adt_snapshot_name',
-                                          'full_system_trust_cache', 'full_system_sibling', 'full_system_display')):
+                                          'full_system_trust_cache', 'full_system_sibling', 'full_system_display',
+                                          'no_panic_on_service_crash')):
             parser.error('full-system inputs require --full-system')
     gui = (args.recovery_ui_observation or args.display_observation or args.display_waiver
            or args.display_hardware_verification or args.full_system_display)
@@ -774,6 +778,8 @@ def main():
             raise ValueError('the QEMU run did not load this trust cache bundle')
         boot_args += ' -sheng-development-no-ignition -nobsdmgroot ' + (
             'native-ufs-root-writes=1' if args.root_writes else f'native-ufs-root-overlay-mib={args.root_overlay_mib}')
+        if args.no_panic_on_service_crash:
+            boot_args += ' panic_on_crash_disabled=1'
     elif args.development_no_ignition:
         qualify_development_dyld(dyld_build, dyld_observation, dyld_identity, args.root_volume_uuid)
         boot_args += ' -sheng-development-no-ignition'
@@ -950,6 +956,7 @@ def main():
                                  overlay_disk_writes=False, overlay_persistent=False,
                                  adt_root_snapshot_name=args.full_system_adt_snapshot_name,
                                  trust_cache=full_trust, evidence_rule=full_sibling, sleep_disabled_adt=True,
+                                 service_crash_panic_disabled=args.no_panic_on_service_crash,
                                  deployment=media) if full_contract else None,
                 recovery_transport_is_not_authentication=True,
                 deployment_scope='fastboot boot only; no boot/recovery/UEFI partition flashing')
