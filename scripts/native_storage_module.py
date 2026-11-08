@@ -188,11 +188,13 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     else:
         if allow_combined_virtio_gop:
             raise ValueError('combined opt-in requires a VirtIO primary module')
-        if (evidence.get('root_partition') != 'macosroot' or evidence.get('root_lun') != 0
+        # Only a --build-full-root driver may name the installed-system partition; Recovery builds stay on macosroot.
+        partition = 'macossystem' if evidence.get('full_system_root') is True else 'macosroot'
+        if (evidence.get('root_partition') != partition or evidence.get('root_lun') != 0
                 or evidence.get('android_userdata_used') is not False
                 or evidence.get('read_only_transport') is not True
                 or evidence.get('hardware_enable_required') is not True):
-            raise ValueError('UFS transport must restrict its read-only root to macosroot on LUN0')
+            raise ValueError(f'UFS transport must restrict its read-only root to {partition} on LUN0')
         display = evidence.get('native_gop_display')
         input_driver = evidence.get('native_recovery_input')
         button_keys = evidence.get('native_button_keys')
