@@ -1,0 +1,47 @@
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index 527a4d4..508baab 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -1165,8 +1165,9 @@ tu_get_properties(struct tu_physical_device *pdevice,
+          : pdevice->info->props.max_storage_buffer_range_bytes;
+    props->maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE;
+    props->maxMemoryAllocationCount = UINT32_MAX;
+-   /* VK_EXT_external_memory_host: the kernel pins whole 4 KiB pages. */
+-   props->minImportedHostPointerAlignment = 4096;
++   /* VK_EXT_external_memory_host: the kernel pins whole CPU pages (16 KiB on our macOS kernel). */
++   os_get_page_size(&os_page_size);
++   props->minImportedHostPointerAlignment = os_page_size;
+    props->maxSamplerAllocationCount = 64 * 1024;
+    props->bufferImageGranularity = 64;          /* A cache line */
+    props->sparseAddressSpaceSize = pdevice->va_size;
+@@ -3713,7 +3714,7 @@ tu_AllocateMemory(VkDevice _device,
+ 
+    if (host_info && host_info->handleType) {
+       if (host_info->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
+-          ((uintptr_t) host_info->pHostPointer | pAllocateInfo->allocationSize) & 4095) {
++          ((uintptr_t) host_info->pHostPointer | pAllocateInfo->allocationSize) & (os_page_size - 1)) {
+          result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+       } else {
+          result = tu_bo_init_host(device, &mem->bo, host_info->pHostPointer,
+@@ -3851,7 +3852,7 @@ tu_GetMemoryHostPointerPropertiesEXT(VkDevice _device,
+ {
+    VK_FROM_HANDLE(tu_device, device, _device);
+    if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
+-       !device->physical_device->has_host_import || ((uintptr_t) pHostPointer & 4095))
++       !device->physical_device->has_host_import || ((uintptr_t) pHostPointer & (os_page_size - 1)))
+       return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+    /* Imported pages keep the owner's CPU mapping; they are offered as the plain (host-coherent) type. On Darwin the importer cleans
+     * and invalidates its own CPU caches around GPU use (NativeAdrenoAbiBoImport), as an IOSurface's owner does. */
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+index f5de114..7a1ff46 100644
+--- a/src/freedreno/vulkan/tu_knl_darwin.cc
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -603,7 +603,7 @@ darwin_release_native(struct tu_device *dev, struct darwin_retire_state *retire,
+ static uint64_t
+ darwin_size_class(uint64_t size)
+ {
+-   size = (size + 4095) & ~(uint64_t)4095;
++   size = align64(size, os_page_size);
+    if (size <= 16384)
+       return size;
+    const uint64_t step = ((uint64_t)1 << (63 - __builtin_clzll(size - 1))) / 4;

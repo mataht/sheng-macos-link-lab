@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "sources": [
+    {
+      "path": "sources/turnip/UniXNU",
+      "url": "https://github.com/UniXNU/UniXNU.git",
+      "commit": "d3de950a23a54d454d6ac21d8deceaa3f4ad0e73",
+      "group": "graphics",
+      "sparse": ["patches/mesa", "scripts/data"]
+    },
+    {
+      "path": "sources/turnip/mesa",
+      "url": "https://chromium.googlesource.com/external/gitlab.freedesktop.org/mesa/mesa",
+      "commit": "85fda3b36405bcaea8bffc64aa4f2651dc90770d",
+      "group": "graphics"
+    },
+    {
+      "path": "sources/turnip/Adreno740",
+      "url": "https://github.com/UniXNU/Adreno740.git",
+      "commit": "6fa7bae2a5b3b523e790eb3e0348af4d98969e4d",
+      "group": "graphics"
+    }
+  ]
+}
