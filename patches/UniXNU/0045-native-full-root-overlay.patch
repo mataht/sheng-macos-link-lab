@@ -1,0 +1,129 @@
+diff --git a/drivers/NativeUfs/NativeUfs.cpp b/drivers/NativeUfs/NativeUfs.cpp
+--- a/drivers/NativeUfs/NativeUfs.cpp
++++ b/drivers/NativeUfs/NativeUfs.cpp
+@@ -993,6 +993,9 @@
+ #include "RootWindowOverlay.h"
+ #include "RootPublication.h"
+ #include "RootMediaWait.h"
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++#include NATIVE_UFS_FULL_ROOT_OVERLAY
++#endif
+ 
+ }
+ 
+@@ -1214,6 +1217,15 @@
+ volatile uint64_t native_ufs_isc_resident_bytes = 0, native_ufs_isc_failures = 0;
+ volatile uint32_t native_ufs_isc_overlay_enabled = 0;
+ }
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++// Full-system development root: volatile RAM overlay of the OS window; never written to disk.
++extern "C" {
++volatile uint64_t native_ufs_root_overlay_writes = 0, native_ufs_root_overlay_failures = 0;
++volatile uint64_t native_ufs_root_overlay_resident_bytes = 0, native_ufs_root_overlay_table_bytes = 0;
++volatile uint64_t native_ufs_root_overlay_limit_bytes = 0;
++volatile uint32_t native_ufs_root_overlay_enabled = 0;
++}
++#endif
+ class NativeUfsBlock : public IOBlockStorageDevice {
+   OSDeclareDefaultStructors (NativeUfsBlock)
+   uint64_t absolute = 0;      // byte offset of the window on LUN 0
+@@ -1223,6 +1235,10 @@
+   IOLock *windowLock = nullptr;
+   RamSparseDisk overlay = {};
+   static constexpr uint64_t kOverlayLimit = 64ULL << 20;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  UfsTieredDisk fullOverlay = {};
++  uint64_t fullOverlayLimit = 0;
++#endif
+   bool online = false;
+ #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
+   struct vr_view verified = {};
+@@ -1256,7 +1272,13 @@
+     *present = online; if (changed) *changed = false; return kIOReturnSuccess;
+   }
+   IOReturn reportRemovability (bool *value) override { *value = false; return kIOReturnSuccess; }
+-  IOReturn reportWriteProtection (bool *value) override { *value = !overlay.pages; return kIOReturnSuccess; }
++  bool writable () const {
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++    if (fullOverlay.tables) return true;
++#endif
++    return overlay.pages != nullptr;
++  }
++  IOReturn reportWriteProtection (bool *value) override { *value = !writable (); return kIOReturnSuccess; }
+   IOReturn doSynchronizeCache () override {
+     if (!online) return kIOReturnNotReady;
+     IOLockLock (windowLock);
+@@ -1332,6 +1354,21 @@
+     IOLog ("NativeUfs: ISC volatile RAM overlay limit=%llu bytes; seed remains read-only\n", kOverlayLimit);
+   }
+ #endif
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  // Default off. The full-system root needs a writable Data volume; writes stay in RAM.
++  uint32_t overlayMib = 0;
++  if (!strcmp (label, "OS") && PE_parse_boot_argn ("native-ufs-root-overlay-mib", &overlayMib, sizeof (overlayMib))) {
++    if (overlayMib < 256 || overlayMib > 8192 || !ufsTieredGeometry (bytes)) return false;
++    fullOverlay.bytes = bytes;
++    fullOverlay.chunks = ufsTieredChunks (bytes);
++    fullOverlay.tables = static_cast<uint8_t ***> (IOMallocZero (fullOverlay.chunks * sizeof (uint8_t **)));
++    if (!fullOverlay.tables) return false;
++    fullOverlayLimit = uint64_t (overlayMib) << 20;
++    native_ufs_root_overlay_limit_bytes = fullOverlayLimit;
++    native_ufs_root_overlay_enabled = 1;
++    IOLog ("NativeUfs: full-system root volatile RAM overlay limit=%llu bytes; UFS stays read-only\n", fullOverlayLimit);
++  }
++#endif
+ #if defined(NATIVE_UFS_RECOVERY_ROOT) && NATIVE_UFS_RECOVERY_ROOT
+   // Publish the BaseSystem disk image stored in the partition rather than the underlying UFS controller.
+   OSDictionary *protocol = OSDictionary::withCapacity (2);
+@@ -1513,7 +1550,7 @@
+   }
+   bool write = buffer->getDirection () == kIODirectionOut;
+   if (buffer->getDirection () != kIODirectionIn && !write) return kIOReturnBadArgument;
+-  if (write && !overlay.pages) return kIOReturnNotWritable;
++  if (write && !writable ()) return kIOReturnNotWritable;
+   if (!online) {
+     return kIOReturnNotReady;
+   }
+@@ -1560,6 +1597,27 @@
+ #endif
+   };
+   UfsWindowResult outcome;
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  if (fullOverlay.tables) {
++    struct TieredOperations {
++      IOLock *mutex;
++      IOMemoryDescriptor *buffer;
++      void lock () { IOLockLock (mutex); }
++      void unlock () { IOLockUnlock (mutex); }
++      uint8_t *allocate () { return static_cast<uint8_t *> (IOMalloc (4096)); }
++      void release (uint8_t *page) { IOFree (page, 4096); }
++      IOReturn read (uint64_t lba, uint32_t blocks, void *out) { return hostRead4k (0, lba, blocks, out); }
++      uint64_t load (uint64_t offset, void *out, uint64_t length) { return buffer->readBytes (offset, out, length); }
++      uint64_t copy (uint64_t offset, const void *data, uint64_t length) { return buffer->writeBytes (offset, data, length); }
++    } tieredOps = { windowLock, buffer };
++    outcome = ufsTieredOverlayIO (tieredOps, fullOverlay, absolute, write, block, count, fullOverlayLimit, bounce);
++    native_ufs_root_overlay_resident_bytes = fullOverlay.resident;
++    native_ufs_root_overlay_table_bytes = fullOverlay.tableBytes;
++    if (outcome.status != kIOReturnSuccess) __atomic_fetch_add (&native_ufs_root_overlay_failures, 1, __ATOMIC_RELAXED);
++    else if (write) __atomic_fetch_add (&native_ufs_root_overlay_writes, 1, __ATOMIC_RELAXED);
++    else __atomic_fetch_add (&native_ufs_block_reads, 1, __ATOMIC_RELAXED);
++  } else
++#endif
+   if (overlay.pages) {
+     struct OverlayOperations {
+       IOLock *mutex;
+@@ -1593,6 +1651,14 @@
+ 
+ void NativeUfsBlock::free ()
+ {
++#if defined(NATIVE_UFS_FULL_ROOT) && NATIVE_UFS_FULL_ROOT
++  if (fullOverlay.tables) {
++    struct Releaser { void release (uint8_t *page) { IOFree (page, 4096); } } releaser;
++    ufsTieredRelease (releaser, fullOverlay);
++    IOFree (fullOverlay.tables, fullOverlay.chunks * sizeof (uint8_t **));
++    fullOverlay = {};
++  }
++#endif
+   if (overlay.pages) {
+     for (uint64_t i = 0; i < overlay.bytes / 4096; ++i)
+       if (overlay.pages[i]) IOFree (overlay.pages[i], 4096);

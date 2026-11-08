@@ -20,10 +20,38 @@ PROTOCOL_CHARACTERISTICS = {
 }
 
 
+FULL_ROOT_CONFIG = 'config/macos26-full-root.json'
+FULL_ROOT_PARTITION = 'macossystem'
+FULL_ROOT_OVERLAY_MIB = (256, 8192)
+
+
+def full_root_contract(root):
+    """Validated full-system root identity; written by prepare_macos26_full_root.py after the image exists."""
+    path = root / FULL_ROOT_CONFIG
+    if not path.is_file():
+        raise ValueError(f'{FULL_ROOT_CONFIG} is missing; derive it from the delivered image first')
+    contract = json.loads(path.read_text())
+    digest = bytes.fromhex(contract.get('sha256', ''))
+    overlay = contract.get('overlay', {})
+    if (contract.get('build') != '25F71' or contract.get('variant') != 'full-system'
+            or contract.get('window') != 'OS' or len(digest) != 32
+            or type(contract.get('bytes')) is not int or contract['bytes'] <= 0 or contract['bytes'] % 4096
+            or uuid.UUID(contract.get('volume_uuid', '0' * 32)).int == 0
+            or uuid.UUID(contract.get('volume_group', '0' * 32)).int == 0
+            or contract.get('partition') != FULL_ROOT_PARTITION
+            or overlay != dict(boot_argument='native-ufs-root-overlay-mib', default_off=True,
+                               minimum_mib=FULL_ROOT_OVERLAY_MIB[0], maximum_mib=FULL_ROOT_OVERLAY_MIB[1],
+                               persistent=False, disk_writes=False)):
+        raise ValueError('full-system root contract is incomplete or inconsistent')
+    return contract
+
+
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False):
+          recovery_input=False, button_keys=False, full_root=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if full_root and transport != 'ufs':
+        raise ValueError('the full-system root identity belongs to the UFS transport')
     if gop_display and transport != 'ufs':
         raise ValueError('the board GOP companion requires the UFS bundle')
     if recovery_input and not gop_display:
@@ -53,10 +81,13 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
     recovery_prefix = ''
     recovery_root = None
     if transport == 'ufs':
-        recovery_root = json.loads((root / 'config/macos26-recovery-root.json').read_text())
+        # The full-system root reuses the compiled window-identity mechanism (OS window bytes, digest
+        # and the volume UUID to wait for) with the delivered install's values, plus its RAM overlay.
+        recovery_root = (full_root_contract(root) if full_root else
+                         json.loads((root / 'config/macos26-recovery-root.json').read_text()))
         digest = bytes.fromhex(recovery_root['sha256'])
         identity = str(uuid.UUID(recovery_root['volume_uuid'])).upper()
-        if (recovery_root['build'] != '25F71' or recovery_root['variant'] != 'recoveryos'
+        if not full_root and (recovery_root['build'] != '25F71' or recovery_root['variant'] != 'recoveryos'
                 or recovery_root['window'] != 'OS' or len(digest) != 32
                 or recovery_root['bytes'] <= 0 or recovery_root['bytes'] % 512):
             raise ValueError('requires the paired read-only recovery root contract')
@@ -64,6 +95,9 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             f'#define NATIVE_UFS_RECOVERY_BYTES {recovery_root["bytes"]}ULL\n'
             '#define NATIVE_UFS_RECOVERY_DIGEST {' + ','.join(str(b) for b in digest) + '}\n'
             f'#define NATIVE_UFS_RECOVERY_UUID "{identity}"\n')
+        if full_root:
+            recovery_prefix += ('#define NATIVE_UFS_FULL_ROOT 1\n'
+                f'#define NATIVE_UFS_FULL_ROOT_OVERLAY "{root / "platform/sheng/macos26/storage/full_root_overlay.h"}"\n')
         if 'isc' in recovery_root:
             isc = recovery_root['isc']
             isc_digest = bytes.fromhex(isc['sha256'])
@@ -119,7 +153,7 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
     if transport == 'virtio':
         command[1:1] = ['-DNATIVE_QEMU_SCRATCH_BLOCK=1']
     else:
-        command[1:1] = ['-DNATIVE_UFS_ROOT_PARTITION_NAME="macosroot"']
+        command[1:1] = ['-DNATIVE_UFS_ROOT_PARTITION_NAME="' + (FULL_ROOT_PARTITION if full_root else 'macosroot') + '"']
     sdk = Path(subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip())
     command += ['-I', str(source / 'osfmk'), '-I', str(sdk / 'usr/include'),
                 '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
@@ -229,7 +263,12 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             writes_confined_to_preallocated_file=True, filesystem_metadata_writes=False,
             source_sha256={name: hashlib.sha256((root / 'platform/sheng/macos26/storage' / name).read_bytes()).hexdigest()
                            for name in ('macoslog_layout.h', 'macoslog_worker.h')})
-        evidence.update(root_partition='macosroot', root_lun=0,
+        if full_root:
+            evidence['full_root_overlay'] = dict(recovery_root['overlay'], volume_group=recovery_root['volume_group'],
+                header_sha256=hashlib.sha256((root / 'platform/sheng/macos26/storage/full_root_overlay.h').read_bytes()).hexdigest(),
+                seed_read_only=True, hardware_qualified=False)
+            evidence['full_system_root'] = True  # absent from Recovery builds, keeping their records unchanged
+        evidence.update(root_partition=FULL_ROOT_PARTITION if full_root else 'macosroot', root_lun=0,
                         android_userdata_used=False, root_media_layout_qualified=False,
                         recovery_root=recovery_root,
                         recovery_disk_image_protocol=dict(PROTOCOL_CHARACTERISTICS),
