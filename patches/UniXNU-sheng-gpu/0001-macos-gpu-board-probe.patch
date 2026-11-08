@@ -1,5 +1,5 @@
 diff --git a/package/GpuPowerProbe.cpp b/package/GpuPowerProbe.cpp
-index 358049e..410c258 100644
+index 358049e..d7fed25 100644
 --- a/package/GpuPowerProbe.cpp
 +++ b/package/GpuPowerProbe.cpp
 @@ -102,11 +102,6 @@ extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak)
@@ -114,12 +114,16 @@ index 358049e..410c258 100644
  // Rows refreshed by the heartbeat thread: 6 = the stage chain, 7 = who reached the driver, 5 = the plugin's own report.
  // M a<addon stage>.<status> k<kext load> s<publish stage>/<status> r<registered>
  // D o<opened>/<busy>/<closed> p<property reads> <latest reader>><latest opener>   R<plugin report>
-@@ -1507,8 +1487,6 @@ int vnodeObserver(void *, void *, unsigned action, uintptr_t, uintptr_t vnode, u
+@@ -1507,8 +1487,10 @@ int vnodeObserver(void *, void *, unsigned action, uintptr_t, uintptr_t vnode, u
      return 3;
  }
  void registerExecObserver() {
 -    if (!gExecListener) gExecListener = kauth_listen_scope("com.apple.kauth.fileop", execObserver, nullptr);
 -    if (!gVnodeListener) gVnodeListener = kauth_listen_scope("com.apple.kauth.vnode", vnodeObserver, nullptr);
++    (void)gExecListener;
++    (void)execObserver;
++    (void)gVnodeListener;
++    (void)vnodeObserver;
  }
  // Does the interrupt controller deliver SGI 0 between cores? The kernel sends IPIs through ArmCpu::signalCPU, but every boot page has shown
  // ipi=0 received, and the restartable-ranges panic (a thread waiting for an IPI acknowledgement) says delivery may be broken. This sends
