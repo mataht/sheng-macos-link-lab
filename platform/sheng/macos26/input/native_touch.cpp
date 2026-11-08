@@ -14,6 +14,7 @@
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/hid/IOHIDDevice.h>
 #include <libkern/c++/OSData.h>
+#include <kern/thread.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
 #include "touch_firmware_sha256.h"
@@ -26,6 +27,9 @@ void native_touch_probe(void);
 void native_touch_set_sink(void (*sink)(void *), void *context);
 extern volatile uint32_t native_touch_seq, native_touch_count;
 extern volatile int native_touch_xs[12], native_touch_ys[12], native_touch_ids[12];
+extern char native_touch_rows[4][120];
+extern volatile uint32_t native_touch_stage_done, native_touch_step;
+extern volatile int native_touch_error;
 volatile uint32_t native_touch_firmware_state;   // 0 none, 1 accepted, 2 rejected (size or SHA-256)
 volatile uint32_t native_touch_pointer_reports;
 }
@@ -33,6 +37,32 @@ volatile uint32_t native_touch_pointer_reports;
 namespace {
 const uint8_t *gFirmware;
 uint32_t gFirmwareSize;
+
+// The bring-up keeps its state (stage, step, error, clock votes, pin configuration, chip id, transfer status) in
+// native_touch_rows; upstream draws them on its own diagnostic page. Print them on the kernel console whenever the
+// stage, step or error changes, and every 10 s, for the first 60 s, so a photo of the boot text records them.
+// Read-only: copies the rows and logs them, never touches the hardware.
+void touchReportThread(void *, wait_result_t)
+{
+  uint32_t lastDone = ~0u, lastStep = ~0u;
+  int lastError = 0x7fffffff;
+  char row[sizeof native_touch_rows[0]];
+  for (unsigned tick = 0; tick <= 600; ++tick) {
+    const uint32_t done = native_touch_stage_done, step = native_touch_step;
+    const int error = native_touch_error;
+    if (done != lastDone || step != lastStep || error != lastError || tick % 100 == 0) {
+      lastDone = done;
+      lastStep = step;
+      lastError = error;
+      for (unsigned i = 0; i < 4; ++i) {
+        memcpy(row, native_touch_rows[i], sizeof row);
+        row[sizeof row - 1] = 0;
+        IOLog("NativeTouch row%u t%us: %s\n", i, tick / 10, row);
+      }
+    }
+    IOSleep(100);
+  }
+}
 }
 
 // Called by the patched bring-up before the download stage.
@@ -142,6 +172,11 @@ bool NativeTouch::start(IOService *provider)
   native_touch_probe();
   registerService();
   IOLog("NativeTouch: bring-up stage %u started, orientation bits %u\n", stage, orientBits);
+  thread_t reporter = nullptr;
+  if (kernel_thread_start(touchReportThread, nullptr, &reporter) == KERN_SUCCESS)
+    thread_deallocate(reporter);
+  else
+    IOLog("NativeTouch: cannot start the diagnostic reporter\n");
   return true;
 }
 
