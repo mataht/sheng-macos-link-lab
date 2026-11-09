@@ -30,6 +30,7 @@ namespace {
 constexpr IOReturn kAksError = (IOReturn)0xe00002bc;  // what libaks reports itself when the connection is missing
 constexpr IOReturn kAksUnsupported = (IOReturn)0xe00002c7;
 constexpr uint32_t kLogSelectors = 192;
+constexpr uint32_t kWatchdogLogSlot = 170;  // AKS selectors stay below 170, the 10 watchdog selectors above
 
 uint32_t aks_stage(void) {
   static int cached = -1;
@@ -99,11 +100,11 @@ IOReturn write_output(IOExternalMethodArguments *args, const uint8_t *data, size
 // Every selector is logged the first time it is seen, with its result: this is what the QEMU runs and the boot text use
 // to learn which selectors macOS actually needs. Unknown selectors are logged as often as they are not repeated.
 volatile uint32_t aks_call_count[kLogSelectors];
-void aks_note(const char *service, uint32_t selector, IOReturn rc) {
-  if (selector < kLogSelectors) {
-    uint32_t n = __atomic_add_fetch(&aks_call_count[selector], 1, __ATOMIC_RELAXED);
+void aks_note(const char *service, uint32_t selector, uint32_t slot, IOReturn rc) {
+  if (slot < kLogSelectors) {
+    uint32_t n = __atomic_add_fetch(&aks_call_count[slot], 1, __ATOMIC_RELAXED);
     if (n == 1 || (rc != kIOReturnSuccess && n % 100 == 1))
-      IOLog("%s: selector %u first answered 0x%x (count %u)\n", service, selector, rc, n);
+      IOLog("%s: selector %u answered 0x%x (call %u)\n", service, selector, rc, n);
   } else {
     IOLog("%s: selector %u answered 0x%x\n", service, selector, rc);
   }
@@ -124,8 +125,9 @@ IOReturn aks_dispatch(uint32_t selector, IOExternalMethodArguments *args) {
       args->scalarOutputCount = 1;
       return kIOReturnSuccess;
     case Action::LockState:
-      if (args->scalarInputCount != 1 || args->scalarOutputCount != 1 || !args->scalarOutput) return kIOReturnBadArgument;
+      if (args->scalarInputCount < 1 || args->scalarOutputCount < 1 || !args->scalarOutput) return kIOReturnBadArgument;
       args->scalarOutput[0] = kUnlockedSinceBoot;
+      args->scalarOutputCount = 1;
       return kIOReturnSuccess;
     case Action::DeviceState: {
       if (args->scalarInputCount > 1 || args->scalarOutputCount != 0) return kIOReturnBadArgument;
@@ -200,7 +202,7 @@ public:
   IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args, IOExternalMethodDispatch *, OSObject *,
                           void *) override {
     IOReturn rc = aks_dispatch(selector, args);
-    aks_note("NativeAKS", selector, rc);
+    aks_note("NativeAKS", selector, selector, rc);
     return rc;
   }
 };
@@ -252,7 +254,7 @@ public:
   IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args, IOExternalMethodDispatch *, OSObject *,
                           void *) override {
     IOReturn rc = watchdog_dispatch(selector, args);
-    aks_note("NativeWatchdog", selector + 64, rc);  // a separate slot range from the key store
+    aks_note("NativeWatchdog", selector, selector + kWatchdogLogSlot, rc);
     return rc;
   }
 };
