@@ -45,7 +45,15 @@ extern "C" {
 #include "ShengAdsp.h"
 void sheng_qrtr_start(void);
 int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *);
+#if defined(NATIVE_ADSP_HOST)
 extern uint64_t gPhysBase, gPhysSize;
+#define kernelPhysBase gPhysBase
+#define kernelPhysSize gPhysSize
+#else
+// Bound by symbol name so that no kernel header's declaration of these (a private type) can conflict with this one.
+extern uint64_t kernelPhysBase __asm__("_gPhysBase");
+extern uint64_t kernelPhysSize __asm__("_gPhysSize");
+#endif
 bool native_battery_start(unsigned stage);
 extern volatile int32_t native_qrtr_stats[16];
 extern char native_qrtr_text[96];
@@ -421,7 +429,7 @@ int checkImages()
 // these pages would fault or reset the board). The packaged window is 12 GiB of 0x8C0000000..0xC00000000.
 bool carveoutsOutsideKernel()
 {
-  const uint64_t base = gPhysBase, end = gPhysBase + gPhysSize;
+  const uint64_t base = kernelPhysBase, end = kernelPhysBase + kernelPhysSize;
   const uint64_t regions[3][2] = {{kAdspBase, kAdspSize}, {kDtbBase, kDtbSize}, {kSmem, kSmemSize}};
   for (const auto &r : regions)
     if (r[0] < end && base < r[0] + r[1]) return false;
