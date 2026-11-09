@@ -91,6 +91,8 @@ def main() -> None:
     parser.add_argument('--capture-screen', action='store_true', help='save the actual QEMU framebuffer')
     parser.add_argument('--gpu-probe', action='store_true',
                         help='enable the QEMU-only Metal plugin trust-path probe of the VirtIO bundle (sheng-gpu-probe=1)')
+    parser.add_argument('--gpu-plugin', type=Path,
+                        help='with --gpu-probe: a locally built NativeAdrenoMetal.bundle, delivered through the device tree (QEMU only)')
     parser.add_argument('--full-system-csr-unrestricted-fs', action='store_true',
                         help='full-system experiment: boot policy with CSR_ALLOW_UNRESTRICTED_FS, as Recovery gets automatically')
     parser.add_argument('--handoff-pause', action='store_true', help='exercise the ten-second hardware handoff capture window')
@@ -221,6 +223,9 @@ def main() -> None:
             if args.gpu_probe:  # only the plugin CDHash this exact candidate declares
                 relink = json.loads((args.kernel_build / 'security-relink.json').read_text())
                 allowed_owner = (relink['storage_driver']['build']['native_gpu_probe']['plugin_cdhash'],)
+                if args.gpu_plugin:  # or exactly the two Mach-O files of the bundle given here
+                    import native_gpu_probe
+                    allowed_owner = native_gpu_probe.real_plugin_cdhashes(args.gpu_plugin)
             if not admit_record(trust_record, trust, allowed_owner):
                 parser.error('trust cache bundle does not match its original-module record')
             full_system['trust_cache'] = dict(path=str(args.full_system_trust_cache.resolve()), bytes=len(trust),
@@ -230,6 +235,8 @@ def main() -> None:
                        900 if args.continue_after_launchd_main else 180)
     if not 15 <= args.timeout <= maximum_timeout:
         parser.error(f'--timeout must be between 15 and {maximum_timeout} seconds for this observation')
+    if args.gpu_plugin and not args.gpu_probe:
+        parser.error('--gpu-plugin requires --gpu-probe')
     if args.kext_log is not None and not 0 <= args.kext_log <= 0xffffffff:
         parser.error('--kext-log must be a 32-bit unsigned filter')
     kernel, addresses, record = identify(args.kernel_build.resolve())
@@ -541,7 +548,12 @@ def main() -> None:
                                                                if full_system and args.full_system_adt_snapshot_name
                                                                else None),
                                     trust_cache_slot=bool(full_system and full_system.get('trust_cache')),
-                                    full_system_lp_sip0=0x2 if args.full_system_csr_unrestricted_fs else 0)
+                                    full_system_lp_sip0=0x2 if args.full_system_csr_unrestricted_fs else 0,
+                                    gpu_plugin_node=(__import__('native_gpu_probe').real_plugin_node(args.gpu_plugin)
+                                                     if args.gpu_plugin else None))
+        if args.gpu_plugin:
+            record['gpu_probe']['real_plugin'] = dict(bundle=str(args.gpu_plugin.resolve()),
+                                                      cdhashes=list(__import__('native_gpu_probe').real_plugin_cdhashes(args.gpu_plugin)))
         record['qemu_development_root'] = args.qemu_development_root
         record['qemu_platform_uuid'] = str(args.qemu_platform_uuid) if args.qemu_platform_uuid else None
         record['qemu_memory_mib'] = args.qemu_memory_mib

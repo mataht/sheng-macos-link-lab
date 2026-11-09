@@ -39,7 +39,11 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 full_system_root_snapshot: str | None = None,
                                 touch_node: dict | None = None,
                                 trust_cache_slot: bool = False,
-                                full_system_lp_sip0: int = 0) -> None:
+                                full_system_lp_sip0: int = 0,
+                                gpu_plugin_node: dict | None = None) -> None:
+    if gpu_plugin_node is not None and (not development_root or not gpu_plugin_node.get('executable')):
+        raise ValueError('the GPU plugin node carries a bundle and belongs to a development QEMU tree')
+    gpu_plugin_nodes = 0
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
@@ -85,7 +89,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
 
     def node(at: int, parents: tuple[str, ...] = ()) -> tuple[bytes, int]:
         nonlocal chosen, asmb, auth, options, proxies, arm_io, gop_nodes, defaults, input_nodes
-        nonlocal touch_arm_io, touch_nodes, memory_maps
+        nonlocal touch_arm_io, touch_nodes, memory_maps, gpu_plugin_nodes
         if len(parents) > 32 or at + 8 > len(data):
             raise ValueError('invalid generated device-tree node')
         count, children = struct.unpack_from('<II', data, at)
@@ -212,6 +216,14 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                    value + bytes(-len(value) % 4))
             children += 1
             touch_nodes += 1
+        if gpu_plugin_node is not None and location == ('device-tree', 'arm-io') and not gpu_plugin_nodes:
+            entries = (('name', b'native-gpu-plugin\0'), *gpu_plugin_node.items())
+            descendants.extend(struct.pack('<II', len(entries), 0))
+            for key, value in entries:
+                descendants.extend(struct.pack('<32sI', key.encode(), len(value)) +
+                                   value + bytes(-len(value) % 4))
+            children += 1
+            gpu_plugin_nodes += 1
         if native_gop_display and location == ('device-tree', 'arm-io') and not gop_nodes:
             # The original framework counts display-subsystem descriptors before matching services.
             entries = (('name', b'native-gop\0'), ('device_type', b'display-subsystem\0'),
@@ -249,6 +261,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             or qemu_virtio_input and input_nodes != 1
             or native_gop_display and (arm_io != 1 or gop_nodes != 1)
             or touch_node is not None and (touch_arm_io != 1 or touch_nodes != 1)
-            or trust_cache_slot and memory_maps != 1):
+            or trust_cache_slot and memory_maps != 1
+            or gpu_plugin_node is not None and gpu_plugin_nodes != 1):
         raise ValueError('requires one complete generated /chosen node')
     path.write_bytes(result)

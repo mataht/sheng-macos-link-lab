@@ -10,9 +10,14 @@
 // the embedded plugin bundle there. In QEMU those writes land in the fixture's qcow2 overlay.
 // A minimal user client lets the plugin test IOServiceOpen, which also exercises the sandbox rules for the service and
 // its connection. It has no methods.
+//
+// A local test of the real plugin adds /arm-io/native-gpu-plugin to the device tree: the service then names that plugin and the installer
+// writes the bundle from the node instead. A new plugin needs no new kernel, and the bundle stays out of every kernel build.
 #include <IOKit/IOService.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IODeviceTreeSupport.h>
+#include <libkern/c++/OSData.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
 #include <sys/errno.h>
@@ -60,6 +65,10 @@ OSDefineMetaClassAndStructors(NativeGpuProbeAccelerator, IOAccelerator)
 
 #define PROBE_ROOT "/System/Volumes/Data/Library/GPUBundles"
 #define PROBE_BUNDLE PROBE_ROOT "/" SHENG_GPU_PROBE_NAME ".bundle"
+#define REAL_NODE "/arm-io/native-gpu-plugin"
+#define REAL_NAME "NativeAdrenoMetal"
+#define REAL_CLASS "NativeAdrenoMetalDevice"
+#define REAL_BUNDLE PROBE_ROOT "/" REAL_NAME ".bundle"
 
 static int
 probeWriteFile(const char *path, const unsigned char *data, size_t size, int mode, vfs_context_t context)
@@ -89,6 +98,43 @@ probeMakeDirectory(const char *path)
     return error == EEXIST ? 0 : error;
 }
 
+static int
+probeWriteProperty(IORegistryEntry *node, const char *property, const char *path, int mode, vfs_context_t context)
+{
+    OSData *data = OSDynamicCast(OSData, node->getProperty(property));
+    if (!data || !data->getLength()) {
+        IOLog("NativeGpuProbe: %s is missing from the device tree\n", property);
+        return EINVAL;
+    }
+    int error = probeWriteFile(path, static_cast<const unsigned char *>(data->getBytesNoCopy()), data->getLength(), mode, context);
+    IOLog("NativeGpuProbe: wrote %s: %d (%u bytes)\n", path, error, data->getLength());
+    return error;
+}
+
+static bool
+probeInstallRealPlugin(vfs_context_t context, unsigned waited)
+{
+    IORegistryEntry *node = IORegistryEntry::fromPath(REAL_NODE, gIODTPlane);
+    if (!node) {
+        return false;
+    }
+    static const char *const directories[] = {PROBE_ROOT, REAL_BUNDLE, REAL_BUNDLE "/Contents", REAL_BUNDLE "/Contents/MacOS"};
+    for (const char *directory : directories) {
+        int error = probeMakeDirectory(directory);
+        if (error) {
+            IOLog("NativeGpuProbe: mkdir %s failed: %d\n", directory, error);
+            node->release();
+            return true;
+        }
+    }
+    int failed = probeWriteProperty(node, "info-plist", REAL_BUNDLE "/Contents/Info.plist", 0644, context);
+    failed |= probeWriteProperty(node, "executable", REAL_BUNDLE "/Contents/MacOS/" REAL_NAME, 0755, context);
+    failed |= probeWriteProperty(node, "turnip", REAL_BUNDLE "/Contents/MacOS/libvulkan_freedreno.dylib", 0755, context);
+    IOLog("NativeGpuProbe: real plugin install after %u s: %s\n", waited, failed ? "FAILED" : "complete");
+    node->release();
+    return true;
+}
+
 static void
 probeInstallThread(void *, wait_result_t)
 {
@@ -104,6 +150,9 @@ probeInstallThread(void *, wait_result_t)
         IOSleep(1000);
     }
     vnode_put(vp);
+    if (probeInstallRealPlugin(context, waited)) {
+        return;
+    }
     static const char *const directories[] = {PROBE_ROOT, PROBE_BUNDLE, PROBE_BUNDLE "/Contents",
                                               PROBE_BUNDLE "/Contents/MacOS"};
     for (const char *directory : directories) {
@@ -135,6 +184,12 @@ NativeGpuProbeAccelerator::start(IOService *provider)
     if (!IOAccelerator::start(provider)) {
         return false;
     }
+    IORegistryEntry *real = IORegistryEntry::fromPath(REAL_NODE, gIODTPlane);
+    if (real) {
+        setProperty("MetalPluginName", REAL_NAME);
+        setProperty("MetalPluginClassName", REAL_CLASS);
+        real->release();
+    }
     thread_t thread = THREAD_NULL;
     if (kernel_thread_start(probeInstallThread, nullptr, &thread) == KERN_SUCCESS) {
         thread_deallocate(thread);
@@ -142,7 +197,7 @@ NativeGpuProbeAccelerator::start(IOService *provider)
         IOLog("NativeGpuProbe: could not start the bundle installer\n");
     }
     registerService();
-    IOLog("NativeGpuProbe: IOAccelerator service published for plugin %s\n", SHENG_GPU_PROBE_NAME);
+    IOLog("NativeGpuProbe: IOAccelerator service published for plugin %s\n", real ? REAL_NAME : SHENG_GPU_PROBE_NAME);
     return true;
 }
 

@@ -32,6 +32,28 @@ PERSONALITY = dict(IOClass='NativeGpuProbeAccelerator', IOProviderClass='IOPlatf
 SHA256_TRUNCATED = 2
 
 
+REAL_PLUGIN = 'NativeAdrenoMetal'
+REAL_TURNIP = 'libvulkan_freedreno.dylib'
+
+
+def real_plugin_files(bundle: Path) -> tuple:
+    contents = Path(bundle) / 'Contents'
+    return contents / 'Info.plist', contents / 'MacOS' / REAL_PLUGIN, contents / 'MacOS' / REAL_TURNIP
+
+
+def real_plugin_node(bundle: Path) -> dict:
+    """Device-tree properties that carry a locally built plugin bundle into a QEMU boot (/arm-io/native-gpu-plugin)."""
+    info, executable, turnip = real_plugin_files(bundle)
+    return {'compatible': b'sheng,qemu-gpu-plugin\0', 'info-plist': info.read_bytes(), 'executable': executable.read_bytes(),
+            'turnip': turnip.read_bytes()}
+
+
+def real_plugin_cdhashes(bundle: Path) -> tuple:
+    """The CDHashes a trust cache must name for this bundle, as hex."""
+    _, executable, turnip = real_plugin_files(bundle)
+    return tuple(cdhash(path.read_bytes())[0].hex() for path in (executable, turnip))
+
+
 def source_hashes(root: Path = ROOT) -> dict:
     return {name: hashlib.sha256((root / PLATFORM_DIR / name).read_bytes()).hexdigest() for name in SOURCES}
 

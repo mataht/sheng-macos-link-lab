@@ -81,6 +81,55 @@ class ContractTests(unittest.TestCase):
         self.assertIn('0067-gpu-probe-kernel-mkdir.patch', (ROOT / 'scripts/build_macos26_xnu.py').read_text())
 
 
+class RealPluginTests(unittest.TestCase):
+    def bundle(self, directory):
+        contents = Path(directory) / 'NativeAdrenoMetal.bundle/Contents'
+        (contents / 'MacOS').mkdir(parents=True)
+        (contents / 'Info.plist').write_bytes(b'plist')
+        plugin, _ = signed_macho(code=b'p')
+        turnip, _ = signed_macho(code=b'turnip')
+        (contents / 'MacOS/NativeAdrenoMetal').write_bytes(plugin)
+        (contents / 'MacOS/libvulkan_freedreno.dylib').write_bytes(turnip)
+        return contents.parent, plugin, turnip
+
+    def test_node_carries_the_three_files_and_both_cdhashes_are_named(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle, plugin, turnip = self.bundle(temporary)
+            properties = probe.real_plugin_node(bundle)
+            self.assertEqual((properties['info-plist'], properties['executable'], properties['turnip']), (b'plist', plugin, turnip))
+            self.assertEqual(probe.real_plugin_cdhashes(bundle), (probe.cdhash(plugin)[0].hex(), probe.cdhash(turnip)[0].hex()))
+
+    def test_node_is_added_once_and_only_to_a_development_tree(self):
+        tree = node('device-tree', children=(node('chosen'), node('arm-io')))
+        properties = {'compatible': b'x\0', 'info-plist': b'i', 'executable': b'e' * 40, 'turnip': b't'}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'kernel.adt'
+            path.write_bytes(tree)
+            configure_native_text_state(path, development_root=True, gpu_plugin_node=properties)
+            self.assertEqual(path.read_bytes().count(b'native-gpu-plugin\0'), 1)
+            self.assertIn(b'e' * 40, path.read_bytes())
+            path.write_bytes(tree)
+            with self.assertRaisesRegex(ValueError, 'development QEMU tree'):
+                configure_native_text_state(path, gpu_plugin_node=properties)
+            with self.assertRaisesRegex(ValueError, 'development QEMU tree'):
+                configure_native_text_state(path, development_root=True, gpu_plugin_node={'compatible': b'x\0'})
+
+    def test_driver_names_the_real_plugin_only_when_the_node_exists(self):
+        source = (ROOT / probe.PLATFORM_DIR / probe.DRIVER_SOURCE).read_text()
+        self.assertIn('"/arm-io/native-gpu-plugin"', source)
+        self.assertIn('setProperty("MetalPluginName", REAL_NAME)', source)
+        self.assertIn('if (real) {', source)
+        self.assertIn('libvulkan_freedreno.dylib', source)
+
+    def test_real_plugin_is_never_in_the_hardware_bundle_or_the_build(self):
+        self.assertNotIn('real_plugin', (ROOT / 'scripts/build_macos26_storage.py').read_text())
+        self.assertNotIn('real_plugin', (ROOT / 'scripts/package_macos26_ufs.py').read_text())
+
+    def test_trust_tool_accepts_both_cdhashes(self):
+        entries = trust.merge([struct.pack('<I', 2) + bytes(16) + struct.pack('<I', 0)], (b'\x01' * 20, b'\x02' * 20))
+        self.assertEqual(entries[1]['owner_entries'], 2)
+
+
 class CdHashTests(unittest.TestCase):
     def test_cdhash_is_the_truncated_digest_of_the_code_directory(self):
         data, directory = signed_macho()
