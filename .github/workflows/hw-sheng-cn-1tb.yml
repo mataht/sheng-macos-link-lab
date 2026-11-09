@@ -4,7 +4,7 @@ name: CN 1 TB sheng hardware candidate build
 on:
   workflow_dispatch:
   push:
-    branches: ['ci/hw-sheng-cn-1tb', 'ci/gpu-adreno']
+    branches: ['ci/hw-sheng-cn-1tb']
 permissions:
   contents: read
 concurrency:
@@ -112,7 +112,7 @@ jobs:
       - run: bash scripts/verify_kdk.sh config/macos26.json
       # No native build cache is restored: the hardware candidate is compiled from scratch.
       - name: Link the kernel with the UFS storage module and GOP display
-        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --build-touch --build-cpufreq --build-gpu --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
+        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --build-touch --build-cpufreq --build-full-root --build-gpu --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
       - name: Encrypt the kernel artifact
         if: success()
         env:

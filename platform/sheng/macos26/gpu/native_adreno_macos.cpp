@@ -130,21 +130,23 @@ loadFirmware()
           native_adreno_firmware_image_size, native_adreno_zap_image_size);
 }
 
-// The probe keeps its state in the status rows; print each row when it changes, for the first ten minutes.
+// The probe keeps its state in the status rows; print each row when it changes, for the first ten minutes. Every 20 s of the first
+// two minutes all rows are printed again, because the boot log scrolls past and a photo may catch only part of it.
 void
 reporterThread(void *, wait_result_t)
 {
     static char lastRows[8][48], lastWide[2][112];
     for (unsigned seconds = 0; seconds < 600; seconds += 2) {
         IOSleep(2000);
+        const bool again = seconds < 120 && seconds % 20 == 18;
         for (unsigned row = 0; row < 8; ++row) {
-            if (boot_progress_ext[row][0] && memcmp(lastRows[row], boot_progress_ext[row], sizeof(lastRows[row]))) {
+            if (boot_progress_ext[row][0] && (again || memcmp(lastRows[row], boot_progress_ext[row], sizeof(lastRows[row])))) {
                 memcpy(lastRows[row], boot_progress_ext[row], sizeof(lastRows[row]));
                 IOLog("NativeGpu row%u t%us: %.47s\n", row, seconds, lastRows[row]);
             }
         }
         for (unsigned row = 0; row < 2; ++row) {
-            if (boot_progress_ext_wide[row][0] && memcmp(lastWide[row], boot_progress_ext_wide[row], sizeof(lastWide[row]))) {
+            if (boot_progress_ext_wide[row][0] && (again || memcmp(lastWide[row], boot_progress_ext_wide[row], sizeof(lastWide[row])))) {
                 memcpy(lastWide[row], boot_progress_ext_wide[row], sizeof(lastWide[row]));
                 IOLog("NativeGpu wide%u t%us: %.111s\n", row, seconds, lastWide[row]);
             }
