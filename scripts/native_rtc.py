@@ -2,9 +2,10 @@
 """Contract of the default-off wall clock companion (platform/sheng/macos26/power/native_rtc.cpp).
 
 The macOS front end reads the PMK8550 RTC through the SPMI observer channel under sheng-rtc=<1..2> on hardware. Mode 1 is
-read-only and leaves the calendar alone; mode 2 hands a time to the platform expert hook of
-platform/sheng/macos26/patches/machine-platform-time.patch and publishes IORTC. Nothing is written to the PMIC. One definition
-shared by the storage builder (sources, personality, evidence), the storage-module audit and the packager.
+read-only and leaves the calendar alone; mode 2 moves the calendar forward to RTC plus offset or the packaging time, and the
+platform expert (platform/sheng/macos26/patches/machine-platform-time.patch) publishes IORTC early so bsd_init does not wait
+30 s for it. Nothing is written to the PMIC. One definition shared by the storage builder (sources, personality, evidence), the
+storage-module audit and the packager.
 """
 import hashlib
 from pathlib import Path
@@ -18,7 +19,7 @@ MODE_ARGUMENT = 'sheng-rtc'
 OFFSET_ARGUMENT = 'sheng-rtc-offset'
 FLOOR_ARGUMENT = 'sheng-rtc-floor'
 MODES = {'1': 'read the PMIC RTC and log it; the calendar and IORTC are left alone',
-         '2': 'additionally give the calendar RTC + offset (or the packaging time) and publish IORTC'}
+         '2': 'additionally move the calendar forward to RTC + offset (or the packaging time); the platform expert publishes IORTC'}
 PERSONALITY = dict(IOClass='NativeRtc', IOProviderClass='IOPlatformExpertDevice',
                    IOMatchCategory='NativeRtc', IOProbeScore=500)
 

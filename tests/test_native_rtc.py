@@ -52,10 +52,13 @@ class NativeRtcTests(unittest.TestCase):
         # Only the observer channel; no arbiter write channel (0xc500000), no PMIC write opcode.
         self.assertNotIn('0x0c500000', front)
         self.assertNotIn('kOpExtWrite', front + header)
-        # IORTC and the calendar change only in mode 2, and the time is stored before the resource appears.
+        # The calendar changes only in mode 2, only forward, and the time is stored for the platform hook first.
         branch = front[front.index('if (mode == 2) {'):front.index('} else {\n    IOLog("NativeRtc: read-only')]
-        self.assertLess(branch.index('sheng_platform_rtc_seconds'), branch.index('publishResource("IORTC")'))
-        self.assertEqual(front.count('publishResource('), 1)
+        self.assertLess(branch.index('sheng_platform_rtc_seconds'), branch.index('clock_set_calendar_microtime'))
+        self.assertIn('static_cast<int64_t>(current) < wall.seconds', branch)
+        self.assertIn('if (forward)\n        clock_set_calendar_microtime', branch)
+        self.assertEqual(front.count('clock_set_calendar_microtime('), 2)  # the declaration and the one call
+        self.assertNotIn('publishResource(', front)  # the platform expert publishes IORTC, before this driver can run
 
     def test_platform_hook_only_reads_the_handed_over_time(self):
         patch = (ROOT / native_rtc.MACHINE_PATCH).read_text()
@@ -65,6 +68,10 @@ class NativeRtcTests(unittest.TestCase):
         self.assertIn('if (base <= 0) {', added)
         self.assertNotIn('setGMTTimeOfDay', added)  # the OS setting the clock stays the platform expert's no-op
         self.assertNotIn('(*', added)  # data crosses the module boundary, not a function pointer
+        # IORTC is published early, only for mode 2 and only on hardware, and before the platform registers itself.
+        self.assertIn('PE_vmm_present == 0 && PE_parse_boot_argn ("sheng-rtc", &rtcMode, sizeof (rtcMode)) && rtcMode == 2', added)
+        self.assertIn('publishResource ("IORTC");', added)
+        self.assertEqual(added.count('publishResource'), 1)
 
     def test_platform_hook_applies_to_the_pinned_upstream_file(self):
         upstream = ROOT / 'UniXNU/drivers/ArmDTPlatform/ArmDTPlatform.cpp'
@@ -87,6 +94,10 @@ class NativeRtcTests(unittest.TestCase):
             native_rtc.boot_arguments(2, floor=2 ** 31)
         with self.assertRaisesRegex(ValueError, 'positive'):
             native_rtc.boot_arguments(2, floor=0)
+
+    def test_mode_two_defaults_the_floor_to_the_packaging_time(self):
+        source = (ROOT / 'scripts/package_macos26_ufs.py').read_text()
+        self.assertIn('rtc_floor = int(time.time()) if args.rtc_mode == 2 and args.rtc_floor is None else args.rtc_floor', source)
 
     def test_packager_rejects_unknown_modes(self):
         import package_macos26_ufs as packager
