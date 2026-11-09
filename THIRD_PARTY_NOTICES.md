@@ -67,3 +67,47 @@ device backups are not included in this repository.
 - Apple IOHIDFamily-2238.120.5: the input experiment stages four unmodified
   private HID key headers from e31e90a24c27ad6cbe981650d12a1a4124065b03.
   Their original Apple Public Source License 2.0 notices remain in each header.
+
+## Additions for the integrated driver set (2026-11-09)
+
+Which license applies to a file is decided by that file's own SPDX line, not by
+its directory. Under platform/ there are project-original files under
+GPL-3.0-or-later, files adapted from or copied from UniXNU projects under
+BSD-2-Clause-Patent, and files under MIT. This clarifies the general statement
+at the top of this file.
+
+- Distribution: this repository distributes source, tests and documentation
+  only. It makes no release of kernel, driver or firmware binaries. CI artifacts
+  are kept for seven days for the maintainers' own testing and are not releases.
+  The artifacts of the `ci/gpu-userland` branch contain metal2vulkan
+  (GPL-2.0-or-later or LGPL-3.0-or-later) and are not redistributed.
+- Kernel patches: the series under platform/sheng/macos26/patches/ and
+  platform/sheng/macos26/pac/ are patches against Apple's open-source XNU, which is
+  not vendored here. They apply to code under the Apple Public Source License 2.0
+  and the other notices in that source.
+- platform/sheng/macos26/login/: the selector numbers, the device state and the
+  software key wrap follow UniXNU/AppleKeyStoreState (NativeKeyStoreEvents),
+  BSD-2-Clause-Patent; its notice is NativeKeyStoreEvents-LICENSE next to the files.
+- platform/sheng/macos26/usb/QcomRpmh.c and QcomRpmh.h: BSD-2-Clause-Patent, from
+  UniXNU-sheng. The other files under usb/ carry their own SPDX lines.
+- platform/sheng/macos26/usb/OriginalUsbXhciABI.h is a generated, declaration-only
+  description of one Apple class (opaque private storage and placeholder method
+  names chosen to reproduce the original's pointer-authentication
+  discriminators). It contains no Apple code.
+- config/macos26-recovery-ui-pages.json and config/macos26-full-ui-pages.json
+  describe in-memory edits: for each edit they hold at most 16 bytes of original
+  and replacement instruction bytes and the SHA-256 of the 16 KiB page, used as
+  preconditions so a changed binary stops the edit. The Apple files themselves
+  are not included.
+- Wi-Fi and Bluetooth: Linux-derived parts of the upstream drivers
+  (GPL-2.0-only) are not included in this repository. Vendor firmware, including
+  touch, Wi-Fi and ADSP firmware, is never part of it.
+- Apple Kernel Debug Kit: CI downloads a pinned copy from the public
+  dortania/KdkSupportPkg release page, checks its Apple signature and uses it for
+  kernel headers and audits. It is not included in any artifact or in this
+  repository.
+- Mesa (Turnip): MIT; Droid-VM/macOS-DroidVM plugin sources:
+  BSD-2-Clause-Patent. Both are fetched at pinned revisions by the
+  `ci/gpu-userland` workflow and are not vendored.
+
+The acknowledgments, with links, are in ACKNOWLEDGMENTS.md.
