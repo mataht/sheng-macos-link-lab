@@ -621,6 +621,9 @@ def main():
     parser.add_argument('--button-keys', action='store_true',
                         help='enable the compiled hardware key companion (native-button-keys=1): volume up/down = Up/Down, '
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
+    parser.add_argument('--button-keys-type-file', type=Path, metavar='FILE',
+                        help='typing experiment: holding volume up for 1 s types the text in FILE (no Return); volume up stops acting '
+                             'as Up and Tab. The user writes FILE locally; its text goes only into this package\'s device tree')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
@@ -671,6 +674,8 @@ def main():
            or args.display_hardware_verification or args.full_system_display)
     if args.display_keep_awake and not gui:
         parser.error('--display-keep-awake requires --recovery-ui-observation or --display-observation')
+    if args.button_keys_type_file and not args.button_keys:
+        parser.error('--button-keys-type-file requires --button-keys')
     if (args.button_keys or args.panel_size_mm) and not gui:
         parser.error('--button-keys and --panel-size-mm require the GOP display (UI qualification or display diagnostic)')
     if args.display_observation and args.recovery_ui_observation:
@@ -825,9 +830,16 @@ def main():
         touch = dict(touch, stage=args.touch_stage, firmware_included=touch_node is not None,
                      package_contains_vendor_firmware=touch_node is not None)
     button_keys = None
+    extra_arm_io_nodes = {}
     if args.button_keys:
         button_keys = qualify_button_keys(args.kernel_build)
         boot_args += ' ' + button_keys['boot_argument']
+        if args.button_keys_type_file:
+            import native_button_keys
+            extra_arm_io_nodes[native_button_keys.TYPE_NODE] = native_button_keys.type_node(
+                native_button_keys.load_type_text(args.button_keys_type_file))
+            boot_args += ' ' + native_button_keys.TYPE_BOOT_ARGUMENT
+            button_keys['type_experiment'] = dict(button_keys['type_experiment'], armed=True)
     panel_size = None
     if args.panel_size_mm:
         panel_size = qualify_panel_size(args.kernel_build, *args.panel_size_mm)
@@ -869,6 +881,7 @@ def main():
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
                     platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
+                    extra_arm_io_nodes=extra_arm_io_nodes,
                     trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
@@ -876,7 +889,8 @@ def main():
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled, touch_node=touch_node)
+                                            native_gop_display=gop_enabled, touch_node=touch_node,
+                                            extra_arm_io_nodes=extra_arm_io_nodes)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'

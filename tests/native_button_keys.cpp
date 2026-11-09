@@ -199,6 +199,52 @@ int main()
         report(both, r);
         CHECK(r[2] == kUsageTab && r[3] == 0);
     }
+    // Typing experiment: reports, accepted texts and the hold trigger.
+    {
+        uint8_t r[8];
+        CHECK(typeReport('a', r) && r[0] == 0 && r[1] == 0 && r[2] == 0x04 && r[3] == 0);
+        CHECK(typeReport('z', r) && r[0] == 0 && r[2] == 0x1d);
+        CHECK(typeReport('Q', r) && r[0] == kModifierLeftShift && r[2] == 0x14);
+        CHECK(typeReport('1', r) && r[0] == 0 && r[2] == 0x1e);
+        CHECK(typeReport('9', r) && r[0] == 0 && r[2] == 0x26);
+        CHECK(typeReport('0', r) && r[0] == 0 && r[2] == 0x27);
+        CHECK(typeReport(' ', r) && r[0] == 0 && r[2] == 0x2c);
+        CHECK(typeReport('!', r) && r[0] == kModifierLeftShift && r[2] == 0x1e);
+        CHECK(typeReport('@', r) && r[0] == kModifierLeftShift && r[2] == 0x1f);
+        CHECK(typeReport(')', r) && r[0] == kModifierLeftShift && r[2] == 0x27);
+        CHECK(typeReport('-', r) && r[0] == 0 && r[2] == 0x2d);
+        CHECK(typeReport('_', r) && r[0] == kModifierLeftShift && r[2] == 0x2d);
+        CHECK(typeReport('\\', r) && r[0] == 0 && r[2] == 0x31);
+        CHECK(typeReport('|', r) && r[0] == kModifierLeftShift && r[2] == 0x31);
+        CHECK(typeReport('"', r) && r[0] == kModifierLeftShift && r[2] == 0x34);
+        CHECK(typeReport('~', r) && r[0] == kModifierLeftShift && r[2] == 0x35);
+        CHECK(typeReport('?', r) && r[0] == kModifierLeftShift && r[2] == 0x38);
+        // Every printable ASCII character has a key; nothing else does, and no report carries more than one key.
+        for (int c = 0; c < 256; ++c) {
+            const char value = static_cast<char>(c);
+            const bool printable = c >= 0x20 && c <= 0x7e;
+            CHECK(typeReport(value, r) == printable);
+            if (printable) CHECK(r[2] && !r[1] && !r[3] && !r[4] && !r[5] && !r[6] && !r[7]);
+        }
+        CHECK(typeTextLength("s", 1) == 1);
+        CHECK(typeTextLength("1 a-B!", 6) == 6);
+        CHECK(typeTextLength("abc", 0) == 0);
+        CHECK(typeTextLength("a\nb", 3) == 0);
+        CHECK(typeTextLength("a\0b", 3) == 0);
+        char longest[kTypeMaxCharacters + 1];
+        std::memset(longest, 'a', sizeof(longest));
+        CHECK(typeTextLength(longest, kTypeMaxCharacters) == kTypeMaxCharacters);
+        CHECK(typeTextLength(longest, kTypeMaxCharacters + 1) == 0);
+        TypeTrigger t;
+        for (unsigned i = 1; i < TypeTrigger::kHoldPolls; ++i) CHECK(!t.update(true));
+        CHECK(t.update(true));                                   // exactly once at the end of the hold
+        for (unsigned i = 0; i < 300; ++i) CHECK(!t.update(true));   // no repeat while the key stays down
+        CHECK(!t.update(false));
+        for (unsigned i = 1; i < TypeTrigger::kHoldPolls; ++i) CHECK(!t.update(true));
+        CHECK(!t.update(false));                                 // released one poll early: nothing
+        for (unsigned i = 1; i < TypeTrigger::kHoldPolls; ++i) CHECK(!t.update(true));
+        CHECK(t.update(true));                                   // a new full hold types again
+    }
     std::printf("PASS\n");
     return 0;
 }

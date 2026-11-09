@@ -7,15 +7,23 @@
 // write channels, PMIC writes and interrupts are not used. If the arbiter is not the expected v7 or the PON channel cannot be
 // found, the driver declines before starting the HID device. A long press of power (about 10 s) still resets the PMIC.
 //
+// Typing experiment, default off: native-button-keys-type=1 with the property "type-text" (1 to 64 printable ASCII characters) in
+// /arm-io/native-button-keys of a local package. While armed, holding volume up for 1 s sends the text as key presses, once per
+// hold and without Return; volume up then no longer acts as Up or as half of Tab. The text may be a password the user supplied
+// locally: it is never a boot argument, never logged, and the property is removed from the registry once it has been copied.
+//
 // Physical regions (sheng DT /soc/qcom,spmi@c42d000, read-only use): core 0x0c400000 (0x3000), cnfg 0x0c42d000 (0x4000),
 // obsrvr 0x0c440000 (the EE 0 window, 0x8000).
 #include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOService.h>
 #include <IOKit/hid/IOHIDDevice.h>
 #include <kern/thread.h>
+#include <libkern/c++/OSData.h>
 #include <pexpert/pexpert.h>
+#include <string.h>
 #include "spmi_keys.h"
 
 static_assert(sizeof(IOHIDDevice) == 208, "paired 25F71 IOHIDDevice size");
@@ -26,6 +34,7 @@ constexpr uint64_t kCorePhysical = 0x0c400000, kCoreBytes = 0x3000;
 constexpr uint64_t kCnfgPhysical = 0x0c42d000, kCnfgBytes = 0x4000;
 constexpr uint64_t kObsPhysical = 0x0c440000, kObsBytes = 0x8000;
 constexpr unsigned kPollMs = 20, kMaxConsecutiveFailures = 50;
+constexpr unsigned kTypePressMs = 60, kTypeGapMs = 140;
 
 const uint8_t keyboardDescriptor[] = {
   0x05, 0x01, 0x09, 0x06, 0xa1, 0x01,
@@ -115,9 +124,15 @@ class NativeButtonKeys : public IOService {
   sheng_keys::Chord fChord;
   NativeButtonHID *fHid = nullptr;
   unsigned fReports = 0;
+  sheng_keys::TypeTrigger fTypeTrigger;
+  char fTypeText[sheng_keys::kTypeMaxCharacters] = {};
+  unsigned fTypeLength = 0;
 
   static void pollThread(void *self, wait_result_t);
   void post(const sheng_keys::Keys &keys);
+  void send(const uint8_t bytes[8]);
+  void loadTypeText();
+  void typeText();
 
 public:
   bool start(IOService *provider) override;
@@ -136,6 +151,7 @@ bool NativeButtonKeys::start(IOService *provider)
   }
   if (!IOService::start(provider))
     return false;
+  loadTypeText();
   if (!fIo.coreRegion.open(kCorePhysical, kCoreBytes) || !fIo.cnfgRegion.open(kCnfgPhysical, kCnfgBytes) ||
       !fIo.obsRegion.open(kObsPhysical, kObsBytes)) {
     IOLog("NativeButtonKeys: cannot map the SPMI arbiter\n");
@@ -185,7 +201,8 @@ bool NativeButtonKeys::start(IOService *provider)
   }
   thread_deallocate(thread);
   registerService();
-  IOLog("NativeButtonKeys: started (volume up = Up, volume down = Down, power = Return, both volume = Tab)\n");
+  IOLog("NativeButtonKeys: started (volume up = %s, volume down = Down, power = Return, both volume = %s)\n",
+        fTypeLength ? "type the text when held 1 s" : "Up", fTypeLength ? "nothing" : "Tab");
   return true;
 }
 
@@ -208,8 +225,14 @@ void NativeButtonKeys::pollThread(void *self, wait_result_t)
     }
     failures = 0;
     keys->fDebounce.update(now);
+    sheng_keys::Keys input = keys->fDebounce.stable;
+    if (keys->fTypeLength) {
+      if (keys->fTypeTrigger.update(input.volumeUp))
+        keys->typeText();
+      input.volumeUp = false;
+    }
     sheng_keys::Keys reports[3];
-    const unsigned count = keys->fChord.update(keys->fDebounce.stable, reports);
+    const unsigned count = keys->fChord.update(input, reports);
     for (unsigned i = 0; i < count; ++i)
       keys->post(reports[i]);
   }
@@ -222,9 +245,49 @@ void NativeButtonKeys::post(const sheng_keys::Keys &keys)
   if (++fReports <= 40 || fReports % 200 == 0)
     IOLog("NativeButtonKeys: report %u: power %u volume down %u volume up %u -> %02x %02x %02x\n", fReports, keys.power,
           keys.volumeDown, keys.volumeUp, bytes[2], bytes[3], bytes[4]);
-  IOBufferMemoryDescriptor *report = IOBufferMemoryDescriptor::withBytes(bytes, sizeof(bytes), kIODirectionNone);
+  send(bytes);
+}
+
+void NativeButtonKeys::send(const uint8_t bytes[8])
+{
+  IOBufferMemoryDescriptor *report = IOBufferMemoryDescriptor::withBytes(bytes, 8, kIODirectionNone);
   if (report) {
     fHid->handleReport(report);
     report->release();
   }
+}
+
+void NativeButtonKeys::loadTypeText()
+{
+  unsigned armed = 0;
+  if (!PE_parse_boot_argn("native-button-keys-type", &armed, sizeof(armed)) || armed != 1)
+    return;
+  IORegistryEntry *node = IORegistryEntry::fromPath("/arm-io/native-button-keys", gIODTPlane);
+  OSData *text = node ? OSDynamicCast(OSData, node->getProperty("type-text")) : nullptr;
+  if (text && text->getLength() && text->getLength() <= sizeof(fTypeText)) {
+    memcpy(fTypeText, text->getBytesNoCopy(), text->getLength());
+    fTypeLength = sheng_keys::typeTextLength(fTypeText, text->getLength());
+  }
+  if (node) {
+    node->removeProperty("type-text");
+    node->release();
+  }
+  IOLog("NativeButtonKeys: typing experiment %s\n", fTypeLength ? "armed" : "refused: no usable text in the device tree");
+}
+
+// Runs on the polling thread, so no key report can interleave; the keys are sampled again when it returns.
+void NativeButtonKeys::typeText()
+{
+  IOLog("NativeButtonKeys: typing started\n");
+  const uint8_t released[8] = {};
+  for (unsigned i = 0; i < fTypeLength; ++i) {
+    uint8_t pressed[8];
+    if (!sheng_keys::typeReport(fTypeText[i], pressed))
+      break;
+    send(pressed);
+    IOSleep(kTypePressMs);
+    send(released);
+    IOSleep(kTypeGapMs);
+  }
+  IOLog("NativeButtonKeys: typing finished\n");
 }

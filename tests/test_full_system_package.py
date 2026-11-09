@@ -169,6 +169,7 @@ class FullSystemPackageTests(unittest.TestCase):
         ready = full + ['--full-system-trust-cache', 't', '--full-system-sibling', 's',
                         '--platform-uuid', 'c6de5fe2-c2a3-4a1d-b2c8-92a28a45383a']
         self.assertIn('require the GOP display', self.run_main(*ready, '--button-keys'))
+        self.assertIn('--button-keys-type-file requires --button-keys', self.run_main(*ready, '--button-keys-type-file', 'f'))
         self.assertIn('require --full-system', self.run_main('--root-deployment', 'a', '--partition-plan', 'b', '--root-build', 'c', '--root-hash', 'd',
                                                              '--root-volume-uuid', '808eac5e-8275-478d-814c-2229d8eb8d07', '--no-panic-on-service-crash'))
         self.assertIn('256..8192', self.run_main(*full[:-4], '128', '--development-no-ignition', '--dyld-observation', 'o'))
