@@ -5,7 +5,9 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -139,6 +141,41 @@ class RealPluginTests(unittest.TestCase):
     def test_trust_tool_accepts_both_cdhashes(self):
         entries = trust.merge([struct.pack('<I', 2) + bytes(16) + struct.pack('<I', 0)], (b'\x01' * 20, b'\x02' * 20))
         self.assertEqual(entries[1]['owner_entries'], 2)
+
+
+class FakeA740Tests(unittest.TestCase):
+    def test_bookkeeping_with_turnips_calling_sequences(self):
+        compiler = shutil.which('g++') or shutil.which('clang++')
+        if not compiler:
+            self.skipTest('needs a C++ compiler')
+        include = ROOT / probe.PLATFORM_DIR
+        with tempfile.TemporaryDirectory() as temporary:
+            program = Path(temporary) / 'fake'
+            build = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined', '-I', str(include),
+                                    str(ROOT / 'tests/native_gpu_fake.cpp'), '-o', str(program)], capture_output=True, text=True, timeout=120)
+            if build.returncode and 'asan' in build.stderr.lower():
+                build = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(include), str(ROOT / 'tests/native_gpu_fake.cpp'), '-o', str(program)],
+                                       capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([str(program)], capture_output=True, text=True, timeout=30)
+            self.assertEqual((run.returncode, run.stdout.strip()), (0, 'ok'), run.stdout + run.stderr)
+
+    def test_abi_header_is_the_pinned_upstream_file(self):
+        data = (ROOT / probe.PLATFORM_DIR / probe.ABI_HEADER).read_bytes()
+        self.assertEqual(hashlib.sha256(data).hexdigest(), probe.ABI_SOURCE['sha256'])
+        self.assertIn(b'SPDX-License-Identifier: MIT', data)
+
+    def test_the_fake_is_off_unless_asked_and_stays_in_qemu(self):
+        source = (ROOT / probe.PLATFORM_DIR / probe.DRIVER_SOURCE).read_text()
+        self.assertIn('PE_parse_boot_argn("sheng-gpu-fake", &fake, sizeof(fake)) && fake == 1', source)
+        self.assertIn('PE_vmm_present == 0', source)
+        self.assertNotIn('fake', (ROOT / 'scripts/package_macos26_ufs.py').read_text().lower().replace('fake_', ''))
+        self.assertEqual(probe.PERSONALITY['IOClass'], 'AGXAccelerator')
+
+    def test_the_fake_needs_the_real_plugin_in_the_observer(self):
+        source = (ROOT / 'scripts/observe_macos26_kernel.py').read_text()
+        self.assertIn("parser.error('--gpu-fake requires --gpu-plugin')", source)
+        self.assertIn("boot_args += ' sheng-gpu-fake=1'", source)
 
 
 class CdHashTests(unittest.TestCase):

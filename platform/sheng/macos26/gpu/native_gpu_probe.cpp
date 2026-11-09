@@ -17,6 +17,8 @@
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IODeviceTreeSupport.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
+#include <kern/clock.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/zlib.h>
 #include <kern/thread.h>
@@ -28,6 +30,7 @@
 #include <sys/vnode.h>
 #include <sys/vnode_if.h>
 #include "gpu_probe_payload.h"
+#include "native_gpu_fake_core.h"
 
 extern "C" int sheng_kernel_mkdir(const char *path, int mode);   // platform/sheng/macos26/patches/0067
 extern "C" void proc_selfname(char *buf, int size);
@@ -54,15 +57,145 @@ IOReturn NativeGpuProbeUserClient::clientClose(void)
     return kIOReturnSuccess;
 }
 
-class NativeGpuProbeAccelerator : public IOAccelerator {
-    OSDeclareDefaultStructors(NativeGpuProbeAccelerator)
+// The fake A740 (sheng-gpu-fake=1, QEMU only): Turnip's Darwin backend runs against it with no GPU behind it. See native_gpu_fake_core.h.
+// Named after Apple's class because the original sandbox profiles admit that user client. Every submission counts as finished at once.
+static constexpr uint32_t kFakeA740OpenType = 0x4147;
+
+static void *
+fakeAllocate(uint64_t bytes, uint64_t *actualBytes)
+{
+    const vm_size_t rounded = static_cast<vm_size_t>((bytes + PAGE_SIZE - 1) & ~static_cast<uint64_t>(PAGE_SIZE - 1));
+    IOBufferMemoryDescriptor *memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared, rounded, PAGE_SIZE);
+    if (!memory) {
+        return nullptr;
+    }
+    bzero(memory->getBytesNoCopy(), rounded);
+    *actualBytes = rounded;
+    return memory;
+}
+
+static void
+fakeRelease(void *memory)
+{
+    static_cast<IOBufferMemoryDescriptor *>(memory)->release();
+}
+
+static uint64_t
+fakeNow()
+{
+    return mach_absolute_time();
+}
+
+class AGXDeviceUserClient : public IOUserClient {
+    OSDeclareDefaultStructors(AGXDeviceUserClient)
+public:
+    bool start(IOService *provider) override;
+    void free(void) override;
+    IOReturn clientClose(void) override;
+    IOReturn clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory) override;
+    IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *arguments, IOExternalMethodDispatch *dispatch, OSObject *target,
+                            void *reference) override;
+private:
+    static constexpr uint32_t kCapacity = 8192;
+    IOLock *lock_;
+    FakeA740Entry *entries_;
+    FakeA740Core core_;
+};
+OSDefineMetaClassAndStructors(AGXDeviceUserClient, IOUserClient)
+
+bool
+AGXDeviceUserClient::start(IOService *provider)
+{
+    if (!IOUserClient::start(provider)) {
+        return false;
+    }
+    lock_ = IOLockAlloc();
+    entries_ = static_cast<FakeA740Entry *>(IOMalloc(sizeof(FakeA740Entry) * kCapacity));
+    if (!lock_ || !entries_) {
+        return false;
+    }
+    bzero(entries_, sizeof(FakeA740Entry) * kCapacity);
+    core_.init(entries_, kCapacity, FakeA740Hooks{fakeAllocate, fakeRelease, fakeNow});
+    char name[20] = {};
+    proc_selfname(name, sizeof(name));
+    IOLog("NativeGpuFake: client opened by %s[%d]\n", name, proc_selfpid());
+    return true;
+}
+
+void
+AGXDeviceUserClient::free(void)
+{
+    if (entries_) {
+        core_.releaseAll();
+        IOFree(entries_, sizeof(FakeA740Entry) * kCapacity);
+    }
+    if (lock_) {
+        IOLockFree(lock_);
+    }
+    IOUserClient::free();
+}
+
+IOReturn
+AGXDeviceUserClient::clientClose(void)
+{
+    IOLog("NativeGpuFake: client closed after %llu submissions, %u buffers live\n", core_.submissions(), core_.live());
+    if (!isInactive()) {
+        terminate();
+    }
+    return kIOReturnSuccess;
+}
+
+IOReturn
+AGXDeviceUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMemoryDescriptor **memory)
+{
+    if (!options || !memory) {
+        return kIOReturnBadArgument;
+    }
+    *memory = nullptr;
+    IOLockLock(lock_);
+    IOBufferMemoryDescriptor *buffer = static_cast<IOBufferMemoryDescriptor *>(core_.memoryForToken(type));
+    if (buffer) {
+        buffer->retain();
+    }
+    IOLockUnlock(lock_);
+    if (!buffer) {
+        return kIOReturnNotFound;
+    }
+    *memory = buffer;
+    *options = kIOMapAnywhere;
+    return kIOReturnSuccess;
+}
+
+IOReturn
+AGXDeviceUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *arguments, IOExternalMethodDispatch *, OSObject *, void *)
+{
+    if (!arguments) {
+        return kIOReturnBadArgument;
+    }
+    IOLockLock(lock_);
+    const uint64_t before = core_.submissions();
+    const uint32_t status = core_.call(selector, arguments->structureInput, arguments->structureInputSize, arguments->structureOutput, arguments->structureOutputSize);
+    const bool report = core_.submissions() != before && core_.firstOfPowerOfTwoSubmission();
+    const uint64_t submissions = core_.submissions();
+    IOLockUnlock(lock_);
+    if (report) {   // 1, 2, 4, 8...: the boot log keeps only its last 80 KB
+        char name[20] = {};
+        proc_selfname(name, sizeof(name));
+        IOLog("NativeGpuFake: %s[%d] submission %llu\n", name, proc_selfpid(), submissions);
+    }
+    return static_cast<IOReturn>(status);
+}
+
+// Named after Apple's class, as the hardware front end is: Turnip finds the service by this name.
+class AGXAccelerator : public IOAccelerator {
+    OSDeclareDefaultStructors(AGXAccelerator)
 public:
     using IOService::newUserClient;
     bool start(IOService *provider) override;
     IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
                            IOUserClient **handler) override;
 };
-OSDefineMetaClassAndStructors(NativeGpuProbeAccelerator, IOAccelerator)
+OSDefineMetaClassAndStructors(AGXAccelerator, IOAccelerator)
 
 #define PROBE_ROOT "/System/Volumes/Data/Library/GPUBundles"
 #define PROBE_BUNDLE PROBE_ROOT "/" SHENG_GPU_PROBE_NAME ".bundle"
@@ -216,7 +349,7 @@ probeInstallThread(void *, wait_result_t)
 }
 
 bool
-NativeGpuProbeAccelerator::start(IOService *provider)
+AGXAccelerator::start(IOService *provider)
 {
     uint32_t enabled = 0;
     if (!PE_parse_boot_argn("sheng-gpu-probe", &enabled, sizeof(enabled)) || enabled != 1) {
@@ -247,13 +380,15 @@ NativeGpuProbeAccelerator::start(IOService *provider)
 }
 
 IOReturn
-NativeGpuProbeAccelerator::newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
+AGXAccelerator::newUserClient(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties,
                                          IOUserClient **handler)
 {
     char name[20] = {};
     proc_selfname(name, sizeof(name));
     IOLog("NativeGpuProbe: newUserClient from %s[%d] type 0x%x\n", name, proc_selfpid(), (unsigned)type);
-    NativeGpuProbeUserClient *client = OSTypeAlloc(NativeGpuProbeUserClient);
+    uint32_t fake = 0;
+    const bool useFake = PE_parse_boot_argn("sheng-gpu-fake", &fake, sizeof(fake)) && fake == 1 && type == kFakeA740OpenType;
+    IOUserClient *client = useFake ? static_cast<IOUserClient *>(OSTypeAlloc(AGXDeviceUserClient)) : OSTypeAlloc(NativeGpuProbeUserClient);
     if (!client) {
         return kIOReturnNoMemory;
     }

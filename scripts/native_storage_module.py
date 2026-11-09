@@ -180,7 +180,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                 for name, digest in probe['source_sha256'].items():
                     if hashlib.sha256((directory / 'gpu-probe' / name).read_bytes()).hexdigest() != digest:
                         raise ValueError('GPU probe source differs from the compiled record')
-                allowed |= {'NativeGpuProbeAccelerator'}
+                allowed |= {native_gpu_probe.ACCELERATOR_CLASS}
             if info['CFBundleExecutable'] != component or any(
                     item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
                 raise ValueError('VirtIO display personality differs from the qualified components')
@@ -430,7 +430,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         import native_gpu_probe
         audit = audit_storage_vtable(driver, original, kc, native, slide,
             family_bundle=native_gpu_probe.IOGRAPHICS_BUNDLE, base_class='IOAccelerator',
-            own_class='NativeGpuProbeAccelerator')
+            own_class=native_gpu_probe.ACCELERATOR_CLASS)
         if audit['slots'] != native_gpu_probe.IOACCELERATOR_SLOTS:
             raise ValueError('GPU probe IOAccelerator vtable slot count differs')
         driver['gpu_probe_vtable_abi'] = audit

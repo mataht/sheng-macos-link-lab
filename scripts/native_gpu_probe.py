@@ -18,8 +18,14 @@ PLATFORM_DIR = 'platform/sheng/macos26/gpu'
 PLUGIN_SOURCE = 'ShengProbeMetal.m'
 DRIVER_SOURCE = 'native_gpu_probe.cpp'
 LINK_STUB = 'IOGPU.tbd'
-SOURCES = (DRIVER_SOURCE, PLUGIN_SOURCE, LINK_STUB)
+FAKE_CORE = 'native_gpu_fake_core.h'
+ABI_HEADER = 'NativeAdrenoABI.h'   # Adreno740 (MIT) unchanged, at the commit in ABI_SOURCE
+ABI_SOURCE = dict(repository='https://github.com/UniXNU/Adreno740', commit='6fa7bae2a5b3b523e790eb3e0348af4d98969e4d',
+                  sha256='d1c8a27d6e61787073c2c56a779ff4d5c43d86f2d23ac0c0fba0368af8dcdeae')
+SOURCES = (DRIVER_SOURCE, PLUGIN_SOURCE, LINK_STUB, FAKE_CORE, ABI_HEADER)
 BOOT_ARGUMENT = 'sheng-gpu-probe=1'
+FAKE_BOOT_ARGUMENT = 'sheng-gpu-fake=1'
+ACCELERATOR_CLASS = 'AGXAccelerator'
 PLUGIN_NAME = 'ShengProbeMetal'
 PLUGIN_CLASS = 'ShengProbeMetalDevice'
 PLUGIN_IDENTIFIER = 'org.sheng.probe.ShengProbeMetal'
@@ -27,7 +33,7 @@ DEPLOYMENT = '26.5'
 IOACCELERATOR_SLOTS = 272
 IOGRAPHICS_BUNDLE = 'com.apple.iokit.IOGraphicsFamily'
 IOGRAPHICS_COMPATIBLE = '1.0.0b1'
-PERSONALITY = dict(IOClass='NativeGpuProbeAccelerator', IOProviderClass='IOPlatformExpertDevice',
+PERSONALITY = dict(IOClass=ACCELERATOR_CLASS, IOProviderClass='IOPlatformExpertDevice',
                    IOMatchCategory='IOAccelerator', IOProbeScore=500,
                    MetalPluginName=PLUGIN_NAME, MetalPluginClassName=PLUGIN_CLASS)
 SHA256_TRUNCATED = 2
