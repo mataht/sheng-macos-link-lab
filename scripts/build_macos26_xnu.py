@@ -519,6 +519,11 @@ def compile_sources(args, record: dict) -> None:
     subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                     str(MACHINE_PATCH)], cwd=ROOT, check=True)
     record['machine_patch_sha256'] = sha(MACHINE_PATCH)
+    if args.build_rtc:
+        import native_rtc
+        subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
+                        str(ROOT / native_rtc.MACHINE_PATCH)], cwd=ROOT, check=True)
+        record['platform_time_patch_sha256'] = sha(ROOT / native_rtc.MACHINE_PATCH)
     subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                     str(CPU_PATCH)], cwd=ROOT, check=True)
     record['cpu_registration_patch_sha256'] = sha(CPU_PATCH)
@@ -582,7 +587,8 @@ def compile_sources(args, record: dict) -> None:
                               button_keys=args.build_button_keys,
                               full_root=args.build_full_root,
                               touch=args.build_touch,
-                              cpufreq=args.build_cpufreq)
+                              cpufreq=args.build_cpufreq,
+                              rtc=args.build_rtc)
             save(record)
 
 
@@ -676,6 +682,8 @@ def main() -> None:
     parser.add_argument('--build-cpufreq', action='store_true',
                         help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
                              'sheng-cpufreq=1 is read-only)')
+    parser.add_argument('--build-rtc', action='store_true',
+                        help='include the default-off PMIC RTC companion and the platform clock hook (sheng-rtc=1 is read-only)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
@@ -695,6 +703,8 @@ def main() -> None:
         parser.error('--build-button-keys requires --build-gop-display')
     if args.build_cpufreq and not args.build_ufs_driver:
         parser.error('--build-cpufreq requires --build-ufs-driver')
+    if args.build_rtc and not args.build_ufs_driver:
+        parser.error('--build-rtc requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:

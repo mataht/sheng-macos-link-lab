@@ -489,6 +489,18 @@ def qualify_cpufreq(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_rtc(build) -> dict:
+    """The wall clock companion and its platform hook must be compiled into this kernel under the reviewed contract."""
+    import native_rtc
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_rtc')
+    compiled = json.loads((build / 'build.json').read_text())
+    if not record or not compiled.get('platform_time_patch_sha256'):
+        raise ValueError('kernel lacks the wall clock companion or its platform hook')
+    native_rtc.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_touch(build) -> dict:
     """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_touch
@@ -623,6 +635,10 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
+    parser.add_argument('--rtc-mode', type=int, choices=(1, 2),
+                        help='start the compiled PMIC RTC companion (sheng-rtc=N): 1 read-only, 2 also sets the calendar and IORTC')
+    parser.add_argument('--rtc-offset', type=int, help='sheng-rtc-offset: wall clock minus the raw RTC count, measured from Android')
+    parser.add_argument('--rtc-floor', type=int, help='sheng-rtc-floor: earliest allowed calendar time in Unix seconds (the packaging time)')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -813,6 +829,13 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
+    rtc = None
+    if args.rtc_mode:
+        import native_rtc
+        rtc = dict(qualify_rtc(args.kernel_build), mode=args.rtc_mode, offset=args.rtc_offset, floor=args.rtc_floor)
+        boot_args += ' ' + native_rtc.boot_arguments(args.rtc_mode, args.rtc_offset, args.rtc_floor)
+    elif args.rtc_offset is not None or args.rtc_floor is not None:
+        raise ValueError('--rtc-offset and --rtc-floor require --rtc-mode')
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -942,7 +965,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq,
+                touch=touch, cpufreq=cpufreq, rtc=rtc,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
