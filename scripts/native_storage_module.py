@@ -169,6 +169,9 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
                 allowed |= {'NativeRecoveryInput', 'IOHIDEventDriver'}
+            if evidence.get('native_login'):
+                import native_login
+                allowed |= native_login.validate_bundle(evidence['native_login'], info, evidence['bundle'])
             if info['CFBundleExecutable'] != component or any(
                     item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
                 raise ValueError('VirtIO display personality differs from the qualified components')
@@ -242,6 +245,9 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                                 CFBundleIdentifier=evidence['bundle'])):
                 raise ValueError('Adreno stack requires the GOP companion, IOGraphicsFamily and its reviewed personalities')
             allowed |= {'NativeGpuStart', 'AGXAccelerator'}
+        if evidence.get('native_login'):
+            import native_login
+            allowed |= native_login.validate_bundle(evidence['native_login'], info, evidence['bundle'])
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')

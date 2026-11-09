@@ -494,6 +494,17 @@ def qualify_cpufreq(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_login(build) -> dict:
+    """The login-path services must be compiled into this kernel's storage driver under their reviewed contract."""
+    import native_login
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_login')
+    if not record:
+        raise ValueError('kernel lacks the login-path services')
+    native_login.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_touch(build) -> dict:
     """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_touch
@@ -661,6 +672,12 @@ def main():
                         help='native-gop-retire-displayed=1: report the last completed swap as done (see display patch)')
     parser.add_argument('--touch-diag', action='store_true',
                         help='native-touch-diag=1: keep counting HID user clients for the diagnostic strip')
+    parser.add_argument('--aks-mode', type=int, choices=(1, 2),
+                        help='start the compiled AppleKeyStore (sheng-aks=N): 1 state answers only (no keybag, no passcode, '
+                             'unlocked); 2 also the software key wrap of the upstream driver')
+    parser.add_argument('--native-watchdog', action='store_true',
+                        help='start the compiled IOWatchdog (sheng-watchdog=1), which reports monitoring disabled so '
+                             'watchdogd exits 0; --no-panic-on-service-crash is then no longer needed for watchdogd')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -863,6 +880,13 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
+    login = None
+    if args.aks_mode or args.native_watchdog:
+        login = dict(qualify_login(args.kernel_build), aks_mode=args.aks_mode, native_watchdog=args.native_watchdog)
+        if args.aks_mode:
+            boot_args += f' sheng-aks={args.aks_mode}'
+        if args.native_watchdog:
+            boot_args += ' sheng-watchdog=1'
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -1008,7 +1032,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq, gpu=gpu,
+                touch=touch, cpufreq=cpufreq, gpu=gpu, login=login,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

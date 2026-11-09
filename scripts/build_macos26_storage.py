@@ -15,6 +15,7 @@ from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
 import native_adreno
+import native_login
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -50,7 +51,7 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gpu and (transport != 'ufs' or not gop_display):
@@ -291,6 +292,21 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             compile_gpu(source_file, gpu_dir / (source_file.stem + '.o'), 'c++')
         for source_file in native_adreno.c_sources(root):
             compile_gpu(source_file, gpu_dir / (source_file.stem + '.kit.o'), 'c')
+    if login:
+        login_dir = destination / 'login'
+        login_dir.mkdir(exist_ok=True)
+        for name in native_login.PLATFORM_SOURCES:
+            (login_dir / name).write_bytes((root / native_login.PLATFORM_DIR / name).read_bytes())
+        login_command = [str(login_dir / 'NativeLogin.o') if arg == str(obj) else
+                         str(login_dir / 'native_login_services.cpp') if arg == str(wrapper) else arg for arg in command]
+        user_headers = login_command.index(str(sdk / 'usr/include'))
+        if login_command[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del login_command[user_headers - 1:user_headers + 1]
+        login_command[1:1] = ['-I', str(login_dir)]
+        login_command += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        run(login_command, directory + '-login-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(login_dir / 'NativeLogin.o'))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -351,6 +367,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['AGXAccelerator'] = dict(native_adreno.ACCELERATOR_PERSONALITY, CFBundleIdentifier=bundle)
         info['OSBundleLibraries'][native_adreno.IOGRAPHICS_BUNDLE] = native_adreno.IOGRAPHICS_COMPATIBLE
         info['OSBundleLibraries']['com.apple.kpi.bsd'] = '25.0'
+    if login:
+        info['IOKitPersonalities'].update(native_login.personalities(bundle))
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -372,6 +390,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
     if gpu:
         evidence['native_adreno'] = native_adreno.evidence(root)
+    if login:
+        evidence['native_login'] = native_login.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

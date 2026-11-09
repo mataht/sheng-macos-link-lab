@@ -574,7 +574,8 @@ def compile_sources(args, record: dict) -> None:
             # QEMU-only VirtIO bundle; with --build-gop-display it carries the same display and QEMU input
             # companions so the installed full system (a virtio disk in QEMU) can be observed with a screen.
             build_storage(ROOT, OUT, compile_record, source, run, record, env,
-                          gop_display=args.build_gop_display, recovery_input=args.build_recovery_input)
+                          gop_display=args.build_gop_display, recovery_input=args.build_recovery_input,
+                          login=args.build_login)
             if args.build_ufs_driver:
                 build_storage(ROOT, OUT, compile_record, source, run, record, env,
                               transport='ufs', gop_display=args.build_gop_display,
@@ -583,7 +584,8 @@ def compile_sources(args, record: dict) -> None:
                               full_root=args.build_full_root,
                               touch=args.build_touch,
                               cpufreq=args.build_cpufreq,
-                              gpu=args.build_gpu)
+                              gpu=args.build_gpu,
+                              login=args.build_login)
             save(record)
 
 
@@ -679,6 +681,9 @@ def main() -> None:
     parser.add_argument('--build-cpufreq', action='store_true',
                         help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
                              'sheng-cpufreq=1 is read-only)')
+    parser.add_argument('--build-login', action='store_true',
+                        help='include the default-off login-path services (AppleKeyStore, sheng-aks=1|2, and IOWatchdog, '
+                             'sheng-watchdog=1) in the storage bundle of both transports')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
