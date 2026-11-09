@@ -1,0 +1,18 @@
+# Documentation record for the UniXNU device catalog (https://unixnu.com/devices/).
+#
+# This repository is a macOS 26.5 (25F71) port for the Xiaomi Pad 6S Pro, not a UniXNU device
+# repository: it is not built with `unixnu`, and it selects no UniXNU components. The file exists so
+# the catalog can read the board identity and the porting record (porting.toml). Build and boot
+# instructions are in docs/technical-route.md and docs/ci.md.
+schema_version = 2
+
+[board]
+name = "sheng"
+soc = "SM8550"
+soc_source = "sm8550"
+os_profile = "macos-26.5-25F71"
+description = "Xiaomi Pad 6S Pro (sheng): macOS 26.5 port with its own kernel and drivers; the full system reaches the desktop with CPU rendering"
+kit = "sheng"
+
+[components]
+include = []

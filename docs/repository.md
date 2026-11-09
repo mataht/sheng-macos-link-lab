@@ -40,6 +40,7 @@
 | `config/` | 固定的输入、契约和各种表（来源提交、引脚、页表等） |
 | `probes/`、`ci/` | 小型探针和固件构建用的描述文件 |
 | `sources.lock.json` | 上游仓库的固定提交 |
+| `board.toml`、`porting.toml` | 给 [UniXNU 设备目录](https://unixnu.com/devices/)读取的板级标识和按区域的适配记录（格式见 [UniXNU 的记录说明](https://unixnu.com/porting/records)）。本仓库不是 UniXNU 的设备仓库，不用 `unixnu` 构建，这两个文件只用来登记；内容和[移植状态](status.md)一致，用英文写 |
 | `LICENSE`、`LICENSES/`、`THIRD_PARTY_NOTICES.md`、`ACKNOWLEDGMENTS.md` | 许可证、第三方声明和致谢 |
 
 ## 仓库里没有的东西
