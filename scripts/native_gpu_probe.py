@@ -11,6 +11,7 @@ from pathlib import Path
 import plistlib
 import struct
 import subprocess
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_DIR = 'platform/sheng/macos26/gpu'
@@ -34,6 +35,7 @@ SHA256_TRUNCATED = 2
 
 REAL_PLUGIN = 'NativeAdrenoMetal'
 REAL_TURNIP = 'libvulkan_freedreno.dylib'
+DEVICE_TREE_ROOM = 15 << 20   # DarwinBoot's limit is 16 MiB for the whole tree
 
 
 def real_plugin_files(bundle: Path) -> tuple:
@@ -41,11 +43,21 @@ def real_plugin_files(bundle: Path) -> tuple:
     return contents / 'Info.plist', contents / 'MacOS' / REAL_PLUGIN, contents / 'MacOS' / REAL_TURNIP
 
 
+def packed_file(data: bytes) -> bytes:
+    """The file's length (64-bit little endian), then its zlib stream, as the driver unpacks it."""
+    return struct.pack('<Q', len(data)) + zlib.compress(data, 9)
+
+
 def real_plugin_node(bundle: Path) -> dict:
-    """Device-tree properties that carry a locally built plugin bundle into a QEMU boot (/arm-io/native-gpu-plugin)."""
+    """Device-tree properties that carry a locally built plugin bundle into a QEMU boot (/arm-io/native-gpu-plugin).
+
+    Compressed because DarwinBoot refuses a device tree over 16 MiB (it refused 37.9 MB uncompressed, attempt A-01)."""
     info, executable, turnip = real_plugin_files(bundle)
-    return {'compatible': b'sheng,qemu-gpu-plugin\0', 'info-plist': info.read_bytes(), 'executable': executable.read_bytes(),
-            'turnip': turnip.read_bytes()}
+    node = {'compatible': b'sheng,qemu-gpu-plugin\0', 'info-plist': packed_file(info.read_bytes()),
+            'executable': packed_file(executable.read_bytes()), 'turnip': packed_file(turnip.read_bytes())}
+    if sum(map(len, node.values())) > DEVICE_TREE_ROOM:
+        raise ValueError('the plugin bundle does not fit the device tree limit even compressed')
+    return node
 
 
 def real_plugin_cdhashes(bundle: Path) -> tuple:

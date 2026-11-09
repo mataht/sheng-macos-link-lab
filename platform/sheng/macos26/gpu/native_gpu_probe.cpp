@@ -18,6 +18,7 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <libkern/c++/OSData.h>
+#include <libkern/zlib.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
 #include <sys/errno.h>
@@ -98,16 +99,60 @@ probeMakeDirectory(const char *path)
     return error == EEXIST ? 0 : error;
 }
 
+static voidpf
+probeInflateAlloc(voidpf, uInt items, uInt size)
+{
+    vm_size_t bytes = vm_size_t(items) * size + sizeof(vm_size_t);
+    vm_size_t *block = static_cast<vm_size_t *>(IOMalloc(bytes));
+    if (!block) {
+        return Z_NULL;
+    }
+    *block = bytes;
+    return block + 1;
+}
+
+static void
+probeInflateFree(voidpf, voidpf address)
+{
+    vm_size_t *block = static_cast<vm_size_t *>(address) - 1;
+    IOFree(block, *block);
+}
+
+// A property is the file's length (64-bit little endian) and then its zlib stream: DarwinBoot refuses a device tree over 16 MiB.
 static int
 probeWriteProperty(IORegistryEntry *node, const char *property, const char *path, int mode, vfs_context_t context)
 {
     OSData *data = OSDynamicCast(OSData, node->getProperty(property));
-    if (!data || !data->getLength()) {
+    uint64_t fullBytes = 0;
+    if (!data || data->getLength() <= sizeof(fullBytes)) {
         IOLog("NativeGpuProbe: %s is missing from the device tree\n", property);
         return EINVAL;
     }
-    int error = probeWriteFile(path, static_cast<const unsigned char *>(data->getBytesNoCopy()), data->getLength(), mode, context);
-    IOLog("NativeGpuProbe: wrote %s: %d (%u bytes)\n", path, error, data->getLength());
+    const unsigned char *packed = static_cast<const unsigned char *>(data->getBytesNoCopy());
+    memcpy(&fullBytes, packed, sizeof(fullBytes));
+    if (!fullBytes || fullBytes > (64ull << 20)) {
+        IOLog("NativeGpuProbe: %s has an unreasonable length %llu\n", property, fullBytes);
+        return EINVAL;
+    }
+    unsigned char *full = static_cast<unsigned char *>(IOMalloc(fullBytes));
+    if (!full) {
+        return ENOMEM;
+    }
+    z_stream stream = {};
+    stream.next_in = const_cast<Bytef *>(packed + sizeof(fullBytes));
+    stream.avail_in = data->getLength() - sizeof(fullBytes);
+    stream.next_out = full;
+    stream.avail_out = static_cast<uInt>(fullBytes);
+    stream.zalloc = probeInflateAlloc;
+    stream.zfree = probeInflateFree;
+    int inflated = inflateInit(&stream);
+    if (inflated == Z_OK) {
+        inflated = inflate(&stream, Z_FINISH);
+        inflateEnd(&stream);
+    }
+    int error = inflated == Z_STREAM_END && stream.total_out == fullBytes ? probeWriteFile(path, full, fullBytes, mode, context) : EINVAL;
+    IOFree(full, fullBytes);
+    IOLog("NativeGpuProbe: wrote %s: %d (%llu bytes, inflate %d)\n", path, error, fullBytes, inflated);
     return error;
 }
 

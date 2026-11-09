@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """QEMU-only GPU trust-path probe: contract, CDHash, payload, boot policy and trust entry (synthetic data, no Apple content)."""
 import hashlib
+import os
 from pathlib import Path
 import plistlib
 import re
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -96,8 +98,17 @@ class RealPluginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             bundle, plugin, turnip = self.bundle(temporary)
             properties = probe.real_plugin_node(bundle)
-            self.assertEqual((properties['info-plist'], properties['executable'], properties['turnip']), (b'plist', plugin, turnip))
+            for key, expected in (('info-plist', b'plist'), ('executable', plugin), ('turnip', turnip)):
+                self.assertEqual(struct.unpack_from('<Q', properties[key])[0], len(expected))
+                self.assertEqual(zlib.decompress(properties[key][8:]), expected)
             self.assertEqual(probe.real_plugin_cdhashes(bundle), (probe.cdhash(plugin)[0].hex(), probe.cdhash(turnip)[0].hex()))
+
+    def test_a_bundle_too_big_for_the_loader_is_refused_here(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle, _, _ = self.bundle(temporary)
+            (bundle / 'Contents/MacOS/NativeAdrenoMetal').write_bytes(os.urandom(probe.DEVICE_TREE_ROOM + 1024))
+            with self.assertRaisesRegex(ValueError, 'device tree limit'):
+                probe.real_plugin_node(bundle)
 
     def test_node_is_added_once_and_only_to_a_development_tree(self):
         tree = node('device-tree', children=(node('chosen'), node('arm-io')))
