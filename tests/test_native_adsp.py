@@ -274,10 +274,29 @@ class NativeAdspTests(unittest.TestCase):
         self.assertNotIn('invalid choice', run('--adsp-stage', '1'))
         self.assertNotIn('needs', run('--adsp-stage', '2'))
 
+    def test_vtable_audit_exception_is_one_slot_only(self):
+        try:
+            from native_storage_module import kext_dispatch_slot
+        except ImportError as error:
+            self.skipTest(f'audit needs the UniXNU checkout: {error}')
+        reserved = '__ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase3Ev'
+        native = {'__ZN15OSMetaClassBase8DispatchE5IORPC': 0x1000}
+        self.assertTrue(kext_dispatch_slot(16, [reserved], 0x1000, native))
+        self.assertFalse(kext_dispatch_slot(15, [reserved], 0x1000, native))       # any other slot
+        self.assertFalse(kext_dispatch_slot(16, ['__ZN9IOService4initEv'], 0x1000, native))  # any other original method
+        self.assertFalse(kext_dispatch_slot(16, [reserved], 0x2000, native))       # any other target
+        self.assertFalse(kext_dispatch_slot(16, [reserved], 0x1000, {}))
+
     def test_storage_build_refuses_the_vm_transport(self):
         import build_macos26_storage
         with self.assertRaisesRegex(ValueError, 'UFS'):
             build_macos26_storage.build(ROOT, Path('/nonexistent'), {}, Path('/nonexistent'), None, {}, {}, transport='virtio', adsp=True)
+
+    def test_vtable_audit_reaches_the_report_the_packager_reads(self):
+        key = 'adsp_battery_vtable_abi'
+        self.assertIn(f"driver['{key}'] = audit", (ROOT / 'scripts/native_storage_module.py').read_text())
+        self.assertIn(f"report['storage_driver']['{key}'] = driver['{key}']", (ROOT / 'scripts/emit_macos26_security.py').read_text())
+        self.assertIn(f"'{key}' not in driver", (ROOT / 'scripts/package_macos26_ufs.py').read_text())
 
     def test_workflow_builds_and_tests_it(self):
         workflow = (ROOT / '.github/workflows/hw-sheng-cn-1tb.yml').read_text()

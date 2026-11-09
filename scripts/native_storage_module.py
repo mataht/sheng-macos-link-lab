@@ -427,7 +427,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         # NativeBattery subclasses a class of the kernel itself, so the original table is the kernel's own.
         import native_adsp
         audit = audit_storage_vtable(driver, original, kc, native, slide, family_bundle='com.apple.kernel',
-            base_class=native_adsp.POWER_SOURCE_ABI['base_class'], own_class=native_adsp.BATTERY_CLASS)
+            base_class=native_adsp.POWER_SOURCE_ABI['base_class'], own_class=native_adsp.BATTERY_CLASS, kernel_resident_base=True)
         if audit['slots'] != native_adsp.POWER_SOURCE_ABI['vtable_slots']:
             raise ValueError('IOPMPowerSource vtable slot count differs from the audited 25F71 table')
         driver['adsp_battery_vtable_abi'] = audit
@@ -444,10 +444,18 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     return driver
 
 
+def kext_dispatch_slot(index: int, original_names, target: int, native: dict) -> bool:
+    """Slot 16 of a class compiled into a kext whose parent is compiled into the kernel: the original collection has the reserved stub in
+    the kernel's classes (IOService, IOPMPowerSource) and Dispatch in its kext classes (IOHIDDevice : IOService), so Dispatch is correct."""
+    dispatch = '__ZN15OSMetaClassBase8DispatchE5IORPC'
+    return (index == 16 and list(original_names) == ['__ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase3Ev']
+            and dispatch in native and target == native[dispatch])
+
+
 def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, slide: int, *,
                          family_bundle='com.apple.iokit.IOStorageFamily',
                          base_class='IOBlockStorageDevice', own_class=None, additional_names=None,
-                         pure_declaration_class=None) -> dict:
+                         pure_declaration_class=None, kernel_resident_base=False) -> dict:
     family = kc_macho(original, kc['entries'][family_bundle][1])
     kernel = kc_macho(original, kc['entries']['com.apple.kernel'][1])
     old_names = exports(original, kernel)
@@ -517,7 +525,7 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
                     methods[n] is not None and methods[n] == methods[a] for n in names for a in actual):
                 raise ValueError(f'transport override ABI mismatch at slot {index}: {names} / {actual}')
             overrides += 1
-        elif own['new_target'] not in expected:
+        elif own['new_target'] not in expected and not (kernel_resident_base and kext_dispatch_slot(index, names, own['new_target'], native)):
             raise ValueError(f'transport inherited vtable ABI mismatch at slot {index}: {names}')
         pac = old
         declaration = base_class
