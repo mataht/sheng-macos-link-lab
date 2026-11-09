@@ -519,6 +519,16 @@ def compile_sources(args, record: dict) -> None:
     subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                     str(MACHINE_PATCH)], cwd=ROOT, check=True)
     record['machine_patch_sha256'] = sha(MACHINE_PATCH)
+    if args.build_rtc:
+        import native_rtc
+        subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
+                        str(ROOT / native_rtc.MACHINE_PATCH)], cwd=ROOT, check=True)
+        record['platform_time_patch_sha256'] = sha(ROOT / native_rtc.MACHINE_PATCH)
+    if args.build_psci_reset:
+        import native_psci_reset
+        subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
+                        str(ROOT / native_psci_reset.MACHINE_PATCH)], cwd=ROOT, check=True)
+        record['platform_reset_patch_sha256'] = sha(ROOT / native_psci_reset.MACHINE_PATCH)
     subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                     str(CPU_PATCH)], cwd=ROOT, check=True)
     record['cpu_registration_patch_sha256'] = sha(CPU_PATCH)
@@ -585,8 +595,11 @@ def compile_sources(args, record: dict) -> None:
                               touch=args.build_touch,
                               cpufreq=args.build_cpufreq,
                               gpu=args.build_gpu,
+                              rtc=args.build_rtc,
                               login=args.build_login,
-                              keyboard=args.build_keyboard)
+                              backlight=args.build_backlight,
+                              keyboard=args.build_keyboard,
+                              memperf=args.build_memperf)
             save(record)
 
 
@@ -685,6 +698,14 @@ def main() -> None:
     parser.add_argument('--build-login', action='store_true',
                         help='include the default-off login-path services (AppleKeyStore, sheng-aks=1|2, and IOWatchdog, '
                              'sheng-watchdog=1) in the storage bundle of both transports')
+    parser.add_argument('--build-rtc', action='store_true',
+                        help='include the default-off PMIC RTC companion and the platform clock hook (sheng-rtc=1 is read-only)')
+    parser.add_argument('--build-backlight', action='store_true',
+                        help='include the default-off panel brightness companion (sheng-backlight=1 is read-only)')
+    parser.add_argument('--build-memperf', action='store_true',
+                        help='include the default-off memory performance reader (sheng-memperf=1, read-only)')
+    parser.add_argument('--build-psci-reset', action='store_true',
+                        help='add the default-off PSCI reboot and power-off hook to the platform expert (sheng-psci-reset=1)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-keyboard', action='store_true',
@@ -708,6 +729,12 @@ def main() -> None:
         parser.error('--build-gpu requires --build-gop-display')
     if args.build_cpufreq and not args.build_ufs_driver:
         parser.error('--build-cpufreq requires --build-ufs-driver')
+    if args.build_rtc and not args.build_ufs_driver:
+        parser.error('--build-rtc requires --build-ufs-driver')
+    if args.build_backlight and not args.build_ufs_driver:
+        parser.error('--build-backlight requires --build-ufs-driver')
+    if args.build_memperf and not args.build_ufs_driver:
+        parser.error('--build-memperf requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_keyboard and not args.build_gop_display:

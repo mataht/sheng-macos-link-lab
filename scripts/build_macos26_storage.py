@@ -17,6 +17,9 @@ import native_cpufreq
 import native_adreno
 import native_login
 import native_keyboard
+import native_rtc
+import native_backlight
+import native_memperf
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -52,15 +55,21 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gpu and (transport != 'ufs' or not gop_display):
         raise ValueError('the Adreno stack belongs to the hardware (UFS) bundle with the GOP display')
     if keyboard and (transport != 'ufs' or not gop_display):
         raise ValueError('the keyboard companion belongs to the UFS bundle and requires the GOP companion')
+    if memperf and transport != 'ufs':
+        raise ValueError('the memory performance reader belongs to the hardware (UFS) storage driver')
+    if backlight and transport != 'ufs':
+        raise ValueError('the backlight companion belongs to the hardware (UFS) storage driver')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
+    if rtc and transport != 'ufs':
+        raise ValueError('the RTC companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -322,6 +331,58 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         for label, argv, object_file in native_keyboard.compile_plan(command, obj, wrapper, sdk, keyboard_dir, root):
             run(argv, directory + '-' + label + '-compile', record, cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if rtc:
+        rtc_dir = destination / 'rtc'
+        rtc_dir.mkdir(exist_ok=True)
+        for name in native_rtc.PLATFORM_SOURCES:
+            (rtc_dir / name).write_bytes((root / native_rtc.PLATFORM_DIR / name).read_bytes())
+        (rtc_dir / 'spmi_keys.h').write_bytes((root / native_rtc.SPMI_HEADER).read_bytes())
+        rtc_base = list(command)
+        user_headers = rtc_base.index(str(sdk / 'usr/include'))
+        if rtc_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del rtc_base[user_headers - 1:user_headers + 1]
+        rtc_base[1:1] = ['-I', str(rtc_dir)]
+        rtc_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        rtc_object = rtc_dir / 'NativeRtc.o'
+        rtc_command = [str(rtc_object) if arg == str(obj) else str(rtc_dir / 'native_rtc.cpp') if arg == str(wrapper) else arg
+                       for arg in rtc_base]
+        run(rtc_command, directory + '-rtc-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(rtc_object))
+    if backlight:
+        backlight_dir = destination / 'backlight'
+        backlight_dir.mkdir(exist_ok=True)
+        for name in native_backlight.PLATFORM_SOURCES:
+            (backlight_dir / name).write_bytes((root / native_backlight.PLATFORM_DIR / name).read_bytes())
+        backlight_base = list(command)
+        user_headers = backlight_base.index(str(sdk / 'usr/include'))
+        if backlight_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del backlight_base[user_headers - 1:user_headers + 1]
+        backlight_base[1:1] = ['-I', str(backlight_dir)]
+        backlight_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        backlight_object = backlight_dir / 'NativeBacklight.o'
+        backlight_command = [str(backlight_object) if arg == str(obj) else
+                             str(backlight_dir / 'native_backlight.cpp') if arg == str(wrapper) else arg for arg in backlight_base]
+        run(backlight_command, directory + '-backlight-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(backlight_object))
+    if memperf:
+        memperf_dir = destination / 'memperf'
+        memperf_dir.mkdir(exist_ok=True)
+        for name in native_memperf.PLATFORM_SOURCES:
+            (memperf_dir / name).write_bytes((root / native_memperf.PLATFORM_DIR / name).read_bytes())
+        memperf_base = list(command)
+        user_headers = memperf_base.index(str(sdk / 'usr/include'))
+        if memperf_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del memperf_base[user_headers - 1:user_headers + 1]
+        memperf_base[1:1] = ['-I', str(memperf_dir)]
+        memperf_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        memperf_object = memperf_dir / 'NativeMemPerf.o'
+        memperf_command = [str(memperf_object) if arg == str(obj) else
+                           str(memperf_dir / 'native_memperf.cpp') if arg == str(wrapper) else arg for arg in memperf_base]
+        run(memperf_command, directory + '-memperf-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(memperf_object))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -388,6 +449,12 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeKeyboard'] = dict(native_keyboard.PERSONALITY, CFBundleIdentifier=bundle)
         info['IOKitPersonalities']['NativeKeyboardHIDEventDriver'] = dict(native_keyboard.EVENT_DRIVER)
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
+    if rtc:
+        info['IOKitPersonalities']['NativeRtc'] = dict(native_rtc.PERSONALITY, CFBundleIdentifier=bundle)
+    if backlight:
+        info['IOKitPersonalities']['NativeBacklight'] = dict(native_backlight.PERSONALITY, CFBundleIdentifier=bundle)
+    if memperf:
+        info['IOKitPersonalities']['NativeMemPerf'] = dict(native_memperf.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -413,6 +480,12 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_login'] = native_login.evidence(root)
     if keyboard:
         evidence['native_keyboard'] = native_keyboard.evidence(root)
+    if rtc:
+        evidence['native_rtc'] = native_rtc.evidence(root)
+    if backlight:
+        evidence['native_backlight'] = native_backlight.evidence(root)
+    if memperf:
+        evidence['native_memperf'] = native_memperf.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

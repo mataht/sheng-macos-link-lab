@@ -1,0 +1,41 @@
+--- a/ArmDTPlatform/ArmDTPlatform.cpp
++++ b/ArmDTPlatform/ArmDTPlatform.cpp
+@@ -30,10 +30,18 @@
+ volatile uint32_t armdt_platform_device_count = 0;
+ }
+
++// The wall clock handed over by the NativeRtc companion (sheng-rtc=2, hardware only): Unix seconds and the uptime
++// they were taken at. Zero keeps the platform expert's default, no clock.
++extern "C" {
++volatile long sheng_platform_rtc_seconds = 0;
++volatile uint64_t sheng_platform_rtc_stamp = 0;
++}
++
+ class ArmDTPlatform : public IODTPlatformExpert {
+   OSDeclareDefaultStructors (ArmDTPlatform)
+ public:
+   bool configure (IOService *provider) override;
++  long getGMTTimeOfDay (void) override;
+   const char *deleteList (void) override;
+   const char *excludeList (void) override;
+ private:
+@@ -56,6 +64,19 @@
+   return "()";
+ }
+
++long ArmDTPlatform::getGMTTimeOfDay (void)
++{
++  const long base = __atomic_load_n (&sheng_platform_rtc_seconds, __ATOMIC_ACQUIRE);
++  if (base <= 0) {
++    return 0;
++  }
++  uint64_t now = 0;
++  uint64_t elapsed = 0;
++  clock_get_uptime (&now);
++  absolutetime_to_nanoseconds (now - sheng_platform_rtc_stamp, &elapsed);
++  return base + (long) (elapsed / 1000000000ULL);
++}
++
+ bool ArmDTPlatform::hasNVRAMProxy (IOService *provider)
+ {
+   IORegistryEntry *chosen = provider->childFromPath ("chosen", gIODTPlane);
