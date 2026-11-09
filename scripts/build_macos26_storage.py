@@ -16,6 +16,7 @@ import native_touch
 import native_cpufreq
 import native_rtc
 import native_backlight
+import native_memperf
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -51,9 +52,11 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, rtc=False, backlight=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, rtc=False, backlight=False, memperf=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if memperf and transport != 'ufs':
+        raise ValueError('the memory performance reader belongs to the hardware (UFS) storage driver')
     if backlight and transport != 'ufs':
         raise ValueError('the backlight companion belongs to the hardware (UFS) storage driver')
     if cpufreq and transport != 'ufs':
@@ -295,6 +298,23 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
                              str(backlight_dir / 'native_backlight.cpp') if arg == str(wrapper) else arg for arg in backlight_base]
         run(backlight_command, directory + '-backlight-compile', record, cwd=Path(compile_record['directory']), env=env)
         objects.append(str(backlight_object))
+    if memperf:
+        memperf_dir = destination / 'memperf'
+        memperf_dir.mkdir(exist_ok=True)
+        for name in native_memperf.PLATFORM_SOURCES:
+            (memperf_dir / name).write_bytes((root / native_memperf.PLATFORM_DIR / name).read_bytes())
+        memperf_base = list(command)
+        user_headers = memperf_base.index(str(sdk / 'usr/include'))
+        if memperf_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del memperf_base[user_headers - 1:user_headers + 1]
+        memperf_base[1:1] = ['-I', str(memperf_dir)]
+        memperf_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        memperf_object = memperf_dir / 'NativeMemPerf.o'
+        memperf_command = [str(memperf_object) if arg == str(obj) else
+                           str(memperf_dir / 'native_memperf.cpp') if arg == str(wrapper) else arg for arg in memperf_base]
+        run(memperf_command, directory + '-memperf-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(memperf_object))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -354,6 +374,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeRtc'] = dict(native_rtc.PERSONALITY, CFBundleIdentifier=bundle)
     if backlight:
         info['IOKitPersonalities']['NativeBacklight'] = dict(native_backlight.PERSONALITY, CFBundleIdentifier=bundle)
+    if memperf:
+        info['IOKitPersonalities']['NativeMemPerf'] = dict(native_memperf.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -377,6 +399,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_rtc'] = native_rtc.evidence(root)
     if backlight:
         evidence['native_backlight'] = native_backlight.evidence(root)
+    if memperf:
+        evidence['native_memperf'] = native_memperf.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

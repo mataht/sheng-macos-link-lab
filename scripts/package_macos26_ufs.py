@@ -489,6 +489,17 @@ def qualify_cpufreq(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_memperf(build) -> dict:
+    """The memory performance reader must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_memperf
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_memperf')
+    if not record:
+        raise ValueError('kernel lacks the memory performance reader')
+    native_memperf.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_backlight(build) -> dict:
     """The backlight companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_backlight
@@ -653,6 +664,8 @@ def main():
     parser.add_argument('--backlight-stage', type=int, choices=(1, 2, 3, 4),
                         help='start the compiled backlight companion (sheng-backlight=N): 1 read-only, 2 reads the chips, 3 sets a level, 4 macOS control')
     parser.add_argument('--backlight-level', type=int, help='sheng-backlight-level for stage 3 or 4 (64..2047)')
+    parser.add_argument('--memperf-mode', type=int, choices=(1,),
+                        help='start the compiled memory performance reader (sheng-memperf=1, read-only)')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -857,6 +870,10 @@ def main():
         boot_args += ' ' + native_backlight.boot_arguments(args.backlight_stage, args.backlight_level)
     elif args.backlight_level is not None:
         raise ValueError('--backlight-level requires --backlight-stage')
+    memperf = None
+    if args.memperf_mode:
+        memperf = dict(qualify_memperf(args.kernel_build), mode=args.memperf_mode)
+        boot_args += f' sheng-memperf={args.memperf_mode}'
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -986,7 +1003,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq, rtc=rtc, backlight=backlight,
+                touch=touch, cpufreq=cpufreq, rtc=rtc, backlight=backlight, memperf=memperf,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
