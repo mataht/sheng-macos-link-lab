@@ -228,7 +228,7 @@ bool NativeMemPerf::start(IOService *provider)
   reportResources(found);
   reportTcs(found);
 
-  fBuffer = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous, kBenchBytes, 0x4000);
+  fBuffer = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, static_cast<IOOptionBits>(kIODirectionInOut) | kIOMemoryPhysicallyContiguous, kBenchBytes, 0x4000);
   if (!fBuffer) {
     IOLog("NativeMemPerf: no benchmark buffer\n");
   } else {
