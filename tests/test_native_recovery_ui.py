@@ -93,7 +93,9 @@ class RecoveryUiPolicy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             # Both tables in one header, as the kernel build stages it; the engine test uses the first.
-            (target / 'sheng_recovery_ui_pages.h').write_text(render_sets(self.document, self.document))
+            # The second table must be a real full-system table: render_sets requires its Metal-blocking pages.
+            full = json.loads((ROOT / 'config/macos26-full-ui-pages.json').read_text())
+            (target / 'sheng_recovery_ui_pages.h').write_text(render_sets(self.document, full))
             (target / 'page.bin').write_bytes(self.original)
             executable = target / 'policy'
             subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
