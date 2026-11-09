@@ -500,6 +500,17 @@ def qualify_touch(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_keyboard(build) -> dict:
+    """The keyboard cover companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_keyboard
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_keyboard')
+    if not record or 'keyboard_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited keyboard companion')
+    native_keyboard.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def display_copy_forward(panel_patch_sha256):
     """The reviewed always-on copy-forward step chained on the panel-size patch, or None (derive_hw_display_copy_forward.py)."""
     path = ROOT / 'platform/sheng/macos26/display/hw-copy-forward.json'
@@ -632,9 +643,23 @@ def main():
                         help='local NT36532 firmware placed in /arm-io/native-touch (the package then contains vendor '
                              'firmware and must stay local)')
     parser.add_argument('--touch-orient', type=int, choices=range(8), help='native-touch-orient bits (swap/mirror)')
+    parser.add_argument('--keyboard-stage', type=int, choices=(1, 2, 3, 4, 5),
+                        help='enable the compiled keyboard cover bring-up up to this stage (sheng-kbd=N); 1 is read-only; 4 and 5 need --keyboard-firmware')
+    parser.add_argument('--keyboard-firmware', type=Path,
+                        help='local MCU_Upgrade.bin placed in /arm-io/native-keyboard (the package then contains vendor firmware and must stay local)')
+    parser.add_argument('--keyboard-rails', action='store_true',
+                        help='also vote L12B 1.8 V and L13B 3296 mV through RPMh at stage 3 and above (sheng-kbd-rails=1); default off')
+    parser.add_argument('--keyboard-khz', type=int, choices=(100, 400, 1000), help='I2C speed (sheng-kbd-khz); the driver defaults to 1000')
+    parser.add_argument('--keyboard-poll-read-ms', type=int, help='also read a frame every N ms (10..1000) without an interrupt edge (sheng-kbd-poll-read)')
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    if (args.keyboard_firmware or args.keyboard_rails or args.keyboard_khz or args.keyboard_poll_read_ms) and not args.keyboard_stage:
+        parser.error('--keyboard-firmware, --keyboard-rails, --keyboard-khz and --keyboard-poll-read-ms require --keyboard-stage')
+    if args.keyboard_stage and args.keyboard_stage >= 4 and not args.keyboard_firmware:
+        parser.error('--keyboard-stage 4 and 5 download the controller image: give --keyboard-firmware')
+    if args.keyboard_rails and args.keyboard_stage and args.keyboard_stage < 3:
+        parser.error('--keyboard-rails votes at stage 3: use --keyboard-stage 3 or higher')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -840,6 +865,18 @@ def main():
                 native_button_keys.load_type_text(args.button_keys_type_file))
             boot_args += ' ' + native_button_keys.TYPE_BOOT_ARGUMENT
             button_keys['type_experiment'] = dict(button_keys['type_experiment'], armed=True)
+    keyboard = None
+    if args.keyboard_stage:
+        import native_keyboard
+        keyboard = qualify_keyboard(args.kernel_build)
+        arguments = native_keyboard.boot_arguments(args.keyboard_stage, rails=args.keyboard_rails, khz=args.keyboard_khz,
+                                                   poll_read_ms=args.keyboard_poll_read_ms)
+        boot_args += ' ' + ' '.join(arguments)
+        if args.keyboard_firmware:
+            extra_arm_io_nodes[native_keyboard.NODE] = native_keyboard.node_properties(args.keyboard_firmware.read_bytes())
+        keyboard = dict(keyboard, stage=args.keyboard_stage, rails_voted=args.keyboard_rails, boot_arguments=arguments,
+                        firmware_included=args.keyboard_firmware is not None,
+                        package_contains_vendor_firmware=args.keyboard_firmware is not None)
     panel_size = None
     if args.panel_size_mm:
         panel_size = qualify_panel_size(args.kernel_build, *args.panel_size_mm)
@@ -956,7 +993,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq,
+                touch=touch, cpufreq=cpufreq, keyboard=keyboard,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

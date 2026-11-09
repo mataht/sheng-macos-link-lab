@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_keyboard
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -49,9 +50,11 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, keyboard=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if keyboard and (transport != 'ufs' or not gop_display):
+        raise ValueError('the keyboard companion belongs to the UFS bundle and requires the GOP companion')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
@@ -254,6 +257,18 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-cpufreq-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if keyboard:
+        from prepare_macos26_input import prepare_apple_hid_headers
+        keyboard_dir = destination / 'keyboard'
+        keyboard_dir.mkdir(exist_ok=True)
+        prepare_apple_hid_headers(root, keyboard_dir)
+        for name in native_keyboard.PLATFORM_SOURCES:
+            (keyboard_dir / name).write_bytes((root / native_keyboard.PLATFORM_DIR / name).read_bytes())
+        for name in (*native_keyboard.IMPORTED_C, *native_keyboard.IMPORTED_HEADERS, *native_keyboard.NAME_WRAPPERS):
+            (keyboard_dir / name).write_bytes((root / native_keyboard.IMPORTED_DIR / name).read_bytes())
+        for label, argv, object_file in native_keyboard.compile_plan(command, obj, wrapper, sdk, keyboard_dir, root):
+            run(argv, directory + '-' + label + '-compile', record, cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -309,6 +324,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     if cpufreq:
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
+    if keyboard:
+        info['IOKitPersonalities']['NativeKeyboard'] = dict(native_keyboard.PERSONALITY, CFBundleIdentifier=bundle)
+        info['IOKitPersonalities']['NativeKeyboardHIDEventDriver'] = dict(native_keyboard.EVENT_DRIVER)
+        info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -328,6 +347,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_touch'] = native_touch.evidence(root)
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
+    if keyboard:
+        evidence['native_keyboard'] = native_keyboard.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

@@ -582,7 +582,8 @@ def compile_sources(args, record: dict) -> None:
                               button_keys=args.build_button_keys,
                               full_root=args.build_full_root,
                               touch=args.build_touch,
-                              cpufreq=args.build_cpufreq)
+                              cpufreq=args.build_cpufreq,
+                              keyboard=args.build_keyboard)
             save(record)
 
 
@@ -678,6 +679,8 @@ def main() -> None:
                              'sheng-cpufreq=1 is read-only)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
+    parser.add_argument('--build-keyboard', action='store_true',
+                        help='include the default-off keyboard cover companion (imported upstream codec; controller image only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
                         help='compile the UFS transport for the full-system root (config/macos26-full-root.json, '
                              'partition macossystem, default-off volatile RAM overlay) instead of Recovery')
@@ -697,6 +700,8 @@ def main() -> None:
         parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
+    if args.build_keyboard and not args.build_gop_display:
+        parser.error('--build-keyboard requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:
         parser.error('--build-full-root requires --build-ufs-driver')
     ARCH = args.arch
