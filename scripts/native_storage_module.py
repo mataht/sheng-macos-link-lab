@@ -164,7 +164,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if evidence.get('qemu_only_display') is True and not evidence.get('combined_driver'):
             # Display (and optionally the QEMU input companion) compiled directly into the QEMU-only bundle.
             if (not evidence.get('native_gop_display') or evidence.get('hardware_admitted') is not False
-                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq'))):
+                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_keyboard'))):
                 raise ValueError('the QEMU display bundle may carry only the GOP display and QEMU input companions')
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
@@ -248,6 +248,16 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if evidence.get('native_login'):
             import native_login
             allowed |= native_login.validate_bundle(evidence['native_login'], info, evidence['bundle'])
+        keyboard = evidence.get('native_keyboard')
+        if keyboard:
+            import native_keyboard
+            if not display or 'com.apple.iokit.IOHIDFamily' not in selected:
+                raise ValueError('keyboard companion requires the GOP companion and the original HID family')
+            native_keyboard.validate(keyboard)
+            if (info['IOKitPersonalities'].get('NativeKeyboard') != dict(native_keyboard.PERSONALITY, CFBundleIdentifier=evidence['bundle'])
+                    or info['IOKitPersonalities'].get('NativeKeyboardHIDEventDriver') != native_keyboard.EVENT_DRIVER):
+                raise ValueError('keyboard companion provider or original event driver identity differs')
+            allowed |= {'NativeKeyboard', 'IOHIDEventDriver'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -440,6 +450,15 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != native_adreno.IOACCELERATOR_SLOTS:
             raise ValueError('Adreno IOAccelerator vtable slot count differs')
         driver['adreno_vtable_abi'] = audit
+    if evidence.get('native_keyboard'):
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle='com.apple.iokit.IOHIDFamily', base_class='IOHIDDevice',
+            own_class='NativeKeyboardHID')
+        contract = json.loads((Path(__file__).resolve().parents[1] /
+                               'config/macos26-input-reference.json').read_text())['abi']
+        if audit['slots'] != contract['device_slots']:
+            raise ValueError('keyboard HID vtable slot count differs')
+        driver['keyboard_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {

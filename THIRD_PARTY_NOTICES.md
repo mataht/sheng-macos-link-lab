@@ -18,7 +18,12 @@ recorded below and in sources.lock.json, config/ and the patch headers. A link o
 a credit does not replace compliance with the source component's license.
 
 Upstream checkouts retain their own licenses and authorship; they are not
-vendored into this repository except for the QR encoder listed below.
+vendored into this repository except for the files listed below.
+
+- UniXNU-sheng keyboard cover files: BSD-2-Clause-Patent. Unmodified `GeniI2c`,
+  `Wn8030` and `QcomRpmh` sources and their host tests at commit
+  a68ee4ee67cc71792fbf519de7e3e28072c717b5 are vendored under
+  platform/sheng/macos26/input/keyboard/ with that project's LICENSE.
 
 - Nayuki QR-Code-generator: MIT. Unmodified `qrcodegen.c` and `qrcodegen.h`
   at revision 3c6d0b3cefb4e049dc337e82237c9644399716a8 are vendored under

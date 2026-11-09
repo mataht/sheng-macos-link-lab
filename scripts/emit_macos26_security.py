@@ -455,6 +455,8 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
             report['storage_driver']['touch_vtable_abi'] = driver['touch_vtable_abi']
         if 'adreno_vtable_abi' in driver:
             report['storage_driver']['adreno_vtable_abi'] = driver['adreno_vtable_abi']
+        if 'keyboard_vtable_abi' in driver:
+            report['storage_driver']['keyboard_vtable_abi'] = driver['keyboard_vtable_abi']
     return final_data, report
 
 

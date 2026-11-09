@@ -39,12 +39,14 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 full_system_root_snapshot: str | None = None,
                                 touch_node: dict | None = None,
                                 trust_cache_slot: bool = False,
-                                gpu_node: dict | None = None) -> None:
+                                gpu_node: dict | None = None,
+                                extra_arm_io_nodes: dict[str, dict] | None = None) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
     touch_arm_io = touch_nodes = 0
     memory_maps = 0
+    extra_seen = set()
     if touch_node is not None and (development_root and qemu_virtio_input or not touch_node.get('firmware')):
         raise ValueError('the touch node needs its firmware and belongs to the hardware tree')
     gpu_arm_io = gpu_nodes = 0
@@ -160,6 +162,10 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             gpu_nodes += 1
             for key, value in gpu_node.items():
                 ensure(key, value)
+        if extra_arm_io_nodes and location[:2] == ('device-tree', 'arm-io') and len(location) == 3 and location[2] in extra_arm_io_nodes:
+            extra_seen.add(location[2])
+            for key, value in extra_arm_io_nodes[location[2]].items():
+                ensure(key, value)
         if native_gop_display and location == ('device-tree', 'arm-io', 'native-gop'):
             gop_nodes += 1
             ensure('device_type', b'display-subsystem\0')
@@ -227,6 +233,17 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                    value + bytes(-len(value) % 4))
             children += 1
             gpu_nodes += 1
+        if extra_arm_io_nodes and location == ('device-tree', 'arm-io'):
+            for name, extra in extra_arm_io_nodes.items():
+                if name in extra_seen:
+                    continue
+                entries = (('name', name.encode() + b'\0'), *extra.items())
+                descendants.extend(struct.pack('<II', len(entries), 0))
+                for key, value in entries:
+                    descendants.extend(struct.pack('<32sI', key.encode(), len(value)) +
+                                       value + bytes(-len(value) % 4))
+                children += 1
+                extra_seen.add(name)
         if native_gop_display and location == ('device-tree', 'arm-io') and not gop_nodes:
             # The original framework counts display-subsystem descriptors before matching services.
             entries = (('name', b'native-gop\0'), ('device_type', b'display-subsystem\0'),
@@ -265,6 +282,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             or native_gop_display and (arm_io != 1 or gop_nodes != 1)
             or touch_node is not None and (touch_arm_io != 1 or touch_nodes != 1)
             or gpu_node is not None and (gpu_arm_io != 1 or gpu_nodes != 1)
+            or extra_arm_io_nodes and extra_seen != set(extra_arm_io_nodes)
             or trust_cache_slot and memory_maps != 1):
         raise ValueError('requires one complete generated /chosen node')
     path.write_bytes(result)

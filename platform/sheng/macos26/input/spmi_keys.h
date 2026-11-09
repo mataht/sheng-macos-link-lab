@@ -240,6 +240,71 @@ inline void report(const Keys &k, uint8_t out[8])
     if (k.power) out[slot++] = kUsageReturn;
 }
 
+// Typing experiment (native-button-keys-type=1): a fixed text sent as key presses, to learn whether a login field takes
+// keyboard input at all before a keyboard driver is written. The text is printable ASCII on the ANSI US layout, the layout the
+// login window showed (ABC); it comes from a local package's device tree, never from a boot argument.
+constexpr unsigned kTypeMaxCharacters = 64;
+constexpr uint8_t kModifierLeftShift = 0x02;
+
+// The boot keyboard report that presses one character of the text; false for anything but printable ASCII.
+inline bool typeReport(char c, uint8_t out[8])
+{
+    struct Key { char plain, shifted; uint8_t usage; };
+    static const Key keys[] = {
+        {'1', '!', 0x1e}, {'2', '@', 0x1f}, {'3', '#', 0x20}, {'4', '$', 0x21}, {'5', '%', 0x22}, {'6', '^', 0x23},
+        {'7', '&', 0x24}, {'8', '*', 0x25}, {'9', '(', 0x26}, {'0', ')', 0x27}, {' ', ' ', 0x2c}, {'-', '_', 0x2d},
+        {'=', '+', 0x2e}, {'[', '{', 0x2f}, {']', '}', 0x30}, {'\\', '|', 0x31}, {';', ':', 0x33}, {'\'', '"', 0x34},
+        {'`', '~', 0x35}, {',', '<', 0x36}, {'.', '>', 0x37}, {'/', '?', 0x38},
+    };
+    for (unsigned i = 0; i < 8; ++i)
+        out[i] = 0;
+    if (c >= 'a' && c <= 'z') {
+        out[2] = static_cast<uint8_t>(0x04 + (c - 'a'));
+        return true;
+    }
+    if (c >= 'A' && c <= 'Z') {
+        out[0] = kModifierLeftShift;
+        out[2] = static_cast<uint8_t>(0x04 + (c - 'A'));
+        return true;
+    }
+    for (const Key &key : keys) {
+        if (c == key.plain || c == key.shifted) {
+            out[0] = c == key.plain ? 0 : kModifierLeftShift;
+            out[2] = key.usage;
+            return true;
+        }
+    }
+    return false;
+}
+
+// The length of a usable text, or 0 when any character cannot be typed.
+inline unsigned typeTextLength(const char *text, size_t length)
+{
+    if (!length || length > kTypeMaxCharacters)
+        return 0;
+    uint8_t unused[8];
+    for (size_t i = 0; i < length; ++i)
+        if (!typeReport(text[i], unused))
+            return 0;
+    return static_cast<unsigned>(length);
+}
+
+// Volume up held for kHoldPolls polls starts the text once; releasing the key arms it again.
+struct TypeTrigger {
+    static constexpr unsigned kHoldPolls = 50;   // 1 s at the 20 ms poll
+    unsigned held = 0;
+    bool update(bool pressed)
+    {
+        if (!pressed) {
+            held = 0;
+            return false;
+        }
+        if (held > kHoldPolls)
+            return false;
+        return ++held == kHoldPolls;
+    }
+};
+
 }  // namespace sheng_keys
 
 #endif

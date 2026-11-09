@@ -43,6 +43,62 @@ class NativeButtonKeys(unittest.TestCase):
         for region in ('0x0c400000', '0x0c42d000', '0x0c440000'):
             self.assertIn(region, source)
 
+    def test_typing_experiment_is_default_off_and_never_presses_return(self):
+        import native_button_keys
+
+        source = (INPUT / 'native_button_keys.cpp').read_text()
+        self.assertIn('PE_parse_boot_argn("native-button-keys-type", &armed, sizeof(armed)) || armed != 1', source)
+        self.assertIn('unsigned fTypeLength = 0;', source)
+        self.assertIn('if (keys->fTypeLength) {', source)
+        self.assertIn('node->removeProperty("type-text")', source)
+        loading = source[source.index('void NativeButtonKeys::loadTypeText()'):]
+        self.assertNotIn('%s\\n", fTypeText', loading)
+        self.assertNotIn('Return', loading[loading.index('void NativeButtonKeys::typeText()'):])
+        self.assertEqual(re.findall(r'IOLog\([^;]*fTypeText[^;]*;', source), [])   # the text itself is never logged
+        record = native_button_keys.evidence()['type_experiment']
+        self.assertEqual(record['boot_argument'], 'native-button-keys-type=1')
+        self.assertIs(record['default_off'], True)
+        self.assertIs(record['sends_return'], False)
+
+    def test_typing_text_file_is_validated_without_repeating_it(self):
+        import native_button_keys
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'text'
+            for raw, expected in ((b'Pass word!9\n', b'Pass word!9'), (b'abc\r\n', b'abc'), (b'9abc', b'9abc'), (b' ', b' ')):
+                path.write_bytes(raw)
+                self.assertEqual(native_button_keys.load_type_text(path), expected)
+            for bad in (b'', b'\n', b'\xef\xbb\xbfsecret', 'päss'.encode(), b'sec\x00ret', b'secr\net', b'a' * 65):
+                path.write_bytes(bad)
+                with self.subTest(bad=bad), self.assertRaises(ValueError) as raised:
+                    native_button_keys.load_type_text(path)
+                self.assertNotIn('secr', str(raised.exception))
+            node = native_button_keys.type_node(b'x')
+            self.assertEqual(node['type-text'], b'x')
+            self.assertTrue(all(isinstance(value, bytes) for value in node.values()))
+
+    def test_extra_arm_io_nodes_are_added_once_and_checked(self):
+        from native_devtree import configure_native_text_state
+        from test_native_touch import node, read_tree
+
+        tree = node('device-tree', children=(node('chosen'), node('arm-io')))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'adt'
+            path.write_bytes(tree)
+            extra = {'native-button-keys': {'compatible': b'c\0', 'type-text': b'abc'}, 'other-node': {'value': b'1234'}}
+            configure_native_text_state(path, development_root=True, extra_arm_io_nodes=extra)
+            read = read_tree(path.read_bytes())
+            self.assertEqual(read[('device-tree', 'arm-io', 'native-button-keys')]['type-text'], b'abc')
+            self.assertEqual(read[('device-tree', 'arm-io', 'other-node')]['value'], b'1234')
+            before = path.read_bytes()
+            configure_native_text_state(path, development_root=True, extra_arm_io_nodes=extra)
+            self.assertEqual(path.read_bytes(), before)
+            with self.assertRaisesRegex(ValueError, 'conflicts'):
+                configure_native_text_state(path, development_root=True, extra_arm_io_nodes={'other-node': {'value': b'5678'}})
+            path.write_bytes(node('device-tree', children=(node('chosen'),)))
+            with self.assertRaisesRegex(ValueError, 'complete'):
+                configure_native_text_state(path, development_root=True, extra_arm_io_nodes=extra)
+
     def test_storage_build_stages_apple_hid_private_headers_for_button_keys(self):
         import build_macos26_storage
 
