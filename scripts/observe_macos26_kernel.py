@@ -93,6 +93,8 @@ def main() -> None:
     parser.add_argument('--boot-progress', action='store_true',
                         help='enable compiled stage, service and per-core diagnostics')
     parser.add_argument('--early-console', action='store_true', help='acquire the inherited GOP through the XNU text console')
+    parser.add_argument('--extra-boot-arg', action='append', default=[],
+                        help='append one boot argument (repeatable), e.g. sheng-aks=1 for a QEMU run of the login services')
     parser.add_argument('--native-gop-display', action='store_true',
                         help='enable the paired CPU GOP companion and its native display descriptor')
     parser.add_argument('--checkpoint', choices=('arm_init', 'arm_vm_init',
@@ -465,6 +467,8 @@ def main() -> None:
             boot_args += f' kextlog={args.kext_log:#x}'
         if args.early_console:
             boot_args += ' -sheng-early-console'
+        for extra in args.extra_boot_arg:
+            boot_args += ' ' + extra
         if args.handoff_pause:
             if not loader.get('handoff_panic_address_visible'):
                 raise ValueError('handoff capture needs the loader with visible panic PA')
