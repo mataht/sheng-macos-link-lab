@@ -65,7 +65,8 @@ static void *
 fakeAllocate(uint64_t bytes, uint64_t *actualBytes)
 {
     const vm_size_t rounded = static_cast<vm_size_t>((bytes + PAGE_SIZE - 1) & ~static_cast<uint64_t>(PAGE_SIZE - 1));
-    IOBufferMemoryDescriptor *memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut | kIOMemoryKernelUserShared, rounded, PAGE_SIZE);
+    const IOOptionBits options = static_cast<IOOptionBits>(kIODirectionInOut) | static_cast<IOOptionBits>(kIOMemoryKernelUserShared);
+    IOBufferMemoryDescriptor *memory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, options, rounded, PAGE_SIZE);
     if (!memory) {
         return nullptr;
     }
