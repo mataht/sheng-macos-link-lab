@@ -285,6 +285,10 @@ public:
     uint32_t enabled = 0;
     if (!PE_parse_boot_argn("sheng-watchdog", &enabled, sizeof(enabled)) || enabled != 1) return false;
     if (!IOService::start(provider)) return false;
+    // After connecting, watchdogd looks up the primary PMU driver with IOPropertyMatch {IOPMUPrimary: true} and aborts if
+    // it finds none; this kernel has no such driver (offline check of 25F71 watchdogd; QEMU run 02 of CI 42546446517
+    // panicked on exactly that). It only writes a boot-stage property there and ignores the failure.
+    setProperty("IOPMUPrimary", true);
     registerService();
     IOLog("NativeWatchdog: started, monitoring reported disabled\n");
     return true;

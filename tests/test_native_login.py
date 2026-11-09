@@ -59,6 +59,8 @@ class NativeLoginTests(unittest.TestCase):
         self.assertIn('class IOWatchdog final : public IOService', source)
         self.assertIn('class IOWatchdogUserClient final : public IOUserClient', source)
         self.assertNotIn('setName(', source)
+        # watchdogd aborts after connecting unless a service has IOPMUPrimary=true (QEMU run 02 of CI 42546446517).
+        self.assertIn('setProperty("IOPMUPrimary", true);', source)
         self.assertEqual(re.findall(r'weak_import', source), [])
         names = re.findall(r'^\s+(\w+)=dict\(IOClass', (ROOT / 'scripts/native_login.py').read_text(), re.M)
         self.assertEqual(sorted(native_login.PERSONALITIES), ['AppleKeyStore', 'IOWatchdog'])
