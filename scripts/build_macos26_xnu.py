@@ -93,6 +93,7 @@ PATCHES = [
     ROOT / 'platform/sheng/macos26/patches/0065-native-panic-framebuffer-owner.patch',
     ROOT / 'platform/sheng/macos26/patches/0066-native-smp-progress.patch',
     ROOT / 'platform/sheng/macos26/patches/0067-gpu-probe-kernel-mkdir.patch',
+    ROOT / 'platform/sheng/macos26/patches/0068-gpu-probe-exit-trace.patch',
 ]
 MACHINE_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-driver-declarations.patch'
 CPU_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-cpu-registration.patch'
@@ -242,6 +243,8 @@ def prepare() -> dict:
     stage_file(boot_progress_kernel, source / 'pexpert/arm/pe_sheng_boot_progress_kernel.h')
     process_output = ROOT / 'platform/sheng/macos26/log/process_output.h'
     stage_file(process_output, source / 'bsd/kern/sheng_process_output.h')
+    exit_trace = ROOT / 'platform/sheng/macos26/log/exit_trace.h'
+    stage_file(exit_trace, source / 'bsd/kern/sheng_exit_trace.h')
     panel_console = ROOT / 'platform/sheng/macos26/log/panel_console.h'
     stage_file(panel_console, source / 'pexpert/arm/pe_sheng_panel.h')
     panel_font = source / 'osfmk/console/iso_font.c'
@@ -304,7 +307,7 @@ def prepare() -> dict:
                     'osfmk/vm/sheng_language_trace.h', 'osfmk/vm/sheng_language_trace_kernel.h',
                     'osfmk/vm/sheng_language_pages_kernel.h', 'osfmk/vm/sheng_language_trace_pages.h',
                     'osfmk/arm64/sheng_smp_keys.h', 'osfmk/arm64/sheng_smp_keys_storage.h',
-                    'bsd/kern/sheng_process_output.h', 'pexpert/arm/pe_sheng_boot_progress.h',
+                    'bsd/kern/sheng_process_output.h', 'bsd/kern/sheng_exit_trace.h', 'pexpert/arm/pe_sheng_boot_progress.h',
                     'pexpert/arm/pe_sheng_boot_progress_kernel.h', 'pexpert/arm/pe_sheng_panic_qr.h',
                     'pexpert/arm/pe_sheng_framebuffer.h', 'pexpert/arm/pe_sheng_smp_log.h',
                     'pexpert/arm/pe_sheng_qr_encoder.h', 'pexpert/arm/pe_sheng_qr_runtime.h',

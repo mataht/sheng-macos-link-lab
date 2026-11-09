@@ -93,6 +93,8 @@ def main() -> None:
                         help='enable the QEMU-only Metal plugin trust-path probe of the VirtIO bundle (sheng-gpu-probe=1)')
     parser.add_argument('--gpu-plugin', type=Path,
                         help='with --gpu-probe: a locally built NativeAdrenoMetal.bundle, delivered through the device tree (QEMU only)')
+    parser.add_argument('--exit-trace', action='store_true',
+                        help="with --gpu-probe: print WindowServer's exit reason, stacks and __crash_info text on the kernel log (sheng-exit-trace=1, QEMU only)")
     parser.add_argument('--gpu-fake', action='store_true',
                         help='with --gpu-plugin: answer Turnip from the QEMU-only fake A740; no GPU work happens (sheng-gpu-fake=1)')
     parser.add_argument('--full-system-csr-unrestricted-fs', action='store_true',
@@ -239,6 +241,8 @@ def main() -> None:
         parser.error(f'--timeout must be between 15 and {maximum_timeout} seconds for this observation')
     if args.gpu_fake and not args.gpu_plugin:
         parser.error('--gpu-fake requires --gpu-plugin')
+    if args.exit_trace and not args.gpu_probe:
+        parser.error('--exit-trace requires --gpu-probe')
     if args.gpu_plugin and not args.gpu_probe:
         parser.error('--gpu-plugin requires --gpu-probe')
     if args.kext_log is not None and not 0 <= args.kext_log <= 0xffffffff:
@@ -457,8 +461,11 @@ def main() -> None:
             boot_args += ' sheng-gpu-probe=1'
             if args.gpu_fake:
                 boot_args += ' sheng-gpu-fake=1'
+            if args.exit_trace:
+                boot_args += ' sheng-exit-trace=1'
             record['gpu_probe'] = dict(qemu_only=True, hardware_admitted=False,
-                                       csr_unrestricted_fs=args.full_system_csr_unrestricted_fs, fake_a740=args.gpu_fake)
+                                       csr_unrestricted_fs=args.full_system_csr_unrestricted_fs, fake_a740=args.gpu_fake,
+                                       exit_trace=args.exit_trace)
         if args.qemu_smp_timeouts:
             boot_args += ' interrupt-masked-debug-mode=1 slto_us=1000000 tlto_us=1000000'
             record['qemu_smp_timing'] = dict(irq_hygiene='trace', lock_timeout_us=1000000,

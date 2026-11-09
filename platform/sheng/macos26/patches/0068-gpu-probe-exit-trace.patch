@@ -1,0 +1,121 @@
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -2024,6 +2024,107 @@
+ 	}
+ }
+ 
++#if SHENG
++/*
++ * Default-off, QEMU-only (sheng-exit-trace=1): prints WindowServer's exit reason, every thread's user stack and the __crash_info text
++ * of the images on those stacks as it exits. It only reads the dying process's own memory, through copyin.
++ */
++extern void task_act_iterate_wth_args(task_t, void (*)(thread_t, void *), void *);
++
++static int
++sheng_exit_read(uint64_t address, void *output, unsigned size)
++{
++	return copyin((user_addr_t)address, output, size);
++}
++
++static int
++sheng_exit_read_string(uint64_t address, char *output, unsigned size)
++{
++	size_t copied = 0;
++	int error = copyinstr((user_addr_t)address, output, size, &copied);
++
++	return error == ENAMETOOLONG ? 0 : error;
++}
++
++#define SHENG_EXIT_PRINT(...) printf(__VA_ARGS__)
++#include "sheng_exit_trace.h"
++
++#define SHENG_EXIT_THREADS 64
++#define SHENG_EXIT_OTHER_FRAMES 24
++#define SHENG_EXIT_TRACES 8
++
++struct sheng_exit_threads {
++	thread_t list[SHENG_EXIT_THREADS];
++	unsigned count;
++};
++
++static void
++sheng_exit_collect(thread_t thread, void *context)
++{
++	struct sheng_exit_threads *threads = context;
++
++	if (threads->count < SHENG_EXIT_THREADS) {
++		thread_reference(thread);
++		threads->list[threads->count++] = thread;
++	}
++}
++
++static void
++sheng_exit_thread(struct sheng_exit_work *work, thread_t thread, unsigned limit)
++{
++	struct backtrace_control control = BTCTL_INIT;
++	struct backtrace_user_info info = BTUINFO_INIT;
++	char name[MAXTHREADNAMESIZE] = "";
++
++	control.btc_user_thread = thread;
++	unsigned count = backtrace_user(work->frames, limit, &control, &info);
++	bsd_getthreadname(get_bsdthread_info(thread), name);
++	name[MAXTHREADNAMESIZE - 1] = 0;
++	sheng_exit_clean_text(name);
++	printf("SHENG-EXIT: thread 0x%llx exiting=%d name \"%s\" frames %u error %d\n",
++	    (unsigned long long)thread_tid(thread), thread == current_thread(), name, count, info.btui_error);
++	sheng_exit_print_frames(work, count);
++	sheng_exit_note_images(work, count);
++}
++
++static void
++sheng_exit_trace(proc_t p, int rv, struct uthread *ut)
++{
++	static uint32_t sheng_exit_trace_count;
++	unsigned enabled = 0;
++
++	if (p != current_proc() || strncmp(p->p_comm, "WindowServer", sizeof("WindowServer")) ||
++	    !PE_parse_boot_argn("sheng-exit-trace", &enabled, sizeof(enabled)) || enabled != 1 ||
++	    __atomic_fetch_add(&sheng_exit_trace_count, 1, __ATOMIC_RELAXED) >= SHENG_EXIT_TRACES) {
++		return;
++	}
++	struct sheng_exit_work *work = kalloc_data(sizeof(*work), Z_WAITOK | Z_ZERO);
++	if (work == NULL) {
++		return;
++	}
++	struct sheng_exit_threads threads = { .count = 0 };
++	os_reason_t reason = p->p_exit_reason;
++	char *description = exit_reason_get_string_desc(reason);
++
++	printf("SHENG-EXIT: %s[%d] status 0x%x exception %d code 0x%llx subcode 0x%llx\n", p->p_comm, proc_getpid(p), (unsigned)rv,
++	    ut->uu_exception, (unsigned long long)ut->uu_code, (unsigned long long)ut->uu_subcode);
++	if (reason != OS_REASON_NULL) {
++		printf("SHENG-EXIT: reason namespace %u code 0x%llx flags 0x%llx description \"%s\"\n", reason->osr_namespace,
++		    (unsigned long long)reason->osr_code, (unsigned long long)reason->osr_flags, description ? description : "");
++	}
++	task_act_iterate_wth_args(proc_task(p), sheng_exit_collect, &threads);
++	sheng_exit_thread(work, current_thread(), SHENG_EXIT_FRAMES);
++	for (unsigned i = 0; i < threads.count; i++) {
++		if (threads.list[i] != current_thread()) {
++			sheng_exit_thread(work, threads.list[i], SHENG_EXIT_OTHER_FRAMES);
++		}
++		thread_deallocate(threads.list[i]);
++	}
++	printf("SHENG-EXIT: end, %u threads, %u images\n", threads.count, work->image_count);
++	kfree_data(work, sizeof(*work));
++}
++#endif /* SHENG */
++
+ void
+ proc_prepareexit(proc_t p, int rv, boolean_t perf_notify)
+ {
+@@ -2040,6 +2141,10 @@
+ 	task_t task = proc_task(p);
+ 
+ 
++#if SHENG
++	sheng_exit_trace(p, rv, ut);
++#endif
++
+ 	if (p->p_crash_behavior != 0 || p == initproc) {
+ 		proc_handle_critical_exit(p, rv);
+ 	}
