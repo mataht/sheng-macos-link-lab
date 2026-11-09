@@ -1,8 +1,16 @@
 diff --git a/package/GpuPowerProbe.cpp b/package/GpuPowerProbe.cpp
-index 358049e..d7fed25 100644
+index 358049e..a48a4ff 100644
 --- a/package/GpuPowerProbe.cpp
 +++ b/package/GpuPowerProbe.cpp
-@@ -102,11 +102,6 @@ extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak)
+@@ -86,6 +86,7 @@ extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu, size_t
+ #include <kern/clock.h>
+ #include <kern/thread_call.h>
+ #include <mach/mach_time.h>
++#include <mach/vm_param.h>
+ extern "C" ShengGmuStatus ShengGmuColdStart(ShengGmuDevice *, const ShengGmuConfig *, const AdrenoHfiStartupConfig *,
+     const ShengGmuStartupLimits *, ShengGmuStartupResult *) __attribute__((weak));
+ extern "C" ShengGmuStatus ShengGmuBindMmio(ShengGmuMmio *, ShengGmuIo *) __attribute__((weak));
+@@ -102,11 +103,6 @@ extern "C" uint32_t native_adreno_publish_stats(uint32_t *) __attribute__((weak)
  extern "C" void native_adreno_set_restart(NativeAdrenoRestart, void *) __attribute__((weak));
  // The staged AGXAccelerator (drivers/Adreno740/NativeAdrenoAccelerator.cpp): its static initializer runs only after the
  // original IOGPUFamily kext has loaded, because the parent metaclass does not exist before that.
@@ -14,7 +22,7 @@ index 358049e..d7fed25 100644
  extern "C" volatile int native_gpu_addon_stage, native_gpu_addon_status, native_gpu_addon2_stage, native_gpu_addon2_status;
  struct NativeAdrenoMetalDiagView {
      uint32_t opens, busy, bad, closes, reports, property_reads, foreign_opens, foreign_type, name_reads, calls, last_selector, last_status, ext_entries, ext_selector, ext_status, ext_in, ext_out, tunnel_calls, probes, sel_bits[8], mb_maps, mb_calls, marks_total, marks[16], chk_macf, chk_res, chk_type, type_pass_lo, type_pass_hi, attach_status, inflight, inflight_since_calls, forced_unmaps;
-@@ -124,23 +119,23 @@ extern "C" volatile uint32_t native_adreno_trace_stage;
+@@ -124,23 +120,23 @@ extern "C" volatile uint32_t native_adreno_trace_stage;
  extern "C" volatile uint32_t native_adreno_open_log_count;
  extern "C" int proc_iterate(unsigned flags, int (*callout)(void *, void *), void *arg, int (*filter)(void *, void *), void *filterarg);
  extern "C" const char *proc_name_address(void *p);
@@ -51,7 +59,51 @@ index 358049e..d7fed25 100644
  extern "C" ShengGmuDbStatus ShengGmuCommandDbInputs(const uint8_t *, size_t, uint32_t, ShengGmuVoteInputs *) __attribute__((weak));
  extern "C" AdrenoHfiStartupStatus ShengGmuBuildStartup(const ShengGmuVoteInputs *, AdrenoHfiStartupConfig *) __attribute__((weak));
  extern "C" unsigned ShengGmuPerfVote(unsigned, unsigned *) __attribute__((weak));
-@@ -580,7 +575,7 @@ extern "C" {
+@@ -449,11 +445,17 @@ void gpuSetActlr() {
+ // own cache attribute to the requested mode, which changed every mapping of the page, a client's view of its BO included (int-098).
+ extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+ extern "C" void ml_io_unmap(vm_offset_t addr, vm_size_t size);
++// io_map allocates whole kernel pages and ml_io_unmap hands its arguments to pmap_remove, which panics on a range that is not page
++// aligned: 0x1000 on the 16 KiB macOS kernel stopped tablet boot 12. So a mapping is released by the kernel pages it covers.
++static void ioUnmapPages(vm_offset_t va, vm_size_t bytes) {
++    const vm_offset_t mask = vm_offset_t(PAGE_SIZE) - 1, first = va & ~mask;
++    ml_io_unmap(first, ((va + bytes + mask) & ~mask) - first);
++}
+ bool physRead64(uint64_t pa, uint64_t *out) {
+     const vm_offset_t va = ml_io_map_unmappable(vm_offset_t(pa & ~uint64_t(0xfff)), 0x1000, 0x7 /* VM_WIMG_IO */);
+     if (!va) return false;
+     *out = *reinterpret_cast<volatile uint64_t *>(va + (pa & 0xff8));
+-    ml_io_unmap(va, 0x1000);
++    ioUnmapPages(va, 0x1000);
+     return true;
+ }
+ // NativeAdrenoVm::sampleWord's cached reader: one aligned word through the kernel's cacheable physical aperture, so a line a client's
+@@ -480,7 +482,7 @@ int lineAudit(uint64_t pa, size_t bytes, uint32_t *dirty, uint32_t *stale) {
+     const uint64_t began = mach_absolute_time();
+     const vm_offset_t page = ml_io_map_unmappable(vm_offset_t(pa & ~uint64_t(0xfff)), 0x1000, 0x7 /* VM_WIMG_IO */);
+     const vm_offset_t cached = phystokv(pa);
+-    if (!page || !cached) {if (page) ml_io_unmap(page, 0x1000); return 1;}
++    if (!page || !cached) {if (page) ioUnmapPages(page, 0x1000); return 1;}
+     const vm_offset_t dram = page + vm_offset_t(pa & 0xfff);
+     for (size_t at = 0; at < bytes; at += 64) {
+         const volatile uint64_t *c = reinterpret_cast<const volatile uint64_t *>(cached + at);
+@@ -493,13 +495,13 @@ int lineAudit(uint64_t pa, size_t bytes, uint32_t *dirty, uint32_t *stale) {
+         bool written = true;
+         for (unsigned i = 0; i < 8; ++i) if (d[i] != copy[i]) written = false;
+         if (written) {
+-            if (!*dirty && !native_adreno_audit_attr) native_adreno_audit_attr = 0x100 | (pmap_cache_attributes(unsigned(pa >> 12)) & 0xff);
++            if (!*dirty && !native_adreno_audit_attr) native_adreno_audit_attr = 0x100 | (pmap_cache_attributes(unsigned(pa >> PAGE_SHIFT)) & 0xff);
+             ++*dirty;
+         } else {
+             ++*stale;
+         }
+     }
+-    ml_io_unmap(page, 0x1000);
++    ioUnmapPages(page, 0x1000);
+     native_adreno_audit_ticks += mach_absolute_time() - began;
+     return 0;
+ }
+@@ -580,7 +582,7 @@ extern "C" {
  int32_t native_gpu_zap[8];
  // per SMC (init, mem_setup, auth): milliseconds and INTERRUPTED resumes; free pages before the zap and 2 s after its last step
  uint32_t native_gpu_zap_cost[6], native_gpu_zap_free[2];
@@ -60,7 +112,7 @@ index 358049e..d7fed25 100644
  }
  uint32_t rd32le(const uint8_t *p) {return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;}
  uint16_t rd16le(const uint8_t *p) {return uint16_t(p[0] | p[1] << 8);}
-@@ -694,8 +689,8 @@ extern "C" {
+@@ -694,8 +696,8 @@ extern "C" {
  // GPU interrupt (row 3): attach status, GICD readback, handled interrupts, OR of the INT_0_STATUS words they cleared
  uint32_t native_gpu_irq[6];
  IOReturn armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback,
@@ -71,7 +123,16 @@ index 358049e..d7fed25 100644
  }
  volatile uint32_t gIrqLast, gIrqSeen, gIrqEmpty;
  static thread_call_t gPreemptCall;
-@@ -1355,28 +1350,12 @@ volatile uint32_t gMetalStage = 0, gMetalRegistered = 0;
+@@ -1145,7 +1147,7 @@ bool dramPage(uint64_t pa, uint32_t *out) {
+     const vm_offset_t page = ml_io_map_unmappable(vm_offset_t(pa), 0x1000, 0x7 /* VM_WIMG_IO */);
+     if (!page) return false;
+     for (unsigned i = 0; i < 1024; ++i) out[i] = reinterpret_cast<const volatile uint32_t *>(page)[i];
+-    ml_io_unmap(page, 0x1000);
++    ioUnmapPages(page, 0x1000);
+     return true;
+ }
+ bool gpuCopyPage(uint64_t src, uint64_t dst) {
+@@ -1355,28 +1357,12 @@ volatile uint32_t gMetalStage = 0, gMetalRegistered = 0;
  volatile int gMetalKext = -99, gMetalStatus = 0;
  // Stages: 1 kext load attempted, 2 parent metaclass found, 3 own class registered, 4 object created and initialised, 5 published.
  void publishMetal() {
@@ -106,7 +167,7 @@ index 358049e..d7fed25 100644
      // The two keys the original _MTLRegisterDevices helper reads. The plugin name is ours: the bundle exists only through the
      // addon mount, and no Apple device identity (gpu,t8011 and the like) is claimed.
      accelerator->setProperty("MetalPluginName", "NativeAdrenoMetal");
-@@ -1390,6 +1369,7 @@ void publishMetal() {
+@@ -1390,6 +1376,7 @@ void publishMetal() {
      gMetalRegistered = 1;
      gMetalStage = 5;
  }
@@ -114,7 +175,7 @@ index 358049e..d7fed25 100644
  // Rows refreshed by the heartbeat thread: 6 = the stage chain, 7 = who reached the driver, 5 = the plugin's own report.
  // M a<addon stage>.<status> k<kext load> s<publish stage>/<status> r<registered>
  // D o<opened>/<busy>/<closed> p<property reads> <latest reader>><latest opener>   R<plugin report>
-@@ -1507,8 +1487,10 @@ int vnodeObserver(void *, void *, unsigned action, uintptr_t, uintptr_t vnode, u
+@@ -1507,8 +1494,10 @@ int vnodeObserver(void *, void *, unsigned action, uintptr_t, uintptr_t vnode, u
      return 3;
  }
  void registerExecObserver() {

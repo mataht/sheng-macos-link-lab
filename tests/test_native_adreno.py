@@ -241,6 +241,34 @@ class PackagerTests(unittest.TestCase):
                                                          '--gpu-plugin', 'bundle', '--gpu-plugin-trust-cache', 'trust'))
 
 
+class IoUnmapTests(unittest.TestCase):
+    """Tablet boot 12: ml_io_unmap(va, 0x1000) reached pmap_remove, which panics on a range that is not a whole number of 16 KiB pages."""
+
+    def test_no_four_kilobyte_unmap_remains(self):
+        text = BOARD_PATCH.read_text()
+        self.assertEqual(len(re.findall(r'^-.*ml_io_unmap\(\w+, 0x1000\)', text, re.M)), 4)
+        self.assertFalse([line for line in added(BOARD_PATCH) if re.search(r'ml_io_unmap\(\w+, 0x1000\)', line)])
+        self.assertIn('pmap_cache_attributes(unsigned(pa >> PAGE_SHIFT))', text)
+
+    def test_unmap_covers_the_pages_io_map_allocated(self):
+        compiler = shutil.which('c++')
+        if not compiler:
+            self.skipTest('no C++ compiler')
+        lines = added(BOARD_PATCH)
+        start = next(i for i, line in enumerate(lines) if line.startswith('static void ioUnmapPages'))
+        helper = '\n'.join(lines[start:start + 4])
+        source = ('#include <stdio.h>\ntypedef unsigned long vm_offset_t; typedef unsigned long vm_size_t;\n#define PAGE_SIZE 16384\n'
+                  'static void ml_io_unmap(vm_offset_t a, vm_size_t s) {printf("%lx %lx\\n", a, s);}\n' + helper + '\n'
+                  'int main() {ioUnmapPages(0xfffffe3c09494000, 0x1000); ioUnmapPages(0xfffffe3c09495000, 0x1000);'
+                  ' ioUnmapPages(0xfffffe3c09497800, 0x1000); return 0;}\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / 'u.cpp').write_text(source)
+            subprocess.run([compiler, '-Wall', '-Wextra', '-Werror', 'u.cpp', '-o', 'u'], cwd=temporary, check=True)
+            output = subprocess.run([str(Path(temporary) / 'u')], check=True, capture_output=True, text=True).stdout.split('\n')
+        # The panic's own range, a mapping that starts inside a page, and one that crosses into the next page (io_map allocates two).
+        self.assertEqual(output[:3], ['fffffe3c09494000 4000', 'fffffe3c09494000 4000', 'fffffe3c09494000 8000'])
+
+
 class PluginTests(unittest.TestCase):
     FRONT = (ROOT / adreno.PLATFORM_DIR / adreno.FRONT_END).read_text()
 
