@@ -13,7 +13,7 @@
 | 电源键、音量键当键盘用；触摸屏可用（单指） | 实机，2026-11-08 |
 | **完整系统在平板上进入桌面**（约 2 分钟，CPU 软件绘制） | 实机，2026-11-09 |
 
-还没有的：GPU 加速（只读的第 1 级在平板上跑过，没有任何渲染）、流畅操作（触摸到画面的延迟很大，原因没查清）、Wi-Fi、蓝牙、USB、声音、电池状态、亮度调节、睡眠、持久写盘。全部状态、证据和限制见[移植状态](docs/status.md)。
+还没有的：GPU 加速（内核栈在平板上跑到了第 9 级，Metal 插件也启动过一次，但画面是黑的，没有任何由 GPU 渲染的画面）、流畅操作（触摸到画面的延迟很大，原因没查清）、Wi-Fi、蓝牙、USB、声音、电池状态、亮度调节、睡眠、持久写盘。最新的第二版集成内核没有一次完整的 QEMU 完整系统运行，当晚的上机是在用户逐包放弃这一条的前提下进行的（见[验证上的缺口](docs/status.md#5-验证上的缺口)）。全部状态、证据和限制见[移植状态](docs/status.md)。
 
 ## 文档
 
@@ -34,4 +34,4 @@
 
 ## English summary
 
-An experimental port of macOS 26.5 (25F71) to the Xiaomi Pad 6S Pro (sheng, Snapdragon 8 Gen 2 / SM8550), started from CrossDarwin/macOS-ForSheng and built on UniXNU. As of 2026-11-09 the full system boots to the desktop on the tablet in about two minutes using CPU software rendering; touch and the hardware keys work. There is no GPU acceleration, the desktop is very laggy, and Wi-Fi, Bluetooth, USB, audio and battery reporting are not working. The repository contains source, tests and documentation only: no Apple software, vendor firmware or system images, and no instructions for producing a system image. Every boot is a RAM-only `fastboot boot`; nothing is flashed. Status and evidence by area: [docs/status.md](docs/status.md). Licensing: GPL-3.0-or-later for original work, upstream licenses retained; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
+An experimental port of macOS 26.5 (25F71) to the Xiaomi Pad 6S Pro (sheng, Snapdragon 8 Gen 2 / SM8550), started from CrossDarwin/macOS-ForSheng and built on UniXNU. As of 2026-11-09 the full system boots to the desktop on the tablet in about two minutes using CPU software rendering; touch and the hardware keys work. There is no GPU acceleration (the GPU kernel stack runs through stage 9 on the tablet and one Metal plug-in boot reached the real A740, but the screen stayed black), the desktop is very laggy, and Wi-Fi, Bluetooth, USB, audio and battery reporting are not working. The repository contains source, tests and documentation only: no Apple software, vendor firmware or system images, and no instructions for producing a system image. The latest integrated kernel has no complete full-system QEMU run; its tablet boots were made under per-package user waivers of that one gate (see docs/status.md, section 5). Every boot is a RAM-only `fastboot boot`; nothing is flashed. Status and evidence by area: [docs/status.md](docs/status.md). Licensing: GPL-3.0-or-later for original work, upstream licenses retained; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).

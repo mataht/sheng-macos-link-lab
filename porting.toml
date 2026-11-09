@@ -4,7 +4,7 @@ schema_version = 1
 name = "sheng"
 soc = "SM8550"
 os_profile = "macos-26.5-25F71"
-summary = "Xiaomi Pad 6S Pro (sheng, CN 16 GB / 1 TB) running macOS 26.5 (25F71) from RAM-only fastboot boots. As of 2026-11-09 the full system reaches the desktop with CPU rendering in about two minutes; touch and the hardware keys work. There is no GPU acceleration, the desktop is very laggy, and Wi-Fi, Bluetooth, USB, audio and battery reporting do not work. The newer drivers (GPU, Wi-Fi, USB, ADSP and battery, keyboard cover, RTC, backlight) have only run their read-only first stage on the tablet."
+summary = "Xiaomi Pad 6S Pro (sheng, CN 16 GB / 1 TB) running macOS 26.5 (25F71) from RAM-only fastboot boots. As of 2026-11-09 the full system reaches the desktop with CPU rendering in about two minutes; touch and the hardware keys work. There is no GPU acceleration, the desktop is very laggy, and Wi-Fi, Bluetooth, USB, audio and battery reporting do not work. The GPU kernel stack has run through stage 9 on the tablet and one Metal plug-in boot reached the real Adreno 740, but the screen stayed black. The RTC calendar stage ran once and saved about 30 seconds of boot. The other newer drivers (Wi-Fi, USB, ADSP and battery, keyboard cover, backlight, memory performance) have only run their read-only first stage on the tablet. The second integrated kernel has no complete full-system QEMU run; its tablet boots were made under per-package user waivers of that one gate."
 
 [[area]]
 id = "configuration"
@@ -74,7 +74,7 @@ paths = ["patches/UniXNU-sheng/0009-adt-13gib-owned-memory.patch", "platform/she
 inputs = ["Two DRAM windows (0x80000000 to 0xFFFFFFFF and 0x880000000 to 0xBFFFFFFFF) on the 16 GB unit; macOS uses 16 KiB pages."]
 configuration = ["Memory map patch for the CN 16 GB unit in the UniXNU-sheng series (0009); 16 KiB page size in the kernel and the Adreno code; sheng-memperf=1 enables the read-only L3/RPMh report."]
 procedure = ["Boot the packaged kernel; the packager checks the memory map against the unit's layout."]
-findings = ["The full system runs with the 16 KiB-page kernel and this memory map.", "The NativeMemPerf first stage read the RPMh command database with status 0; no benchmark has been run."]
+findings = ["The full system runs with the 16 KiB-page kernel and this memory map.", "The NativeMemPerf first stage read the RPMh command database with status 0; no benchmark has been run.", "The first report's Device and write-combined columns measured cached memory, because a second mapping of the kernel buffer returned the cached address; the code now maps the physical address (fixed, not yet run on the tablet)."]
 completion = ["All handoff regions are accounted for and each DMA engine uses its allocated range with the documented cache policy."]
 limits = ["Memory bandwidth and cache-policy performance are not measured. The framebuffer is mapped as device memory, which makes scrolling text slow; the log panel avoids reading it back."]
 next_action = ["Run the memory benchmark stage and compare cached, device and write-combined mappings."]
@@ -168,10 +168,10 @@ paths = ["platform/sheng/macos26/gpu/**", "patches/Adreno740/**", "patches/UniXN
 inputs = ["Adreno 740 (a7xx) with its GMU, SMMU and firmware (firmware is read from a device tree node and is never stored here); UniXNU's Adreno740 component; Mesa's Turnip driver with a Darwin backend; a Rust Metal-to-Vulkan bridge; a Metal plug-in loaded by WindowServer."]
 configuration = ["Kernel: an IOAccelerator front end over UniXNU's Adreno kernel stack, 16 KiB pages, default off, sheng-gpu-power=1..9 (1 is read-only). User space: plug-in bundle (Metal front end, bridge, Turnip) delivered as a compressed device tree node in QEMU."]
 procedure = ["Build with the --build-gpu switch (kernel) and the gpu-userland workflow (plug-in); boot with sheng-gpu-power=1 for the read-only stage. Higher stages power the GPU and need the device owner's approval."]
-findings = ["QEMU stage A: WindowServer loaded the plug-in, called its initialisation, opened the accelerator and the runtime answered that no device exists (QEMU has no A740).", "QEMU stage B (fake A740 that executes nothing): Turnip created a device, two submissions, the first frame (800 x 600, no content); WindowServer then exited with SIGABRT intermittently, cause unknown.", "The plug-in contains metal2vulkan (GPL-2.0-or-later or LGPL-3.0-or-later); its build artifacts are not redistributed."]
+findings = ["QEMU stage A: WindowServer loaded the plug-in, called its initialisation, opened the accelerator and the runtime answered that no device exists (QEMU has no A740).", "QEMU stage B (fake A740 that executes nothing): Turnip created a device, two submissions, the first frame (800 x 600, no content); WindowServer then exited with SIGABRT intermittently, cause unknown.", "Tablet, stages 3 to 8: power domains, clocks, the GMU SMMU context and the GMU firmware came up one stage per boot, ending with GX powered by the GMU and a heartbeat that advances; no fault, no panic.", "Tablet, stage 9, first kernel: the secure calls to TrustZone (zap load and authentication, SMMU aperture) all returned 0 and the GPU executed its first command through its own SMMU context; then the kernel panicked because the board probe called ml_io_unmap with a 4 KiB length on a 16 KiB-page kernel. Fixed by releasing whole pages (ioUnmapPages).", "Tablet, stage 9, second integrated kernel: desktop reached without a panic; the first GPU interrupt arrived, the accelerator was published, and all 1023 dwords of the test copy were correct.", "Tablet, first Metal plug-in boot (sheng-gpu-metal=1, sheng-full-ui=2): the plug-in was installed, the accelerator registered, WindowServer created the device named Turnip Adreno (TM) 740 and 107 client calls reached the driver with no fault and no panic, but the whole screen stayed black with no pointer. The driver was copying frames (0 to 6 swaps per second, then 0 or 1 after about 170 seconds). The cause is not established; candidates in order of likelihood: the display copy reads stale zeros because nothing invalidates the CPU cache after the GPU writes DRAM; composition work is not submitted or produces nothing; tiled or compressed output.", "The plug-in contains metal2vulkan (GPL-2.0-or-later or LGPL-3.0-or-later); its build artifacts are not redistributed."]
 completion = ["WindowServer renders through the Adreno 740 with Metal; AIR shaders compile to Adreno code."]
-limits = ["No GPU command has been executed and nothing has been rendered by the GPU on the tablet. Stages 2 and above (power domains, firmware, command ring) have never run on the tablet. The userland has not run on a 16 KiB-page kernel with a real A740."]
-next_action = ["Climb the hardware ladder one stage at a time, each with approval; explain the intermittent WindowServer abort after the first frame in QEMU."]
+limits = ["Nothing has been rendered by the GPU onto the screen. There is no evidence yet that Turnip compiled a shader or that the GPU executed real composition work. The second integrated kernel, on which stage 9 and the plug-in boot ran, has no complete full-system QEMU run (see the packaging area). Video readings of the rows have a few ambiguous characters (0 and 8 look alike)."]
+next_action = ["One diagnostic build and one boot: count client submissions per second, completed fences, SMMU fault bits and non-zero pixels of the presented surface through the cached mapping and through a fresh uncached mapping. Zero cached and non-zero uncached means invalidate before the copy; zero in both with submissions means a rendering problem; no submissions means the plug-in or WindowServer side. Not started. Also explain the intermittent WindowServer abort after the first frame in QEMU."]
 
 [[area.evidence]]
 kind = "host"
@@ -186,6 +186,20 @@ reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-deskt
 command = "fastboot boot sheng-macos26-kernel.img (sheng-gpu-power=1)"
 revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Stage 1, a read-only snapshot, ran on the tablet without writes or rendering (2026-11-09)."
+
+[[area.evidence]]
+kind = "device"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-gpu-plugin-boot-20261109/docs/status.md"
+command = "fastboot boot sheng-macos26-kernel.img (sheng-gpu-power=9, second integrated kernel)"
+revision = "e5cd05044e6c9f2cb442da0d2c4444a270579994"
+result = "Desktop reached without a panic; first GPU interrupt, accelerator published, 1023 of 1023 test dwords correct, read from a video of the screen (2026-11-09 night). The kernel has no complete full-system QEMU run."
+
+[[area.evidence]]
+kind = "device"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-gpu-plugin-boot-20261109/docs/status.md"
+command = "fastboot boot sheng-macos26-kernel.img (sheng-gpu-power=9 sheng-gpu-metal=1 sheng-full-ui=2, second integrated kernel)"
+revision = "e5cd05044e6c9f2cb442da0d2c4444a270579994"
+result = "Plug-in installed, accelerator registered, WindowServer created the Turnip device, 107 client calls reached the driver, no fault, no panic; the whole screen stayed black with no pointer (2026-11-09 night, read from a video)."
 
 [[area]]
 id = "network"
@@ -229,9 +243,9 @@ paths = ["platform/sheng/macos26/power/**", "platform/sheng/macos26/adsp/**"]
 inputs = ["PMIC state (RTC, backlight drivers KTZ8866 x 2), ADSP-owned battery and charger services, RPMh, the performance and memory-latency state."]
 configuration = ["Default-off drivers: NativeRtc (sheng-rtc), NativeBacklight (sheng-backlight, always clamped to 64..2047), NativeMemPerf (sheng-memperf), NativeAdsp and NativeBattery (sheng-adsp, sheng-battery), a PSCI reset hook (sheng-psci-reset). Charger writes are off and the critical battery level is never asserted."]
 procedure = ["Boot with sheng-<driver>=1 for the read-only snapshot; later stages need approval."]
-findings = ["The first stage of each ran on the tablet without writes. XNU waits up to 30 seconds for an IORTC service at boot and nothing yet publishes one. The ADSP firmware owns the Type-C controller.", "System sleep panics in QEMU because the platform does not register its cores for sleep, so sleep is disabled."]
+findings = ["The first stage of each ran on the tablet without writes. XNU waits up to 30 seconds for an IORTC service at boot. With sheng-rtc=2 the platform expert publishes IORTC early and NativeRtc moves the calendar forward; on the tablet this saved about 30 seconds (WindowServer's screen about 49 seconds after the boot command against 75 to 81 seconds before; read by hand from a video at 3 second steps). The calendar starts at the packaging time, not the true time. The ADSP firmware owns the Type-C controller.", "System sleep panics in QEMU because the platform does not register its cores for sleep, so sleep is disabled."]
 completion = ["Battery state and charging reported to macOS; brightness control; time kept across boots; sleep."]
-limits = ["No battery reporting, no brightness control, no RTC time, no sleep."]
+limits = ["No battery reporting, no brightness control, no true time (the calendar starts at the packaging time; the RTC counter probably clears on a forced reset, so an offset taken from Android is not usable), no sleep."]
 next_action = ["Measure the memory-bandwidth stage; decide the first ADSP stage that starts the DSP."]
 
 [[area.evidence]]
@@ -241,6 +255,13 @@ command = "fastboot boot sheng-macos26-kernel.img (read-only stage 1 of RTC, bac
 revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The first stages ran without a panic and the command database read returned status 0 (2026-11-09)."
 
+[[area.evidence]]
+kind = "device"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-gpu-plugin-boot-20261109/docs/status.md"
+command = "fastboot boot sheng-macos26-kernel.img (sheng-rtc=2 with a floor time)"
+revision = "e5cd05044e6c9f2cb442da0d2c4444a270579994"
+result = "WindowServer's screen appeared about 49 seconds after the boot command against about 75 to 81 seconds before; the calendar started at the packaging time (2026-11-09 night, hand reading of a video)."
+
 [[area]]
 id = "packaging"
 status = "host-verified"
@@ -249,9 +270,9 @@ paths = ["scripts/package_macos26_ufs.py", "scripts/assemble_*.py", "scripts/qua
 inputs = ["CI outputs, the paired Apple kernel extensions (local only), a device tree generated from board facts, driver switches, and the evidence from QEMU runs and device steps."]
 configuration = ["The packager refuses a package unless its evidence matches: same kernel identity, QEMU observations, root install evidence and, for full-system packages, a sibling VirtIO build of the same kernel. A tiered policy decides whether earlier long-run evidence can be reused, by comparing build records."]
 procedure = ["Assemble the kernel twice and compare byte for byte; run the quick QEMU gates (root found, storage default off, memory layout, eight cores); package; verify the package with an independent script that compares container, kernel, device tree and boot arguments."]
-findings = ["Assembly outputs and packages contain Apple code and vendor firmware and stay local; the repository holds the tools and tests.", "Reusing evidence is decided by comparing build records, not by hand."]
+findings = ["Assembly outputs and packages contain Apple code and vendor firmware and stay local; the repository holds the tools and tests.", "Reusing evidence is decided by comparing build records, not by hand.", "The second integrated kernel has no complete full-system QEMU run: one run ended in a tool failure at the last read and one in the known intermittent opendirectoryd panic on /Search. Its three tablet packages (stage 9, Metal plug-in, RTC) were booted under user waivers of that one gate, each valid for one package only; the other checks were not relaxed.", "The packager's sibling qualification does not reject a QEMU run that ended in a panic. Known gap, not yet fixed."]
 completion = ["Every package passes the independent review before any boot is requested."]
-limits = ["The local assembly and review outputs are not published, so a third party cannot rerun the review without their own inputs."]
+limits = ["The local assembly and review outputs are not published, so a third party cannot rerun the review without their own inputs. A complete full-system QEMU run of the second integrated kernel is still missing."]
 next_action = ["Document the packager's evidence rules in docs/ so another unit can reuse them."]
 
 [[area.evidence]]
@@ -307,7 +328,7 @@ status = "device-verified"
 components = []
 paths = ["platform/sheng/macos26/login/**", "platform/sheng/macos26/recovery/**"]
 inputs = ["The installed macOS 26.5 system supplied by the user, its original trust caches, and a few services the platform lacks (a watchdog and a key store)."]
-configuration = ["Development policy: dyld skips libignition; the original trust caches are loaded unchanged with no entries of our own; platform UUID from the device tree; panic_on_crash_disabled=1; minimal IOWatchdog (reports disabled) and AppleKeyStore (no keybag, no passcode, unlocked) enabled by sheng-watchdog=1 and sheng-aks=1."]
+configuration = ["Development policy: dyld skips libignition; the original trust caches are loaded unchanged with no entries of our own (Metal plug-in boots add the plug-in's two CDHashes and set lp-sip0 to 2); platform UUID from the device tree; panic_on_crash_disabled=1; minimal IOWatchdog (reports disabled) and AppleKeyStore (no keybag, no passcode, unlocked) enabled by sheng-watchdog=1 and sheng-aks=1."]
 procedure = ["Boot the full-system package; auto-login and no screen lock are required because the tablet has no hardware keyboard."]
 findings = ["The first full-system boot ran to WindowServer and then panicked when watchdogd exited without its service; a later boot reached the login window; with the services and the lock preference off it reached the desktop.", "loginwindow and WindowServer run; apps and long-run stability are not tested."]
 completion = ["The desktop appears and stays up; apps run."]
