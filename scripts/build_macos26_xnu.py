@@ -599,7 +599,8 @@ def compile_sources(args, record: dict) -> None:
                               login=args.build_login,
                               backlight=args.build_backlight,
                               keyboard=args.build_keyboard,
-                              memperf=args.build_memperf)
+                              memperf=args.build_memperf,
+                              wifi=args.build_wifi)
             save(record)
 
 
@@ -706,6 +707,8 @@ def main() -> None:
                         help='include the default-off memory performance reader (sheng-memperf=1, read-only)')
     parser.add_argument('--build-psci-reset', action='store_true',
                         help='add the default-off PSCI reboot and power-off hook to the platform expert (sheng-psci-reset=1)')
+    parser.add_argument('--build-wifi', action='store_true',
+                        help='include the default-off WCN7850 Wi-Fi companion (sheng-wifi=1 is read-only; 2 and 3 power and train PCIe0)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-keyboard', action='store_true',
@@ -735,6 +738,8 @@ def main() -> None:
         parser.error('--build-backlight requires --build-ufs-driver')
     if args.build_memperf and not args.build_ufs_driver:
         parser.error('--build-memperf requires --build-ufs-driver')
+    if args.build_wifi and not args.build_ufs_driver:
+        parser.error('--build-wifi requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_keyboard and not args.build_gop_display:

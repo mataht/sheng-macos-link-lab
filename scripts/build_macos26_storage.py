@@ -20,6 +20,7 @@ import native_keyboard
 import native_rtc
 import native_backlight
 import native_memperf
+import native_wifi
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -55,7 +56,7 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False, wifi=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gpu and (transport != 'ufs' or not gop_display):
@@ -70,6 +71,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
     if rtc and transport != 'ufs':
         raise ValueError('the RTC companion belongs to the hardware (UFS) storage driver')
+    if wifi and transport != 'ufs':
+        raise ValueError('the Wi-Fi companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -383,6 +386,27 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
                            str(memperf_dir / 'native_memperf.cpp') if arg == str(wrapper) else arg for arg in memperf_base]
         run(memperf_command, directory + '-memperf-compile', record, cwd=Path(compile_record['directory']), env=env)
         objects.append(str(memperf_object))
+    if wifi:
+        wifi_dir = destination / 'wifi'
+        wifi_dir.mkdir(exist_ok=True)
+        for name in native_wifi.PLATFORM_SOURCES:
+            (wifi_dir / name).write_bytes((root / native_wifi.PLATFORM_DIR / name).read_bytes())
+        for name in native_wifi.INPUT_SOURCES:
+            (wifi_dir / name).write_bytes((root / native_wifi.INPUT_DIR / name).read_bytes())
+        wifi_base = list(command)
+        user_headers = wifi_base.index(str(sdk / 'usr/include'))
+        if wifi_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del wifi_base[user_headers - 1:user_headers + 1]
+        wifi_base[1:1] = ['-I', str(wifi_dir)]
+        wifi_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        for source_file, object_file in ((wifi_dir / 'native_wifi.cpp', wifi_dir / 'NativeWifi.o'),
+                                         (root / native_wifi.UPSTREAM_CPP, wifi_dir / 'WifiProbe.o')):
+            one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg
+                   for arg in wifi_base]
+            run(one, directory + '-wifi-' + object_file.stem + '-compile', record,
+                cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -455,6 +479,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeBacklight'] = dict(native_backlight.PERSONALITY, CFBundleIdentifier=bundle)
     if memperf:
         info['IOKitPersonalities']['NativeMemPerf'] = dict(native_memperf.PERSONALITY, CFBundleIdentifier=bundle)
+    if wifi:
+        info['IOKitPersonalities']['NativeWifi'] = dict(native_wifi.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -486,6 +512,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_backlight'] = native_backlight.evidence(root)
     if memperf:
         evidence['native_memperf'] = native_memperf.evidence(root)
+    if wifi:
+        evidence['native_wifi'] = native_wifi.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

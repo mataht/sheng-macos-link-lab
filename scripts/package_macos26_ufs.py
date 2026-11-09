@@ -548,6 +548,17 @@ def qualify_rtc(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_wifi(build) -> dict:
+    """The Wi-Fi companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_wifi
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_wifi')
+    if not record:
+        raise ValueError('kernel lacks the Wi-Fi companion')
+    native_wifi.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_touch(build) -> dict:
     """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_touch
@@ -746,6 +757,8 @@ def main():
                         help='start the compiled memory performance reader (sheng-memperf=1, read-only)')
     parser.add_argument('--psci-reset', action='store_true',
                         help='let a reboot or shutdown reach PSCI (sheng-psci-reset=1); a panic stays on the screen')
+    parser.add_argument('--wifi-stage', type=int, choices=(1, 2, 3),
+                        help='start the compiled Wi-Fi companion (sheng-wifi=N): 1 read-only, 2 power and PCIe link, 3 endpoint registers')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -993,6 +1006,10 @@ def main():
     if args.psci_reset:
         psci_reset = qualify_psci_reset(args.kernel_build)
         boot_args += ' ' + psci_reset['boot_argument']
+    wifi = None
+    if args.wifi_stage:
+        wifi = dict(qualify_wifi(args.kernel_build), stage=args.wifi_stage)
+        boot_args += f' sheng-wifi={args.wifi_stage}'
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -1162,6 +1179,7 @@ def main():
                 touch=touch, cpufreq=cpufreq, gpu=gpu, login=login,
                 keyboard=keyboard,
                 rtc=rtc, backlight=backlight, memperf=memperf, psci_reset=psci_reset,
+                wifi=wifi,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
