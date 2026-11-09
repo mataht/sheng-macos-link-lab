@@ -179,7 +179,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if evidence.get('qemu_only_display') is True and not evidence.get('combined_driver'):
             # Display (and optionally the QEMU input companion) compiled directly into the QEMU-only bundle.
             if (not evidence.get('native_gop_display') or evidence.get('hardware_admitted') is not False
-                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_keyboard', 'native_rtc', 'native_backlight', 'native_memperf', 'native_wifi'))):
+                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_keyboard', 'native_rtc', 'native_backlight', 'native_memperf', 'native_wifi', 'native_adsp'))):
                 raise ValueError('the QEMU display bundle may carry only the GOP display and QEMU input companions')
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
@@ -314,6 +314,13 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             if usb_record.get('host') and not set(native_usb.modules_contract()['original_modules']) <= selected.keys():
                 raise ValueError('USB host stage requires the emit --usb-components candidate')
             allowed |= {'NativeUsb'}
+        adsp = evidence.get('native_adsp')
+        if adsp:
+            import native_adsp
+            native_adsp.validate(adsp)
+            if info['IOKitPersonalities'].get('NativeAdsp') != dict(native_adsp.PERSONALITY, CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('ADSP companion personality differs')
+            allowed |= {'NativeAdsp'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -541,6 +548,14 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             raise ValueError('USB host controller vtable slot count differs')
         driver['usb_host_vtable_abi'] = audit
         driver['usb_host_private_vtable_bindings'] = usb_host_bindings
+    if evidence.get('native_adsp'):
+        # NativeBattery subclasses a class of the kernel itself, so the original table is the kernel's own.
+        import native_adsp
+        audit = audit_storage_vtable(driver, original, kc, native, slide, family_bundle='com.apple.kernel',
+            base_class=native_adsp.POWER_SOURCE_ABI['base_class'], own_class=native_adsp.BATTERY_CLASS, kernel_resident_base=True)
+        if audit['slots'] != native_adsp.POWER_SOURCE_ABI['vtable_slots']:
+            raise ValueError('IOPMPowerSource vtable slot count differs from the audited 25F71 table')
+        driver['adsp_battery_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {
@@ -554,10 +569,18 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     return driver
 
 
+def kext_dispatch_slot(index: int, original_names, target: int, native: dict) -> bool:
+    """Slot 16 of a class compiled into a kext whose parent is compiled into the kernel: the original collection has the reserved stub in
+    the kernel's classes (IOService, IOPMPowerSource) and Dispatch in its kext classes (IOHIDDevice : IOService), so Dispatch is correct."""
+    dispatch = '__ZN15OSMetaClassBase8DispatchE5IORPC'
+    return (index == 16 and list(original_names) == ['__ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase3Ev']
+            and dispatch in native and target == native[dispatch])
+
+
 def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, slide: int, *,
                          family_bundle='com.apple.iokit.IOStorageFamily',
                          base_class='IOBlockStorageDevice', own_class=None, additional_names=None,
-                         pure_declaration_class=None, opaque_override_slots=()) -> dict:
+                         pure_declaration_class=None, opaque_override_slots=(), kernel_resident_base=False) -> dict:
     family = kc_macho(original, kc['entries'][family_bundle][1])
     kernel = kc_macho(original, kc['entries']['com.apple.kernel'][1])
     old_names = exports(original, kernel)
@@ -627,7 +650,7 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
                     methods[n] is not None and methods[n] == methods[a] for n in names for a in actual):
                 raise ValueError(f'transport override ABI mismatch at slot {index}: {names} / {actual}')
             overrides += 1
-        elif own['new_target'] not in expected:
+        elif own['new_target'] not in expected and not (kernel_resident_base and kext_dispatch_slot(index, names, own['new_target'], native)):
             raise ValueError(f'transport inherited vtable ABI mismatch at slot {index}: {names}')
         pac = old
         declaration = base_class

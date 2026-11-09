@@ -465,6 +465,8 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
         if 'usb_host_vtable_abi' in driver:
             report['storage_driver']['usb_host_vtable_abi'] = driver['usb_host_vtable_abi']
             report['storage_driver']['usb_host_private_vtable_bindings'] = driver['usb_host_private_vtable_bindings']
+        if 'adsp_battery_vtable_abi' in driver:
+            report['storage_driver']['adsp_battery_vtable_abi'] = driver['adsp_battery_vtable_abi']
     return final_data, report
 
 

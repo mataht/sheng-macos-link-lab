@@ -570,6 +570,17 @@ def qualify_wifi(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_adsp(build) -> dict:
+    """The ADSP companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_adsp
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_adsp')
+    if not record or 'adsp_battery_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited ADSP companion')
+    native_adsp.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_touch(build) -> dict:
     """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_touch
@@ -776,6 +787,15 @@ def main():
                              'a --build-usb-host kernel assembled with emit --usb-components)')
     parser.add_argument('--usb-phy-table', type=Path,
                         help='local PHY table placed in /arm-io/native-usb, pinned by size and SHA-256; never in a commit or CI build')
+    parser.add_argument('--adsp-stage', type=int, choices=(1, 2, 3),
+                        help='enable the compiled audio DSP companion up to this stage (sheng-adsp=N): 1 read-only, 2 adds a secure query, '
+                             '3 starts the DSP and needs --adsp-firmware-dir and --adsp-firmware-pin')
+    parser.add_argument('--adsp-firmware-dir', type=Path,
+                        help='local directory with adsp.mbn and adsp_dtb.mbn, placed in the loader addon slot (kernel.macho.gpuaddon; the '
+                             'package then contains vendor firmware and must stay local)')
+    parser.add_argument('--adsp-firmware-pin', type=Path, help='adsp-firmware-pin.json from scripts/native_adsp.py join')
+    parser.add_argument('--battery-stage', type=int, choices=(1, 2),
+                        help='battery manager under --adsp-stage 3 (sheng-battery=N): 1 logs the values, 2 also publishes the IOPMPowerSource')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -811,6 +831,16 @@ def main():
         parser.error('--usb-stage 3 and 4 require --usb-phy-table')
     if args.usb_phy_table and args.usb_stage not in (3, 4):
         parser.error('--usb-phy-table is only for --usb-stage 3 and 4')
+    if (args.adsp_firmware_dir is None) != (args.adsp_firmware_pin is None):
+        parser.error('--adsp-firmware-dir and --adsp-firmware-pin go together')
+    if args.adsp_firmware_dir and getattr(args, 'gpu_addon', None):
+        parser.error('the loader addon slot holds one payload: --adsp-firmware-dir excludes a GPU addon')
+    if args.adsp_firmware_dir and not args.adsp_stage:
+        parser.error('--adsp-firmware-dir requires --adsp-stage')
+    if args.adsp_stage == 3 and not args.adsp_firmware_dir:
+        parser.error('--adsp-stage 3 needs the local firmware (--adsp-firmware-dir, --adsp-firmware-pin)')
+    if args.battery_stage and args.adsp_stage != 3:
+        parser.error('--battery-stage requires --adsp-stage 3')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -1041,6 +1071,19 @@ def main():
         if args.usb_phy_table:
             usb_node = native_usb.node_properties(args.usb_phy_table.read_bytes())
         usb = dict(usb, phy_table_included=usb_node is not None)
+    adsp = adsp_images = None
+    if args.adsp_stage:
+        import native_adsp
+        adsp = qualify_adsp(args.kernel_build)
+        boot_args += f' sheng-adsp={args.adsp_stage}'
+        if args.battery_stage:
+            boot_args += f' sheng-battery={args.battery_stage}'
+        if args.adsp_firmware_dir:
+            adsp_images = ((args.adsp_firmware_dir / 'adsp.mbn').read_bytes(), (args.adsp_firmware_dir / 'adsp_dtb.mbn').read_bytes(),
+                           json.loads(args.adsp_firmware_pin.read_text()))
+            native_adsp.checked_firmware(*adsp_images)
+        adsp = dict(adsp, stage=args.adsp_stage, battery_stage=args.battery_stage, firmware_included=adsp_images is not None,
+                    package_contains_vendor_firmware=adsp_images is not None)
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -1135,6 +1178,7 @@ def main():
                     extra_arm_io_nodes=extra_arm_io_nodes,
                     usb_node=usb_node,
                     trust_cache_slot=True,
+                    addon_slot=adsp_images is not None,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
             else:
@@ -1143,7 +1187,10 @@ def main():
                                             platform_uuid=args.platform_uuid,
                                             native_gop_display=gop_enabled, touch_node=touch_node, gpu_node=gpu_node,
                                             extra_arm_io_nodes=extra_arm_io_nodes,
-                                            usb_node=usb_node)
+                                            usb_node=usb_node,
+                                            addon_slot=adsp_images is not None)
+            if adsp_images is not None:
+                adsp['addon'] = native_adsp.write_addon(files, *adsp_images)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
@@ -1214,6 +1261,7 @@ def main():
                 rtc=rtc, backlight=backlight, memperf=memperf, psci_reset=psci_reset,
                 wifi=wifi,
                 usb=usb,
+                adsp=adsp,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

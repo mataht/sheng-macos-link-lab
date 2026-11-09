@@ -41,7 +41,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 usb_node: dict | None = None,
                                 trust_cache_slot: bool = False,
                                 gpu_node: dict | None = None,
-                                extra_arm_io_nodes: dict[str, dict] | None = None) -> None:
+                                extra_arm_io_nodes: dict[str, dict] | None = None,
+                                addon_slot: bool = False) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
@@ -49,6 +50,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
     usb_arm_io = usb_nodes = 0
     memory_maps = 0
     extra_seen = set()
+    if addon_slot and qemu_virtio_input:
+        raise ValueError('the loader addon slot belongs to the hardware tree')
     if touch_node is not None and (development_root and qemu_virtio_input or not touch_node.get('firmware')):
         raise ValueError('the touch node needs its firmware and belongs to the hardware tree')
     gpu_arm_io = gpu_nodes = 0
@@ -145,11 +148,15 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             # IOPMrootDomain reads this policy before accepting idle or demand sleep.
             ensure('sleep-disabled', struct.pack('<I', 1))
         is_chosen = location == ('device-tree', 'chosen')
-        if trust_cache_slot and location == ('device-tree', 'chosen', 'memory-map'):
+        if (trust_cache_slot or addon_slot) and location == ('device-tree', 'chosen', 'memory-map'):
+            memory_maps += 1
             # Empty slot: DarwinBoot copies kernel.macho.trustcache into the kernel window and writes its physical
             # address and size here; XNU loads module 0 of it as the static trust cache.
-            memory_maps += 1
-            ensure('TrustCache', bytes(16))
+            if trust_cache_slot:
+                ensure('TrustCache', bytes(16))
+            # The same for kernel.macho.gpuaddon; it must be present exactly when the file is (DarwinBoot refuses otherwise).
+            if addon_slot:
+                ensure('GpuAddon', bytes(16))
         if native_gop_display and location == ('device-tree', 'arm-io'):
             arm_io += 1
         if touch_node is not None and location == ('device-tree', 'arm-io'):
@@ -300,6 +307,6 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             or gpu_node is not None and (gpu_arm_io != 1 or gpu_nodes != 1)
             or extra_arm_io_nodes and extra_seen != set(extra_arm_io_nodes)
             or usb_node is not None and (usb_arm_io != 1 or usb_nodes != 1)
-            or trust_cache_slot and memory_maps != 1):
+            or (trust_cache_slot or addon_slot) and memory_maps != 1):
         raise ValueError('requires one complete generated /chosen node')
     path.write_bytes(result)

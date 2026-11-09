@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_adsp
 import native_usb
 import native_adreno
 import native_login
@@ -57,7 +58,7 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False, wifi=False, usb=False, usb_host=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False, wifi=False, usb=False, usb_host=False, adsp=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gpu and (transport != 'ufs' or not gop_display):
@@ -78,6 +79,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         raise ValueError('the USB companion belongs to the hardware (UFS) storage driver')
     if usb_host and not usb:
         raise ValueError('the USB host stack requires the USB companion')
+    if adsp and transport != 'ufs':
+        raise ValueError('the ADSP companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -442,6 +445,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-usb-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if adsp:
+        native_adsp.build_objects(root, destination, command, obj, wrapper, sdk, compile_record, directory, run, record, env, objects)
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -518,6 +523,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeWifi'] = dict(native_wifi.PERSONALITY, CFBundleIdentifier=bundle)
     if usb:
         info['IOKitPersonalities']['NativeUsb'] = dict(native_usb.PERSONALITY, CFBundleIdentifier=bundle)
+    if adsp:
+        info['IOKitPersonalities']['NativeAdsp'] = dict(native_adsp.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -553,6 +560,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_wifi'] = native_wifi.evidence(root)
     if usb:
         evidence['native_usb'] = native_usb.evidence(root, host=usb_host)
+    if adsp:
+        evidence['native_adsp'] = native_adsp.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,
