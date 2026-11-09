@@ -20,6 +20,7 @@
 #include <IOKit/IOKitKeys.h>
 #include <libkern/c++/OSData.h>
 #include <libkern/c++/OSString.h>
+#include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
 #include <stdint.h>
 #include <string.h>
@@ -100,6 +101,23 @@ IOReturn write_output(IOExternalMethodArguments *args, const uint8_t *data, size
 // Every selector is logged the first time it is seen, with its result: this is what the QEMU runs and the boot text use
 // to learn which selectors macOS actually needs. Unknown selectors are logged as often as they are not repeated.
 volatile uint32_t aks_call_count[kLogSelectors];
+volatile uint32_t aks_total_calls;
+
+// The early console lines are lost when the console ring wraps, so the totals are repeated. Slots from 170 are watchdog selectors.
+void aks_summary(void) {
+  char line[256];
+  size_t used = 0;
+  line[0] = 0;
+  for (uint32_t slot = 0; slot < kLogSelectors && used + 16 < sizeof line; ++slot) {
+    uint32_t n = aks_call_count[slot];
+    if (!n) continue;
+    int written = snprintf(line + used, sizeof line - used, " %u:%u", slot, n);
+    if (written <= 0) break;
+    used += (size_t)written;
+  }
+  IOLog("NativeAKS: calls so far:%s\n", line);
+}
+
 void aks_note(const char *service, uint32_t selector, uint32_t slot, IOReturn rc) {
   if (slot < kLogSelectors) {
     uint32_t n = __atomic_add_fetch(&aks_call_count[slot], 1, __ATOMIC_RELAXED);
@@ -108,6 +126,7 @@ void aks_note(const char *service, uint32_t selector, uint32_t slot, IOReturn rc
   } else {
     IOLog("%s: selector %u answered 0x%x\n", service, selector, rc);
   }
+  if (__atomic_add_fetch(&aks_total_calls, 1, __ATOMIC_RELAXED) % 64 == 0) aks_summary();
 }
 
 IOReturn aks_dispatch(uint32_t selector, IOExternalMethodArguments *args) {
