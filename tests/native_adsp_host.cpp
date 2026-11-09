@@ -137,18 +137,20 @@ extern "C" bool PE_parse_boot_argn(const char *name, void *to, int)
 static uint8_t gAdspFile[4096], gDtbFile[4096];
 static uint8_t gAdspSum[32], gDtbSum[32];
 static bool gHaveNode = true;
+static uint8_t gAddon[64 * 1024];
+static uint64_t gAddonBytes;
+static const uint64_t kAddonPa = 0x8c0100000ull;
+static uint64_t gAddonSlot[2];
 class Node : public IORegistryEntry {
 public:
   OSObject *getProperty(const char *key) override
   {
-    if (!strcmp(key, "firmware")) return new OSData(gAdspFile, sizeof gAdspFile);
-    if (!strcmp(key, "firmware-dtb")) return new OSData(gDtbFile, sizeof gDtbFile);
-    if (!strcmp(key, "firmware-sha256")) return new OSData(gAdspSum, 32);
-    if (!strcmp(key, "firmware-dtb-sha256")) return new OSData(gDtbSum, 32);
+    if (!strcmp(key, "GpuAddon")) return new OSData(gAddonSlot, sizeof gAddonSlot);
     return nullptr;
   }
 };
-IORegistryEntry *IORegistryEntry::fromPath(const char *path, const char *) {return gHaveNode && !strcmp(path, "/arm-io/native-adsp") ? new Node : nullptr;}
+IORegistryEntry *IORegistryEntry::fromPath(const char *path, const char *) {return gHaveNode && !strcmp(path, "/chosen/memory-map") ? new Node : nullptr;}
+extern "C" uint64_t phystokv(uint64_t pa) {CHECK(pa == kAddonPa); return (uint64_t)gAddon;}
 OSObject *IORegistryEntry::getProperty(const char *) {return nullptr;}
 
 static unsigned gRegistered, gStatusUpdates;
@@ -280,6 +282,28 @@ static void buildFixtures()
   gLayout = qcom_rsc_layout(0x00030000);
 }
 
+static void putU64(uint8_t *p, uint64_t v) {put32(p, (uint32_t)v); put32(p + 4, (uint32_t)(v >> 32));}
+static void buildAddon()
+{
+  memcpy(gAddon, "NGPUADD2", 8);
+  memcpy(gAddon + 8, "SHADSP01", 8);
+  gAddonBytes = 4096 + sizeof gAdspFile + sizeof gDtbFile;
+  putU64(gAddon + 16, gAddonBytes);
+  putU64(gAddon + 24, 4096); putU64(gAddon + 32, sizeof gAdspFile); memcpy(gAddon + 40, gAdspSum, 32);
+  putU64(gAddon + 72, 4096 + sizeof gAdspFile); putU64(gAddon + 80, sizeof gDtbFile); memcpy(gAddon + 88, gDtbSum, 32);
+  memcpy(gAddon + 4096, gAdspFile, sizeof gAdspFile);
+  memcpy(gAddon + 4096 + sizeof gAdspFile, gDtbFile, sizeof gDtbFile);
+}
+// A container written by scripts/native_adsp.py, so the two sides of the layout are tested against each other.
+static void loadAddon(const char *path)
+{
+  FILE *f = fopen(path, "rb");
+  CHECK(f != nullptr);
+  gAddonBytes = fread(gAddon, 1, sizeof gAddon, f);
+  fclose(f);
+  CHECK(gAddonBytes > 4096);
+}
+
 static size_t makeImage(uint8_t *f, uint32_t base)
 {
   memset(f, 0, 4096);
@@ -409,7 +433,12 @@ int main(int argc, char **argv)
   if (!strcmp(scenario, "nofirmware")) gHaveNode = false;
   if (!strcmp(scenario, "overlap")) {gPhysBase = kAdsp; gPhysSize = 0x10000000;}
   if (!strcmp(scenario, "stopped")) gStopArg = 7;
-  if (!strcmp(scenario, "tampered")) gAdspFile[0x500] ^= 1;
+  buildAddon();
+  if (!strcmp(scenario, "tampered")) gAddon[4096 + 0x500] ^= 1;
+  if (!strcmp(scenario, "wrongkind")) gAddon[8] ^= 1;
+  if (!strcmp(scenario, "container")) loadAddon(getenv("NATIVE_ADSP_CONTAINER"));
+  gAddonSlot[0] = kAddonPa;
+  gAddonSlot[1] = gAddonBytes;
   if (gStageArg <= 2)
     for (Region &r : gRegions) CHECK(mprotect(r.host, r.size, PROT_READ) == 0);
   pthread_t soc;
@@ -428,7 +457,7 @@ int main(int argc, char **argv)
     printf("PASS native adsp host stage %u: %u checks\n", gStageArg, gChecks);
     _exit(0);
   }
-  if (!strcmp(scenario, "overlap") || !strcmp(scenario, "nofirmware") || !strcmp(scenario, "tampered")) {
+  if (!strcmp(scenario, "overlap") || !strcmp(scenario, "nofirmware") || !strcmp(scenario, "tampered") || !strcmp(scenario, "wrongkind")) {
     CHECK(waitFor(anyFailure, 2000));
     CHECK(native_adsp_stats[0] == -3);
     CHECK(native_adsp_stats[1] == (!strcmp(scenario, "overlap") ? -48 : !strcmp(scenario, "tampered") ? -80 : -2));
@@ -451,7 +480,7 @@ int main(int argc, char **argv)
   CHECK(gScmCount == 8 && gScm[0].command == QCOM_SCM_PAS_IS_SUPPORTED && gScm[1].command == QCOM_SCM_PAS_IS_SUPPORTED);
   for (unsigned i = 0; i < 6; ++i) CHECK(gScm[i + 2].command == order[i][0] && gScm[i + 2].pas == order[i][1]);
   CHECK(gMappedCarveouts == 2);
-  CHECK(gRegions[6].host[0x00] == 1 && gRegions[6].host[0xff] == 0 && gRegions[7].host[0x00] == 1);  // the first loaded bytes reached both carveouts
+  if (strcmp(scenario, "container")) CHECK(gRegions[6].host[0x00] == 1 && gRegions[6].host[0xff] == 0 && gRegions[7].host[0x00] == 1);  // the first loaded bytes reached both carveouts
   // The vote went out, the DSP took over and the vote was released.
   CHECK((native_adsp_stats[15] & 0xff) == 7 || (native_adsp_stats[15] & 0xff) == 0);
   CHECK(gLimitWrites == 0);

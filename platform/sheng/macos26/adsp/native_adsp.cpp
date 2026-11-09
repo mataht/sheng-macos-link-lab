@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // NativeAdsp: macOS 26 front end for the audio DSP (ADSP, LPASS) of the sheng board. Derived from UniXNU-sheng package/AdspProbe.cpp
-// at a68ee4ee67cc71792fbf519de7e3e28072c717b5, which is proven on iPadOS only. Changes from upstream: the images come from the device
-// tree (/arm-io/native-adsp, local package only) instead of a file reader, the carveouts are refused if they overlap the kernel's RAM,
+// at a68ee4ee67cc71792fbf519de7e3e28072c717b5, which is proven on iPadOS only. Changes from upstream: the images come from the loader's
+// addon slot (kernel.macho.gpuaddon, local package only; adsp_container.h) instead of a file reader, the carveouts are refused if they overlap the kernel's RAM,
 // there are three stages instead of two, every import is strong (upstream's weak imports are refused by the storage module audit), and
 // the state is printed on the kernel console.
 //
@@ -33,6 +33,7 @@
 #include <kern/clock.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
+#include "adsp_container.h"
 #include "adsp_sha256.h"
 extern "C" {
 #include "QcomGlink.h"
@@ -49,10 +50,13 @@ int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint
 extern uint64_t gPhysBase, gPhysSize;
 #define kernelPhysBase gPhysBase
 #define kernelPhysSize gPhysSize
+uint64_t phystokv(uint64_t pa);
+#define kernelPhysToVirt phystokv
 #else
 // Bound by symbol name so that no kernel header's declaration of these (a private type) can conflict with this one.
 extern uint64_t kernelPhysBase __asm__("_gPhysBase");
 extern uint64_t kernelPhysSize __asm__("_gPhysSize");
+uint64_t kernelPhysToVirt(uint64_t pa) __asm__("_phystokv");
 #endif
 bool native_battery_start(unsigned stage);
 extern volatile int32_t native_qrtr_stats[16];
@@ -366,16 +370,16 @@ void cleanToPoc(const void *start, size_t length)
 #endif
 }
 
-// ---- the images: carried in the device tree by a local package, parsed, metadata handed over, segments written into the carveout ----
+// ---- the images: carried in the loader's addon slot by a local package, parsed, metadata handed over, segments written into the carveout ----
 struct Image {  // plain data, zero at start: static storage (a few KiB of header table each, kept off the stack)
   const uint8_t *bytes;
   uint64_t size;
+  const uint8_t *sha256;
   bool usable;
   QcomMdtImage mdt;
   IOBufferMemoryDescriptor *meta;
 };
 Image gDtbImage, gAdspImage;
-OSData *gNodeData[4];  // retained for the life of the system: adsp, adsp digest, dtb, dtb digest
 
 int imageRead(void *context, uint64_t offset, void *to, size_t length)
 {
@@ -386,36 +390,34 @@ int imageRead(void *context, uint64_t offset, void *to, size_t length)
 }
 void releaseMeta(Image &image) {if (image.meta) image.meta->release(); image.meta = nullptr;}
 
-// /arm-io/native-adsp: never part of a build, only present in a local package.
-bool findFirmwareNode()
+// The loader's addon slot, /chosen/memory-map/GpuAddon (physical address and size): never part of a build, only present in a local
+// package. The bytes sit in the kernel's static window, below the top of kernel data. Returns 0 when found, 1 when there is no slot or it
+// is empty, or a container error. Reads headers only.
+int findFirmware()
 {
-  IORegistryEntry *node = IORegistryEntry::fromPath("/arm-io/native-adsp", gIODTPlane);
-  if (!node) {
-    IOLog("NativeAdsp: no /arm-io/native-adsp node; stage 3 needs a package built with the local ADSP images\n");
-    return false;
-  }
-  static const char *const keys[4] = {"firmware", "firmware-sha256", "firmware-dtb", "firmware-dtb-sha256"};
-  bool ok = true;
-  for (unsigned i = 0; i < 4; ++i) {
-    OSData *value = OSDynamicCast(OSData, node->getProperty(keys[i]));
-    if (value) {value->retain(); gNodeData[i] = value;} else ok = false;
-  }
+  IORegistryEntry *node = IORegistryEntry::fromPath("/chosen/memory-map", gIODTPlane);
+  if (!node) return 1;
+  uint64_t range[2] = {0, 0};
+  OSData *slot = OSDynamicCast(OSData, node->getProperty("GpuAddon"));
+  if (slot && slot->getLength() == sizeof range) memcpy(range, slot->getBytesNoCopy(), sizeof range);
   node->release();
-  if (ok) {
-    gAdspImage.bytes = static_cast<const uint8_t *>(gNodeData[0]->getBytesNoCopy());
-    gAdspImage.size = gNodeData[0]->getLength();
-    gDtbImage.bytes = static_cast<const uint8_t *>(gNodeData[2]->getBytesNoCopy());
-    gDtbImage.size = gNodeData[2]->getLength();
-  }
-  return ok;
+  if (!range[0] || !range[1]) return 1;
+  if (range[0] < kernelPhysBase || range[0] - kernelPhysBase >= kernelPhysSize || range[1] > kernelPhysBase + kernelPhysSize - range[0])
+    return sheng_adsp::ContainerRange;
+  sheng_adsp::ContainerImage adsp, dtb;
+  const int rc = sheng_adsp::parseContainer(reinterpret_cast<const uint8_t *>(kernelPhysToVirt(range[0])), range[1], adsp, dtb);
+  if (rc) return rc;
+  gAdspImage.bytes = adsp.bytes; gAdspImage.size = adsp.size; gAdspImage.sha256 = adsp.sha256;
+  gDtbImage.bytes = dtb.bytes; gDtbImage.size = dtb.size; gDtbImage.sha256 = dtb.sha256;
+  return 0;
 }
 
 // Stage 2 and 3: the images arrived whole and parse as signed firmware.
 int checkImages()
 {
   if (!gAdspImage.bytes || !gDtbImage.bytes) return -2;
-  if (!sheng_adsp::imageIntact(gAdspImage.bytes, gAdspImage.size, static_cast<const uint8_t *>(gNodeData[1]->getBytesNoCopy()), gNodeData[1]->getLength()) ||
-      !sheng_adsp::imageIntact(gDtbImage.bytes, gDtbImage.size, static_cast<const uint8_t *>(gNodeData[3]->getBytesNoCopy()), gNodeData[3]->getLength()))
+  if (!sheng_adsp::imageIntact(gAdspImage.bytes, gAdspImage.size, gAdspImage.sha256, 32) ||
+      !sheng_adsp::imageIntact(gDtbImage.bytes, gDtbImage.size, gDtbImage.sha256, 32))
     return -80;
   int rc = qcom_mdt_parse(&gAdspImage.mdt, gAdspImage.size, imageRead, &gAdspImage);
   if (rc) return 1000 - rc;
@@ -728,8 +730,8 @@ void adspThread(void *, wait_result_t)
     const ScmResult adsp = scm(QCOM_SCM_PAS_IS_SUPPORTED, qcom_scm_args(1, 0, 0, 0), kPasAdsp, 0, 0);
     const ScmResult dtb = scm(QCOM_SCM_PAS_IS_SUPPORTED, qcom_scm_args(1, 0, 0, 0), kPasDtb, 0, 0);
     const int images = checkImages(), rails = lookupRails(&lcx, &lmx);
-    const uint32_t adspHash = gNodeData[1] ? sheng_adsp::digestPrefix(static_cast<const uint8_t *>(gNodeData[1]->getBytesNoCopy()), gNodeData[1]->getLength()) : 0;
-    const uint32_t dtbHash = gNodeData[3] ? sheng_adsp::digestPrefix(static_cast<const uint8_t *>(gNodeData[3]->getBytesNoCopy()), gNodeData[3]->getLength()) : 0;
+    const uint32_t adspHash = sheng_adsp::digestPrefix(gAdspImage.sha256, gAdspImage.sha256 ? 32 : 0);
+    const uint32_t dtbHash = sheng_adsp::digestPrefix(gDtbImage.sha256, gDtbImage.sha256 ? 32 : 0);
     IOLog("NativeAdsp: PAS supported adsp x0=%lld x1=%llu dtb x0=%lld x1=%llu; images rc=%d adsp %llu B %08x dtb %llu B %08x; rails rc=%d lcx %u lmx %u; "
           "carveouts %s\n", (long long)adsp.x0, (unsigned long long)adsp.x1, (long long)dtb.x0, (unsigned long long)dtb.x1, images,
           (unsigned long long)gAdspImage.size, adspHash, (unsigned long long)gDtbImage.size, dtbHash, rails, lcx, lmx,
@@ -848,8 +850,8 @@ bool NativeAdsp::start(IOService *provider)
   if (PE_parse_boot_argn("sheng-adsp-stop", &value, sizeof(value))) gStopAt = value;
   if (PE_parse_boot_argn("sheng-adsp-delay", &value, sizeof(value)) && value <= 600) gDelay = value;
   gClientLock = IOLockAlloc();
-  const bool firmware = findFirmwareNode();
-  IOLog("NativeAdsp: stage %u, firmware node %s (adsp %llu B, dtb %llu B)\n", mode, firmware ? "present" : "absent",
+  const int firmware = findFirmware();
+  IOLog("NativeAdsp: stage %u, firmware %s (rc %d, adsp %llu B, dtb %llu B)\n", mode, firmware ? "absent" : "present", firmware,
         (unsigned long long)gAdspImage.size, (unsigned long long)gDtbImage.size);
   if (!gClientLock) {
     fail(StMapped, -12);

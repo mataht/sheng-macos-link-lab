@@ -638,8 +638,8 @@ def main():
                         help='enable the compiled audio DSP companion up to this stage (sheng-adsp=N): 1 read-only, 2 adds a secure query, '
                              '3 starts the DSP and needs --adsp-firmware-dir and --adsp-firmware-pin')
     parser.add_argument('--adsp-firmware-dir', type=Path,
-                        help='local directory with adsp.mbn and adsp_dtb.mbn, placed in /arm-io/native-adsp (the package then contains '
-                             'vendor firmware and must stay local)')
+                        help='local directory with adsp.mbn and adsp_dtb.mbn, placed in the loader addon slot (kernel.macho.gpuaddon; the '
+                             'package then contains vendor firmware and must stay local)')
     parser.add_argument('--adsp-firmware-pin', type=Path, help='adsp-firmware-pin.json from scripts/native_adsp.py join')
     parser.add_argument('--battery-stage', type=int, choices=(1, 2),
                         help='battery manager under --adsp-stage 3 (sheng-battery=N): 1 logs the values, 2 also publishes the IOPMPowerSource')
@@ -654,6 +654,8 @@ def main():
     args = parser.parse_args()
     if (args.adsp_firmware_dir is None) != (args.adsp_firmware_pin is None):
         parser.error('--adsp-firmware-dir and --adsp-firmware-pin go together')
+    if args.adsp_firmware_dir and getattr(args, 'gpu_addon', None):
+        parser.error('the loader addon slot holds one payload: --adsp-firmware-dir excludes a GPU addon')
     if args.adsp_firmware_dir and not args.adsp_stage:
         parser.error('--adsp-firmware-dir requires --adsp-stage')
     if args.adsp_stage == 3 and not args.adsp_firmware_dir:
@@ -841,7 +843,7 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
-    adsp = adsp_node = None
+    adsp = adsp_images = None
     if args.adsp_stage:
         import native_adsp
         adsp = qualify_adsp(args.kernel_build)
@@ -849,11 +851,11 @@ def main():
         if args.battery_stage:
             boot_args += f' sheng-battery={args.battery_stage}'
         if args.adsp_firmware_dir:
-            adsp_node = native_adsp.node_properties((args.adsp_firmware_dir / 'adsp.mbn').read_bytes(),
-                                                    (args.adsp_firmware_dir / 'adsp_dtb.mbn').read_bytes(),
-                                                    json.loads(args.adsp_firmware_pin.read_text()))
-        adsp = dict(adsp, stage=args.adsp_stage, battery_stage=args.battery_stage, firmware_included=adsp_node is not None,
-                    package_contains_vendor_firmware=adsp_node is not None)
+            adsp_images = ((args.adsp_firmware_dir / 'adsp.mbn').read_bytes(), (args.adsp_firmware_dir / 'adsp_dtb.mbn').read_bytes(),
+                           json.loads(args.adsp_firmware_pin.read_text()))
+            native_adsp.checked_firmware(*adsp_images)
+        adsp = dict(adsp, stage=args.adsp_stage, battery_stage=args.battery_stage, firmware_included=adsp_images is not None,
+                    package_contains_vendor_firmware=adsp_images is not None)
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -910,16 +912,16 @@ def main():
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
                     platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
-                    adsp_node=adsp_node, trust_cache_slot=True,
+                    addon_slot=adsp_images is not None, trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
             else:
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled, touch_node=touch_node, adsp_node=adsp_node)
-            if adsp_node is not None:
-                native_adsp.check_adt_size(files / 'kernel.macho.adt')
+                                            native_gop_display=gop_enabled, touch_node=touch_node, addon_slot=adsp_images is not None)
+            if adsp_images is not None:
+                adsp['addon'] = native_adsp.write_addon(files, *adsp_images)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'

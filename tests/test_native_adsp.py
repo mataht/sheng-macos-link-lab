@@ -142,9 +142,15 @@ class NativeAdspTests(unittest.TestCase):
             except subprocess.CalledProcessError as error:
                 self.fail(error.stderr)
             for stage, battery, scenario in (('1', '0', 'normal'), ('2', '0', 'normal'), ('3', '0', 'normal'), ('3', '1', 'normal'), ('3', '2', 'normal'),
-                                             ('3', '0', 'overlap'), ('3', '0', 'nofirmware'), ('3', '0', 'tampered'), ('3', '0', 'stopped')):
+                                             ('3', '0', 'overlap'), ('3', '0', 'nofirmware'), ('3', '0', 'tampered'), ('3', '0', 'wrongkind'),
+                                             ('3', '0', 'stopped'), ('3', '0', 'container')):
                 with self.subTest(stage=stage, battery=battery, scenario=scenario):
-                    run = subprocess.run([str(executable), stage, battery, scenario], capture_output=True, text=True, timeout=30)
+                    joined, _ = elf32()
+                    pin = native_adsp.pin_record(joined, joined)
+                    container = directory / 'container.bin'
+                    container.write_bytes(native_adsp.build_container(joined, joined, pin))
+                    run = subprocess.run([str(executable), stage, battery, scenario], capture_output=True, text=True, timeout=30,
+                                         env={'NATIVE_ADSP_CONTAINER': str(container)})
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                     self.assertTrue(run.stdout.startswith('PASS'), run.stdout + run.stderr)
 
@@ -187,45 +193,59 @@ class NativeAdspTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'shorter'):
                 native_adsp.join_split_image(directory, 'adsp')
 
-    def test_firmware_pin_and_node(self):
+    def test_firmware_pin_and_container(self):
+        adsp, dtb = b'A' * 8193, b'B' * 4096
+        pin = native_adsp.pin_record(adsp, dtb)
+        self.assertEqual(pin['adsp'], dict(bytes=8193, sha256=hashlib.sha256(adsp).hexdigest()))
+        data = native_adsp.build_container(adsp, dtb, pin)
+        self.assertEqual(data[:8], b'NGPUADD2')  # the loader's own checks: magic and total size
+        self.assertEqual(struct.unpack_from('<Q', data, 16)[0], len(data))
+        self.assertEqual(data[8:16], b'SHADSP01')
+        adsp_at, adsp_bytes = struct.unpack_from('<QQ', data, 24)
+        dtb_at, dtb_bytes = struct.unpack_from('<QQ', data, 72)
+        self.assertEqual(data[adsp_at:adsp_at + adsp_bytes], adsp)
+        self.assertEqual(data[dtb_at:dtb_at + dtb_bytes], dtb)
+        self.assertEqual(data[40:72], hashlib.sha256(adsp).digest())
+        self.assertEqual(data[88:120], hashlib.sha256(dtb).digest())
+        self.assertEqual((adsp_at % 4096, dtb_at % 4096), (0, 0))
+        with self.assertRaisesRegex(ValueError, 'differ'):
+            native_adsp.build_container(adsp + b'x', dtb, pin)
+        with self.assertRaisesRegex(ValueError, 'differ'):
+            native_adsp.build_container(adsp, dtb, pin | dict(schema='other'))
+        big = bytes(native_adsp.DARWINBOOT_ADDON_LIMIT)
+        with self.assertRaisesRegex(ValueError, 'DarwinBoot refuses'):
+            native_adsp.build_container(big, dtb, native_adsp.pin_record(big, dtb))
+
+    def test_addon_slot_holds_one_payload(self):
         adsp, dtb = b'A' * 8192, b'B' * 4096
         pin = native_adsp.pin_record(adsp, dtb)
-        self.assertEqual(pin['adsp'], dict(bytes=8192, sha256=hashlib.sha256(adsp).hexdigest()))
-        properties = native_adsp.node_properties(adsp, dtb, pin)
-        self.assertEqual(properties['firmware'], adsp)
-        self.assertEqual(properties['firmware-dtb'], dtb)
-        self.assertEqual(properties['firmware-sha256'], hashlib.sha256(adsp).digest())
-        self.assertTrue(all(len(key) <= 31 for key in properties))
-        with self.assertRaisesRegex(ValueError, 'differ'):
-            native_adsp.node_properties(adsp + b'x', dtb, pin)
-        with self.assertRaisesRegex(ValueError, 'differ'):
-            native_adsp.node_properties(adsp, dtb, pin | dict(schema='other'))
-
-    def test_adt_size_limit(self):
-        self.assertEqual(native_adsp.DARWINBOOT_ADT_LIMIT, 16 << 20)
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / 'adt'
-            path.write_bytes(bytes(1024))
-            self.assertEqual(native_adsp.check_adt_size(path), 1024)
-            path.write_bytes(bytes(native_adsp.DARWINBOOT_ADT_LIMIT + 1))
-            with self.assertRaisesRegex(ValueError, 'DarwinBoot refuses'):
-                native_adsp.check_adt_size(path)
+            directory = Path(temporary)
+            record = native_adsp.write_addon(directory, adsp, dtb, pin)
+            self.assertEqual(record['file'], 'kernel.macho.gpuaddon')
+            self.assertEqual(record['sha256'], hashlib.sha256((directory / record['file']).read_bytes()).hexdigest())
+            with self.assertRaisesRegex(ValueError, 'one payload'):
+                native_adsp.write_addon(directory, adsp, dtb, pin)
 
-    def test_device_tree_node(self):
-        adsp, dtb = b'A' * 8192, b'B' * 4096
-        properties = native_adsp.node_properties(adsp, dtb, native_adsp.pin_record(adsp, dtb))
+    def test_device_tree_addon_slot(self):
+        def tree_with(*memory_map_properties):
+            return node('device-tree', (), (node('chosen', (), (node('memory-map', memory_map_properties),)),))
+
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'tree'
-            path.write_bytes(node('device-tree', (), (node('chosen'), node('arm-io'))))
-            configure_native_text_state(path, adsp_node=properties)
-            tree = read_tree(path.read_bytes())
-            added = tree[('device-tree', 'arm-io', 'native-adsp')]
-            self.assertEqual(added['firmware'], adsp)
-            self.assertEqual(added['firmware-dtb'], dtb)
-            self.assertEqual(added['contract'], b'sheng-adsp-v1\0')
-            path.write_bytes(node('device-tree', (), (node('chosen'), node('arm-io'))))
-            with self.assertRaisesRegex(ValueError, 'ADSP node'):
-                configure_native_text_state(path, adsp_node=dict(properties, firmware=b''))
+            path.write_bytes(tree_with())
+            configure_native_text_state(path, addon_slot=True)
+            self.assertEqual(read_tree(path.read_bytes())[('device-tree', 'chosen', 'memory-map')]['GpuAddon'], bytes(16))
+            # Without firmware there is no slot: DarwinBoot refuses a slot with no file.
+            path.write_bytes(tree_with())
+            configure_native_text_state(path)
+            self.assertNotIn('GpuAddon', read_tree(path.read_bytes())[('device-tree', 'chosen', 'memory-map')])
+            # A slot someone else already filled is not taken over.
+            path.write_bytes(tree_with(('GpuAddon', bytes(range(16)))))
+            with self.assertRaisesRegex(ValueError, 'GpuAddon'):
+                configure_native_text_state(path, addon_slot=True)
+            with self.assertRaisesRegex(ValueError, 'hardware tree'):
+                configure_native_text_state(path, addon_slot=True, development_root=True, qemu_virtio_input=True)
 
     def test_packager_arguments(self):
         try:

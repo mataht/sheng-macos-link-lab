@@ -6,8 +6,9 @@ The cores in platform/sheng/macos26/adsp/upstream are unmodified copies from Uni
 native_battery.cpp are macOS front ends derived from AdspProbe.cpp and ShengBattery.cpp. One definition shared by the storage builder
 (sources, personality, evidence), the storage-module audit, the device-tree helper and the packager.
 
-The vendor firmware is never part of a build: only a local package carries it, in /arm-io/native-adsp, and only when its sizes and
-SHA-256 digests equal a local pin file written by the `join` command below from files read off the tablet.
+The vendor firmware is never part of a build: only a local package carries it, as a container in the loader's addon slot
+(kernel.macho.gpuaddon, platform/sheng/macos26/adsp/adsp_container.h), and only when its sizes and SHA-256 digests equal a local pin file
+written by the `join` command below from files read off the tablet. The slot exists because the loader limits the device tree to 16 MiB.
 """
 import argparse
 import hashlib
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_DIR = 'platform/sheng/macos26/adsp'
 UPSTREAM_COMMIT = 'a68ee4ee67cc71792fbf519de7e3e28072c717b5'
 FRONT_ENDS = ('native_adsp.cpp', 'native_battery.cpp')
-HEADERS = ('adsp_sha256.h',)
+HEADERS = ('adsp_sha256.h', 'adsp_container.h')
 UPSTREAM_C = ('QcomGlink.c', 'QcomMdt.c', 'QcomQmp.c', 'QcomQrtr.c', 'QcomRpmh.c', 'QcomSmem.c', 'QcomSmp2p.c', 'ShengBattmgr.c', 'ShengQrtr.c')
 UPSTREAM_H = ('QcomGlink.h', 'QcomMdt.h', 'QcomQmp.h', 'QcomQrtr.h', 'QcomRpmh.h', 'QcomScm.h', 'QcomSmem.h', 'QcomSmp2p.h', 'ShengAdsp.h',
               'ShengBattmgr.h')
@@ -34,12 +35,12 @@ PERSONALITY = dict(IOClass='NativeAdsp', IOProviderClass='IOPlatformExpertDevice
 BATTERY_CLASS = 'NativeBattery'
 # The class layout and virtual table measured from the 25F71 kernel collection and DWARF of the kernel built from the same sources.
 POWER_SOURCE_ABI = dict(base_class='IOPMPowerSource', object_bytes=0x138, vtable_slots=273)
-NODE = 'native-adsp'
 CONTRACT = 'sheng-adsp-v1'
+ADDON_FILE = 'kernel.macho.gpuaddon'
 MAX_IMAGE_BYTES = 128 << 20
-# DarwinBoot reads kernel.macho.adt with this limit (drivers/DarwinBoot: ReadFile (Root, TreePath, SIZE_16MB, ...)): a larger file stops
-# the boot before the kernel runs.
-DARWINBOOT_ADT_LIMIT = 16 << 20
+# DarwinBoot reads the addon with this limit (drivers/DarwinBoot: ReadFile (Root, TreePath, SIZE_64MB, ...)): a larger file stops the
+# boot before the kernel runs.
+DARWINBOOT_ADDON_LIMIT = 64 << 20
 IMAGES = ('adsp', 'adsp_dtb')
 
 
@@ -57,7 +58,7 @@ def evidence(root: Path = ROOT) -> dict:
     return dict(schema='sheng-adsp-v1', source_sha256=source_hashes(root), upstream_commit=UPSTREAM_COMMIT, stage_argument=STAGE_ARGUMENT,
                 stages=STAGES, battery_argument=BATTERY_ARGUMENT, battery_stages=BATTERY_STAGES, power_source_abi=POWER_SOURCE_ABI,
                 default_off=True, hardware_only=True, vm_refused=True, read_only_stage=1, firmware_compiled_in=False,
-                firmware_source='/arm-io/native-adsp (local package only, sizes and SHA-256 pinned by the packager)',
+                firmware_source='the loader addon slot, /chosen/memory-map/GpuAddon (local package only, sizes and SHA-256 pinned by the packager)',
                 charger_writes_default=False, critical_level_asserted=False, storage_writes=False, hardware_qualified=False)
 
 
@@ -163,21 +164,32 @@ def checked_firmware(adsp: bytes, dtb: bytes, pin: dict) -> None:
         raise ValueError('ADSP images differ from the local pin (sizes or SHA-256)')
 
 
-def node_properties(adsp: bytes, dtb: bytes, pin: dict) -> dict:
-    """Properties of /arm-io/native-adsp (all values are bytes); property names fit the 31-character ADT limit."""
+def build_container(adsp: bytes, dtb: bytes, pin: dict) -> bytes:
+    """The addon file (layout in adsp_container.h): the loader's magic and total size, this container's tag, the two images."""
     checked_firmware(adsp, dtb, pin)
-    return {'compatible': b'sheng,adsp-firmware\0', 'contract': CONTRACT.encode() + b'\0', 'firmware': adsp,
-            'firmware-sha256': bytes.fromhex(pin['adsp']['sha256']), 'firmware-dtb': dtb,
-            'firmware-dtb-sha256': bytes.fromhex(pin['adsp_dtb']['sha256'])}
+    adsp_at = 4096
+    dtb_at = (adsp_at + len(adsp) + 4095) & ~4095
+    total = dtb_at + len(dtb)
+    if total > DARWINBOOT_ADDON_LIMIT:
+        raise ValueError(f'the ADSP container is {total} bytes; DarwinBoot refuses an addon above {DARWINBOOT_ADDON_LIMIT}')
+    header = bytearray(adsp_at)
+    header[:8] = b'NGPUADD2'
+    header[8:16] = b'SHADSP01'
+    struct.pack_into('<QQQ', header, 16, total, adsp_at, len(adsp))
+    header[40:72] = bytes.fromhex(pin['adsp']['sha256'])
+    struct.pack_into('<QQ', header, 72, dtb_at, len(dtb))
+    header[88:120] = bytes.fromhex(pin['adsp_dtb']['sha256'])
+    return bytes(header) + adsp + bytes(dtb_at - adsp_at - len(adsp)) + dtb
 
 
-def check_adt_size(path: Path) -> int:
-    """Refuse an ADT the bootloader would reject, instead of producing a package that cannot boot."""
-    size = path.stat().st_size
-    if size > DARWINBOOT_ADT_LIMIT:
-        raise ValueError(f'the ADT with the ADSP images is {size} bytes; DarwinBoot refuses more than {DARWINBOOT_ADT_LIMIT} '
-                         '(see hw-build/driver-port/adsp-battery-status.md, firmware delivery)')
-    return size
+def write_addon(payload_dir: Path, adsp: bytes, dtb: bytes, pin: dict) -> dict:
+    """Writes the addon next to kernel.macho. One user of the slot per package: an existing file is refused, never replaced."""
+    target = Path(payload_dir) / ADDON_FILE
+    if target.exists():
+        raise ValueError('the loader addon slot is already used by this package; it holds one payload')
+    data = build_container(adsp, dtb, pin)
+    target.write_bytes(data)
+    return dict(file=ADDON_FILE, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), slot='/chosen/memory-map/GpuAddon')
 
 
 def main() -> int:
