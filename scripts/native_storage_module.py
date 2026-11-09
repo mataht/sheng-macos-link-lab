@@ -231,6 +231,13 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                        CFBundleIdentifier=evidence['bundle']):
                 raise ValueError('CPU frequency companion personality differs')
             allowed |= {'NativeCpuFreq'}
+        usb_record = evidence.get('native_usb')
+        if usb_record:
+            import native_usb
+            native_usb.validate(usb_record)
+            if info['IOKitPersonalities'].get('NativeUsb') != dict(native_usb.PERSONALITY, CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('USB companion personality differs')
+            allowed |= {'NativeUsb'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')

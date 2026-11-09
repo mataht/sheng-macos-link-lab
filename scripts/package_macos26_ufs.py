@@ -478,6 +478,17 @@ def qualify_button_keys(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_usb(build) -> dict:
+    """The USB companion must be compiled into this kernel's storage driver under its reviewed default-off contract."""
+    import native_usb
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_usb')
+    if not record:
+        raise ValueError('kernel lacks the USB companion')
+    native_usb.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_cpufreq(build) -> dict:
     """The CPU frequency companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_cpufreq
@@ -623,6 +634,8 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
+    parser.add_argument('--usb-stage', type=int, choices=(1, 2),
+                        help='start the compiled USB companion (native-usb=N): 1 read-only, 2 power and clocks')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -813,6 +826,10 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
+    usb = None
+    if args.usb_stage:
+        usb = dict(qualify_usb(args.kernel_build), stage=args.usb_stage)
+        boot_args += f' native-usb={args.usb_stage}'
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -942,7 +959,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq,
+                touch=touch, cpufreq=cpufreq, usb=usb,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

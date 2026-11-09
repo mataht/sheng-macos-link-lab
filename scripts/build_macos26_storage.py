@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_usb
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -49,11 +50,13 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, usb=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
+    if usb and transport != 'ufs':
+        raise ValueError('the USB companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -254,6 +257,33 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-cpufreq-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if usb:
+        usb_dir = destination / 'usb'
+        usb_dir.mkdir(exist_ok=True)
+        for name in native_usb.PLATFORM_SOURCES:
+            (usb_dir / name).write_bytes((root / native_usb.PLATFORM_DIR / name).read_bytes())
+        for name in native_usb.ALSO_COPIED:
+            (usb_dir / Path(name).name).write_bytes((root / name).read_bytes())
+        usb_base = list(command)
+        user_headers = usb_base.index(str(sdk / 'usr/include'))
+        if usb_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del usb_base[user_headers - 1:user_headers + 1]
+        usb_base[1:1] = ['-I', str(usb_dir)]
+        usb_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        for source_file, object_file, language in ((usb_dir / 'native_usb.cpp', usb_dir / 'NativeUsb.o', 'c++'),
+                                                   *((usb_dir / name, usb_dir / (Path(name).stem + '.o'), 'c')
+                                                     for name in native_usb.COMPILE_C)):
+            one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg
+                   for arg in usb_base]
+            if language == 'c':
+                one = ['-xc' if arg == '-xc++' else '-std=gnu17' if arg.startswith('-std=gnu++') else arg for arg in one
+                       if arg not in ('--driver-mode=g++', '-fsized-deallocation', '-fapple-kext',
+                                      '-fc++-static-destructors=none')]
+                one += ['-Wno-unused-command-line-argument']
+            run(one, directory + '-usb-' + object_file.stem + '-compile', record,
+                cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -309,6 +339,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     if cpufreq:
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
+    if usb:
+        info['IOKitPersonalities']['NativeUsb'] = dict(native_usb.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -328,6 +360,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_touch'] = native_touch.evidence(root)
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
+    if usb:
+        evidence['native_usb'] = native_usb.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,
