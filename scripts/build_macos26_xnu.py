@@ -524,6 +524,11 @@ def compile_sources(args, record: dict) -> None:
         subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                         str(ROOT / native_rtc.MACHINE_PATCH)], cwd=ROOT, check=True)
         record['platform_time_patch_sha256'] = sha(ROOT / native_rtc.MACHINE_PATCH)
+    if args.build_psci_reset:
+        import native_psci_reset
+        subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
+                        str(ROOT / native_psci_reset.MACHINE_PATCH)], cwd=ROOT, check=True)
+        record['platform_reset_patch_sha256'] = sha(ROOT / native_psci_reset.MACHINE_PATCH)
     subprocess.run(['git', 'apply', '--directory=' + str(machine.relative_to(ROOT)),
                     str(CPU_PATCH)], cwd=ROOT, check=True)
     record['cpu_registration_patch_sha256'] = sha(CPU_PATCH)
@@ -690,6 +695,8 @@ def main() -> None:
                         help='include the default-off panel brightness companion (sheng-backlight=1 is read-only)')
     parser.add_argument('--build-memperf', action='store_true',
                         help='include the default-off memory performance reader (sheng-memperf=1, read-only)')
+    parser.add_argument('--build-psci-reset', action='store_true',
+                        help='add the default-off PSCI reboot and power-off hook to the platform expert (sheng-psci-reset=1)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',

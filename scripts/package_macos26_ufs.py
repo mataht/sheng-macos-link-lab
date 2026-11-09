@@ -489,6 +489,15 @@ def qualify_cpufreq(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_psci_reset(build) -> dict:
+    """The kernel must contain the default-off PSCI reset hook before the packager may turn it on."""
+    import native_psci_reset
+    compiled = json.loads((build / 'build.json').read_text())
+    if compiled.get('platform_reset_patch_sha256') != native_psci_reset.patch_sha256():
+        raise ValueError('kernel lacks the PSCI reset hook')
+    return dict(boot_argument=native_psci_reset.BOOT_ARGUMENT, runtime_qualified=False)
+
+
 def qualify_memperf(build) -> dict:
     """The memory performance reader must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_memperf
@@ -666,6 +675,8 @@ def main():
     parser.add_argument('--backlight-level', type=int, help='sheng-backlight-level for stage 3 or 4 (64..2047)')
     parser.add_argument('--memperf-mode', type=int, choices=(1,),
                         help='start the compiled memory performance reader (sheng-memperf=1, read-only)')
+    parser.add_argument('--psci-reset', action='store_true',
+                        help='let a reboot or shutdown reach PSCI (sheng-psci-reset=1); a panic stays on the screen')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -874,6 +885,10 @@ def main():
     if args.memperf_mode:
         memperf = dict(qualify_memperf(args.kernel_build), mode=args.memperf_mode)
         boot_args += f' sheng-memperf={args.memperf_mode}'
+    psci_reset = None
+    if args.psci_reset:
+        psci_reset = qualify_psci_reset(args.kernel_build)
+        boot_args += ' ' + psci_reset['boot_argument']
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -1003,7 +1018,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq, rtc=rtc, backlight=backlight, memperf=memperf,
+                touch=touch, cpufreq=cpufreq, rtc=rtc, backlight=backlight, memperf=memperf, psci_reset=psci_reset,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

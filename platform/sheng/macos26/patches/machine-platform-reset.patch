@@ -1,0 +1,43 @@
+--- a/ArmDTPlatform/ArmDTPlatform.cpp
++++ b/ArmDTPlatform/ArmDTPlatform.cpp
+@@ -40,6 +40,8 @@
+ private:
+   bool hasNVRAMProxy (IOService *provider);
+   bool createDeviceNubs (IOService *provider);
++public:
++  int haltRestart (unsigned int type) override;
+ };
+
+ OSDefineMetaClassAndStructors (ArmDTPlatform, IODTPlatformExpert)
+@@ -122,6 +124,31 @@
+   for (;;) { __asm__ volatile ("wfe"); }
+ }
+
++// Without PE_halt_restart XNU spins forever after a reboot or shutdown. sheng-psci-reset=1 (hardware only) sends those two
++// requests to PSCI. A panic is not touched, so its text and QR code stay on the screen.
++static void platformPsci (uint64_t function)
++{
++  register uint64_t x0 __asm__ ("x0") = function;
++  register uint64_t x1 __asm__ ("x1") = 0;
++  register uint64_t x2 __asm__ ("x2") = 0;
++  register uint64_t x3 __asm__ ("x3") = 0;
++  __asm__ volatile ("smc #0" : "+r" (x0) : "r" (x1), "r" (x2), "r" (x3) : "memory");
++}
++
++int ArmDTPlatform::haltRestart (unsigned int type)
++{
++  const int result = IODTPlatformExpert::haltRestart (type);
++  uint32_t enabled = 0;
++  if (PE_vmm_present == 0 && PE_parse_boot_argn ("sheng-psci-reset", &enabled, sizeof (enabled)) && enabled == 1) {
++    if (type == kPERestartCPU) {
++      platformPsci (0x84000009);  // SYSTEM_RESET
++    } else if (type == kPEHaltCPU || type == kPEUPSDelayHaltCPU) {
++      platformPsci (0x84000008);  // SYSTEM_OFF
++    }
++  }
++  return result;
++}
++
+ bool ArmDTPlatform::configure (IOService *provider)
+ {
+   IORegistryEntry *cpus = provider->childFromPath ("cpus", gIODTPlane);
