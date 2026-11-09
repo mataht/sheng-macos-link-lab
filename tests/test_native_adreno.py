@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -231,6 +232,66 @@ class PackagerTests(unittest.TestCase):
                 (build / 'security-relink.json').write_text(json.dumps(dict(storage_driver=driver)))
                 with self.assertRaisesRegex(ValueError, 'audited Adreno'):
                     packager.qualify_gpu(build)
+
+
+    def test_plugin_goes_with_stage_9_and_its_trust_cache(self):
+        self.assertIn('--gpu-plugin-trust-cache', self.run_packager('--gpu-plugin', 'bundle'))
+        self.assertIn('--gpu-plugin-trust-cache', self.run_packager('--gpu-plugin-trust-cache', 'trust'))
+        self.assertIn('--gpu-stage 9', self.run_packager('--gpu-stage', '8', '--gpu-firmware', 'fw',
+                                                         '--gpu-plugin', 'bundle', '--gpu-plugin-trust-cache', 'trust'))
+
+
+class PluginTests(unittest.TestCase):
+    FRONT = (ROOT / adreno.PLATFORM_DIR / adreno.FRONT_END).read_text()
+
+    def test_install_is_default_off_and_needs_stage_9(self):
+        self.assertIn('if (mode < 9 || !PE_parse_boot_argn("sheng-gpu-metal", &metal, sizeof(metal)) || metal != 1) {', self.FRONT)
+        self.assertLess(self.FRONT.index('refused in a VM'), self.FRONT.index('startPluginInstall(mode);'))
+
+    def test_kernel_helper_patch_only_adds_and_is_built(self):
+        name = 'platform/sheng/macos26/patches/0067-gpu-plugin-kernel-mkdir.patch'
+        lines = (ROOT / name).read_text().splitlines()
+        self.assertFalse([line for line in lines if line.startswith('-') and not line.startswith('---')])
+        self.assertIn(name, (ROOT / 'scripts/build_macos26_xnu.py').read_text())
+
+    def bundle(self, directory):
+        macos = Path(directory) / 'NativeAdrenoMetal.bundle/Contents/MacOS'
+        macos.mkdir(parents=True)
+        (macos.parent / 'Info.plist').write_bytes(b'plist' * 100)
+        (macos / adreno.PLUGIN_NAME).write_bytes(b'exec' * 1000)
+        (macos / adreno.PLUGIN_TURNIP).write_bytes(b'turnip' * 1000)
+        return macos.parent.parent
+
+    def test_node_unpacks_to_the_original_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = self.bundle(temporary)
+            node = adreno.plugin_node(bundle)
+        self.assertEqual(node['compatible'], b'sheng,gpu-plugin\0')
+        size = struct.unpack_from('<Q', node['executable'])[0]
+        self.assertEqual(size, 4000)
+        self.assertEqual(zlib.decompress(node['executable'][8:]), b'exec' * 1000)
+
+    @staticmethod
+    def trust(hashes):
+        entries = b''.join(item + bytes([2, 0, 0, 0]) for item in sorted(hashes))
+        return struct.pack('<II', 1, 8) + struct.pack('<I', 2) + bytes(16) + struct.pack('<I', len(hashes)) + entries
+
+    def test_trust_cache_may_add_only_the_plugin_hashes(self):
+        apple = [bytes([1]) * 20, bytes([2]) * 20]
+        plugin = [bytes([3]) * 20, bytes([4]) * 20]
+        wanted = tuple(item.hex() for item in plugin)
+        with tempfile.TemporaryDirectory() as temporary:
+            original, extended = Path(temporary) / 'a', Path(temporary) / 'b'
+            original.write_bytes(self.trust(apple))
+            extended.write_bytes(self.trust(apple + plugin))
+            with mock.patch('system_trust_cache.check_bundle'):
+                self.assertEqual(adreno.plugin_trust_cache(original, extended, wanted)['entries'], 4)
+                extended.write_bytes(self.trust(apple + plugin + [bytes([5]) * 20]))
+                with self.assertRaisesRegex(ValueError, 'exactly the plugin'):
+                    adreno.plugin_trust_cache(original, extended, wanted)
+                extended.write_bytes(self.trust(apple[:1] + plugin))
+                with self.assertRaisesRegex(ValueError, 'exactly the plugin'):
+                    adreno.plugin_trust_cache(original, extended, wanted)
 
 
 if __name__ == '__main__':

@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from native_recovery_ui import PAGE, render, render_sets, validate, verify_page
+from native_recovery_ui import PAGE, metal_blocking_mask, render, render_sets, validate, verify_page
 
 
 class RecoveryUiPolicy(unittest.TestCase):
@@ -72,8 +72,12 @@ class RecoveryUiPolicy(unittest.TestCase):
             render(full, 'bad name')
         hook = (ROOT / 'platform/sheng/macos26/recovery/ui_policy_kernel.h').read_text()
         self.assertIn('TUNABLE(uint32_t, sheng_full_ui_enabled, "sheng-full-ui", 0);', hook)
-        # One table only: the full table needs sheng-full-ui=1 without sheng-recovery-ui, else the first match stops.
-        self.assertIn('sheng_full_ui_enabled == 1 && !sheng_recovery_ui_enabled', hook)
+        # One table only: the full table needs sheng-full-ui=1 or 2 without sheng-recovery-ui, else the first match stops.
+        self.assertIn('(sheng_full_ui_enabled == 1 || sheng_full_ui_enabled == 2) && !sheng_recovery_ui_enabled', hook)
+        # A Metal boot leaves exactly the three Metal-blocking pages as signed; the dyld, logging and cursor pages still apply.
+        self.assertEqual(metal_blocking_mask(full), 0x58)
+        self.assertIn('#define SHENG_FULL_UI_METAL_BLOCKING_MASK 0x58u', header)
+        self.assertIn('sheng_full_ui_enabled == 2 && (SHENG_FULL_UI_METAL_BLOCKING_MASK & ((uint32_t)1 << i))', hook)
         self.assertIn('if (!one_table ||', hook)
         self.assertIn('if (sheng_recovery_ui_enabled == 1 && !full)', hook)
 

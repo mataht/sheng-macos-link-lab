@@ -92,6 +92,7 @@ PATCHES = [
     ROOT / 'platform/sheng/macos26/patches/0064-native-language-chooser-trace.patch',
     ROOT / 'platform/sheng/macos26/patches/0065-native-panic-framebuffer-owner.patch',
     ROOT / 'platform/sheng/macos26/patches/0066-native-smp-progress.patch',
+    ROOT / 'platform/sheng/macos26/patches/0067-gpu-plugin-kernel-mkdir.patch',
 ]
 MACHINE_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-driver-declarations.patch'
 CPU_PATCH = ROOT / 'platform/sheng/macos26/patches/machine-cpu-registration.patch'
@@ -268,13 +269,14 @@ def prepare() -> dict:
     stage_file(vm_trace, source / 'osfmk/arm64/sheng_vm_trace.h')
     crypto_image = ROOT / 'platform/sheng/macos26/crypto/native_image.h'
     stage_file(crypto_image, source / 'osfmk/prng/sheng_crypto_image.h')
-    from native_recovery_ui import render_sets as render_ui_sets
+    from native_recovery_ui import metal_blocking_mask, render_sets as render_ui_sets
     recovery_ui = ROOT / 'platform/sheng/macos26/recovery/ui_policy.h'
     recovery_ui_kernel = ROOT / 'platform/sheng/macos26/recovery/ui_policy_kernel.h'
     recovery_ui_manifest = ROOT / RECOVERY_UI_MANIFEST
     full_ui_manifest = ROOT / FULL_UI_MANIFEST
     recovery_ui_generated = OUT / 'sheng_recovery_ui_pages.h'
     rendered = render_ui_sets(json.loads(recovery_ui_manifest.read_text()), json.loads(full_ui_manifest.read_text()))
+    full_ui_metal_mask = metal_blocking_mask(json.loads(full_ui_manifest.read_text()))
     if not recovery_ui_generated.exists() or recovery_ui_generated.read_text() != rendered:
         recovery_ui_generated.write_text(rendered)
     stage_file(recovery_ui, source / 'osfmk/vm/sheng_recovery_ui.h')
@@ -352,6 +354,7 @@ def prepare() -> dict:
                       runtime_qualified=False, hardware_admitted=False),
                   # Second pinned table in the same generated header, for the installed system's SystemOS cache.
                   full_ui_policy=dict(default_off=True, boot_argument='sheng-full-ui=1',
+                      metal_selection=dict(boot_argument='sheng-full-ui=2', skipped_page_mask=full_ui_metal_mask),
                       exclusive_with='sheng-recovery-ui', manifest=FULL_UI_MANIFEST,
                       page_count=len(json.loads(full_ui_manifest.read_text())['pages']),
                       manifest_sha256=sha(full_ui_manifest), engine_sha256=sha(recovery_ui),
