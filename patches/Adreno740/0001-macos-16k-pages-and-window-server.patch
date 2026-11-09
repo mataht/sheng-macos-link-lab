@@ -1,0 +1,79 @@
+diff --git a/NativeAdrenoCpu.cpp b/NativeAdrenoCpu.cpp
+index 268520c..b20ff7d 100644
+--- a/NativeAdrenoCpu.cpp
++++ b/NativeAdrenoCpu.cpp
+@@ -9,6 +9,11 @@ extern "C" vm_offset_t phystokv(uint64_t pa);
+ extern "C" uint64_t gPhysBase,gPhysSize;   /* the physical range phystokv covers (the kernel's own DRAM); anything else panics in phystokv */
+ extern "C" void pmap_set_cache_attributes(ppnum_t pn,unsigned int cacheattr);
+ extern "C" unsigned int pmap_cache_attributes(ppnum_t pn);
++/* Spans and GPU mappings use the GPU's 4 KiB granule. Page numbers and cache attributes belong to the kernel page, which is 16 KiB on
++ * macOS: walk each kernel page a span touches exactly once. */
++static inline uint64_t cpuPageFirst(uint64_t physical) {return physical&~(uint64_t(PAGE_SIZE)-1);}
++static inline uint64_t cpuPageEnd(uint64_t physical,uint64_t bytes) {return (physical+bytes+uint64_t(PAGE_SIZE)-1)&~(uint64_t(PAGE_SIZE)-1);}
++static inline ppnum_t cpuPageNumber(uint64_t physical) {return (ppnum_t)(physical>>PAGE_SHIFT);}
+ /* Time and bytes of every CPU cache maintenance pass (the board page shows them per submission), and the pages user BOs made
+  * write-combined: [0] ticks, [1] bytes, [2] longest pass in ticks, [3] passes, [4] write-combined pages now. */
+ extern "C" {volatile uint64_t native_adreno_cache_stats[5];}
+@@ -24,12 +29,11 @@ bool NativeAdrenoPagesUncached(const NativeAdrenoPhysicalSpan *spans,size_t coun
+ {
+     if(!spans || !count)return false;
+     for(size_t i=0;i<count;++i)
+-        for(uint64_t offset=0;offset<spans[i].bytes;offset+=4096) {
+-            const uint64_t page=spans[i].physical+offset;
++        for(uint64_t page=cpuPageFirst(spans[i].physical),end=cpuPageEnd(spans[i].physical,spans[i].bytes);page<end;page+=PAGE_SIZE) {
+             /* Outside the kernel's DRAM (device memory such as the firmware framebuffer): never cached. */
+             if(page<gPhysBase || page-gPhysBase>=gPhysSize)continue;
+             /* Write-combined, device, posted and real-time attributes all carry VM_MEM_NOT_CACHEABLE; write-through does not. */
+-            if(!(pmap_cache_attributes((ppnum_t)(page>>12))&VM_MEM_NOT_CACHEABLE))return false;
++            if(!(pmap_cache_attributes(cpuPageNumber(page))&VM_MEM_NOT_CACHEABLE))return false;
+         }
+     return true;
+ }
+@@ -55,8 +59,10 @@ IOReturn NativeAdrenoQueryCpu4K(NativeAdrenoCpuState *out)
+     out->kernel_page_bytes=page_size;
+     out->kernel_map_page_bytes=vm_map_page_size(kernel_map);
+     enable_preemption();
+-    bool native=PAGE_SIZE==4096 && out->kernel_page_bytes==4096 && out->kernel_map_page_bytes==4096 &&
+-        ((out->tcr>>14)&3)==0 && ((out->tcr>>30)&3)==2 &&
++    /* TCR_EL1 granule encodings: TG0 0 = 4 KiB, 2 = 16 KiB; TG1 2 = 4 KiB, 1 = 16 KiB. */
++    const bool small=PAGE_SIZE==4096;
++    bool native=(small || PAGE_SIZE==16384) && out->kernel_page_bytes==PAGE_SIZE && out->kernel_map_page_bytes==PAGE_SIZE &&
++        ((out->tcr>>14)&3)==(small?0u:2u) && ((out->tcr>>30)&3)==(small?2u:1u) &&
+         (out->sctlr&1) && (out->ttbr1&UINT64_C(0x0000fffffffff000));
+     return native?kIOReturnSuccess:kIOReturnUnsupported;
+ }
+@@ -145,8 +151,8 @@ IOReturn NativeAdrenoSetPagesCacheMode(const NativeAdrenoPhysicalSpan *spans,siz
+         pages+=span.bytes/4096;
+     }
+     for(size_t i=0;i<count;++i)
+-        for(uint64_t offset=0;offset<spans[i].bytes;offset+=4096)
+-            pmap_set_cache_attributes((ppnum_t)((spans[i].physical+offset)>>12),write_combined?VM_WIMG_WCOMB:VM_WIMG_USE_DEFAULT);
++        for(uint64_t page=cpuPageFirst(spans[i].physical),end=cpuPageEnd(spans[i].physical,spans[i].bytes);page<end;page+=PAGE_SIZE)
++            pmap_set_cache_attributes(cpuPageNumber(page),write_combined?VM_WIMG_WCOMB:VM_WIMG_USE_DEFAULT);
+     if(write_combined)__atomic_fetch_add(&native_adreno_cache_stats[4],pages,__ATOMIC_RELAXED);
+     else __atomic_fetch_sub(&native_adreno_cache_stats[4],pages,__ATOMIC_RELAXED);
+     return kIOReturnSuccess;
+@@ -159,8 +165,8 @@ IOReturn NativeAdrenoReassertWriteCombined(const NativeAdrenoPhysicalSpan *spans
+         const NativeAdrenoPhysicalSpan &span=spans[i];
+         if(!span.bytes || ((span.physical|span.bytes)&4095) || span.physical>UINT64_MAX-span.bytes ||
+             span.physical<gPhysBase || span.physical+span.bytes-gPhysBase>gPhysSize)return kIOReturnBadArgument;
+-        for(uint64_t offset=0;offset<span.bytes;offset+=4096) {
+-            const ppnum_t pn=(ppnum_t)((span.physical+offset)>>12);
++        for(uint64_t page=cpuPageFirst(span.physical),end=cpuPageEnd(span.physical,span.bytes);page<end;page+=PAGE_SIZE) {
++            const ppnum_t pn=cpuPageNumber(page);
+             /* From the default attribute the pmap also cleans and invalidates the page (pmap_sync_wimg), so lines a cacheable view
+              * dirtied reach DRAM before the GPU reads it. */
+             if((pmap_cache_attributes(pn)&VM_WIMG_MASK)!=VM_WIMG_WCOMB) {pmap_set_cache_attributes(pn,VM_WIMG_WCOMB);++*reset;}
+diff --git a/NativeAdrenoPublish.cpp b/NativeAdrenoPublish.cpp
+index 01a6b50..eb16e95 100644
+--- a/NativeAdrenoPublish.cpp
++++ b/NativeAdrenoPublish.cpp
+@@ -331,7 +331,7 @@ bool AGXDeviceUserClient::mount(bool kernel)
+     if(!core)return false;
+     IOLockLock(g.lock);
+     bool ok=false;
+-    const bool server=!kernel && !strncmp(name_,"backboardd",sizeof name_);
++    const bool server=!kernel && (!strncmp(name_,"WindowServer",sizeof name_) || !strncmp(name_,"backboardd",sizeof name_));
+     NativeAdrenoProcessVm *space=nullptr;
+     IOReturn opened=kIOReturnSuccess;
+     if(kernel)opened=g.kernel_client?kIOReturnBusy:kIOReturnSuccess;

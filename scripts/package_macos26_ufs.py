@@ -500,6 +500,17 @@ def qualify_touch(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_gpu(build) -> dict:
+    """The Adreno stack must be compiled into this kernel's storage driver under its reviewed contract, with its accelerator audited."""
+    import native_adreno
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_adreno')
+    if not record or 'adreno_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited Adreno stack')
+    native_adreno.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def display_copy_forward(panel_patch_sha256):
     """The reviewed always-on copy-forward step chained on the panel-size patch, or None (derive_hw_display_copy_forward.py)."""
     path = ROOT / 'platform/sheng/macos26/display/hw-copy-forward.json'
@@ -629,6 +640,12 @@ def main():
                         help='local NT36532 firmware placed in /arm-io/native-touch (the package then contains vendor '
                              'firmware and must stay local)')
     parser.add_argument('--touch-orient', type=int, choices=range(8), help='native-touch-orient bits (swap/mirror)')
+    parser.add_argument('--gpu-stage', type=int, choices=range(1, 10),
+                        help='run the compiled Adreno bring-up up to this stage (sheng-gpu-power=N): 1 only reads registers, 2 and up write; '
+                             '7 and up need --gpu-firmware')
+    parser.add_argument('--gpu-firmware', type=Path,
+                        help='local directory with the pinned GPU firmware for /arm-io/native-gpu (the package then contains vendor '
+                             'firmware and must stay local)')
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
@@ -636,7 +653,9 @@ def main():
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
         parser.error('--touch-stage 4 downloads firmware: give --touch-firmware')
-    recovery_inputs = ('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
+    if bool(args.gpu_firmware) != bool(args.gpu_stage and args.gpu_stage >= 7):
+        parser.error('--gpu-firmware is required for --gpu-stage 7 and up, and only for those')
+    recovery_inputs =('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
     if args.full_system:
         missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install')
                    if getattr(args, n) is None]
@@ -824,6 +843,14 @@ def main():
             touch_node = native_touch.node_properties(args.touch_firmware.read_bytes())
         touch = dict(touch, stage=args.touch_stage, firmware_included=touch_node is not None,
                      package_contains_vendor_firmware=touch_node is not None)
+    gpu = gpu_node = None
+    if args.gpu_stage:
+        import native_adreno
+        boot_args += f' {native_adreno.MODE_ARGUMENT}={args.gpu_stage}'
+        if args.gpu_firmware:
+            gpu_node = native_adreno.checked_firmware(args.gpu_firmware)
+        gpu = dict(qualify_gpu(args.kernel_build), stage=args.gpu_stage, writes_registers=args.gpu_stage >= 2,
+                   firmware_included=gpu_node is not None, package_contains_vendor_firmware=gpu_node is not None)
     button_keys = None
     if args.button_keys:
         button_keys = qualify_button_keys(args.kernel_build)
@@ -868,7 +895,7 @@ def main():
                     full_system_volume_group=uuid.UUID(full_contract['volume_group']),
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
-                    platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
+                    platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node, gpu_node=gpu_node,
                     trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
@@ -876,7 +903,7 @@ def main():
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled, touch_node=touch_node)
+                                            native_gop_display=gop_enabled, touch_node=touch_node, gpu_node=gpu_node)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
@@ -942,7 +969,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq,
+                touch=touch, cpufreq=cpufreq, gpu=gpu,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

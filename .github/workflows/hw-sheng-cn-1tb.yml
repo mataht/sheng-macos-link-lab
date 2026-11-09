@@ -4,7 +4,7 @@ name: CN 1 TB sheng hardware candidate build
 on:
   workflow_dispatch:
   push:
-    branches: ['ci/hw-sheng-cn-1tb']
+    branches: ['ci/hw-sheng-cn-1tb', 'ci/drv-*']
 permissions:
   contents: read
 concurrency:
@@ -40,7 +40,7 @@ jobs:
                    test_qualification_reuse test_inspect_macos26_full_image test_full_system_qemu \
                    test_repartition_macos26_full test_full_root_install test_full_system_package \
                    test_native_touch \
-                   test_system_trust_cache test_native_cpufreq \
+                   test_system_trust_cache test_native_cpufreq test_native_adreno \
                    test_native_recovery_ui test_native_display_bindings; do
             python3 -m unittest discover -s tests -p "$t.py" -v
           done
@@ -79,6 +79,7 @@ jobs:
             UniXNU-sheng/
             uefi-sheng/
             xnu/
+            gpu/
             Snapintosh/
             q1n1/
             sources/macos26/
@@ -94,12 +95,13 @@ jobs:
             UniXNU-sheng/
             uefi-sheng/
             xnu/
+            gpu/
             Snapintosh/
             q1n1/
             sources/macos26/
           key: ${{ steps.native-sources.outputs.cache-primary-key }}
       - run: python3 scripts/apply_patches.py
-      - run: brew install cmake ninja unifdef
+      - run: brew install cmake ninja unifdef dtc
       - name: Cache the pinned KDK download
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -110,7 +112,7 @@ jobs:
       - run: bash scripts/verify_kdk.sh config/macos26.json
       # No native build cache is restored: the hardware candidate is compiled from scratch.
       - name: Link the kernel with the UFS storage module and GOP display
-        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --build-touch --build-cpufreq --build-full-root --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
+        run: python3 scripts/build_macos26_xnu.py --arch "$NATIVE_ARCH" --link-kernel --build-ufs-driver --build-gop-display --build-recovery-input --build-button-keys --build-touch --build-cpufreq --build-full-root --build-gpu --kdk-root "$SHENG_KDK_EXPANDED/KDK.pkg/Payload" -j 4
       - name: Encrypt the kernel artifact
         if: success()
         env:

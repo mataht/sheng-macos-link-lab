@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_adreno
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -49,9 +50,11 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if gpu and (transport != 'ufs' or not gop_display):
+        raise ValueError('the Adreno stack belongs to the hardware (UFS) bundle with the GOP display')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
@@ -254,6 +257,40 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-cpufreq-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if gpu:
+        gpu_dir = destination / 'adreno'
+        gpu_dir.mkdir(exist_ok=True)
+        generated = native_adreno.generate_headers(root, gpu_dir, directory, run, record, env)
+        (gpu_dir / 'adreno_firmware_pins.h').write_text(native_adreno.pins_header(root))
+        front_end = gpu_dir / native_adreno.FRONT_END
+        front_end.write_bytes((root / native_adreno.PLATFORM_DIR / native_adreno.FRONT_END).read_bytes())
+        gpu_base = list(command)
+        user_headers = gpu_base.index(str(sdk / 'usr/include'))
+        if gpu_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del gpu_base[user_headers - 1:user_headers + 1]
+        gpu_base[1:1] = ['-I', str(gpu_dir)]
+        for include_directory in native_adreno.include_directories(root, generated):
+            gpu_base[1:1] = ['-I', str(include_directory)]
+        gpu_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers'),
+                     '-DNATIVE_GPU_BUILD_ID=0x' + native_adreno.build_identifier(root) + 'ULL',
+                     '-Wno-incompatible-sysroot', '-Wno-overloaded-virtual', '-Wno-pointer-bool-conversion']
+
+        def compile_gpu(source_file, object_file, language):
+            one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg for arg in gpu_base]
+            if language == 'c':
+                one = ['-xc' if arg == '-xc++' else '-std=gnu17' if arg.startswith('-std=gnu++') else arg for arg in one
+                       if arg not in ('--driver-mode=g++', '-fsized-deallocation', '-fapple-kext',
+                                      '-fc++-static-destructors=none')]
+                one += ['-Wno-unused-command-line-argument']
+            run(one, directory + '-gpu-' + object_file.stem + '-compile', record, cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
+
+        compile_gpu(front_end, gpu_dir / 'NativeAdrenoMacos.o', 'c++')
+        for source_file in native_adreno.cpp_sources(root):
+            compile_gpu(source_file, gpu_dir / (source_file.stem + '.o'), 'c++')
+        for source_file in native_adreno.c_sources(root):
+            compile_gpu(source_file, gpu_dir / (source_file.stem + '.kit.o'), 'c')
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -309,6 +346,11 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     if cpufreq:
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
+    if gpu:
+        info['IOKitPersonalities']['NativeGpuStart'] = dict(native_adreno.START_PERSONALITY, CFBundleIdentifier=bundle)
+        info['IOKitPersonalities']['AGXAccelerator'] = dict(native_adreno.ACCELERATOR_PERSONALITY, CFBundleIdentifier=bundle)
+        info['OSBundleLibraries'][native_adreno.IOGRAPHICS_BUNDLE] = native_adreno.IOGRAPHICS_COMPATIBLE
+        info['OSBundleLibraries']['com.apple.kpi.bsd'] = '25.0'
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -328,6 +370,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_touch'] = native_touch.evidence(root)
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
+    if gpu:
+        evidence['native_adreno'] = native_adreno.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

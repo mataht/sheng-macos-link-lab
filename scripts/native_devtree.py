@@ -38,7 +38,8 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                 full_system_volume_group: uuid.UUID | None = None,
                                 full_system_root_snapshot: str | None = None,
                                 touch_node: dict | None = None,
-                                trust_cache_slot: bool = False) -> None:
+                                trust_cache_slot: bool = False,
+                                gpu_node: dict | None = None) -> None:
     data = path.read_bytes()
     chosen = asmb = auth = options = proxies = 0
     arm_io = gop_nodes = 0
@@ -46,6 +47,9 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
     memory_maps = 0
     if touch_node is not None and (development_root and qemu_virtio_input or not touch_node.get('firmware')):
         raise ValueError('the touch node needs its firmware and belongs to the hardware tree')
+    gpu_arm_io = gpu_nodes = 0
+    if gpu_node is not None and (development_root and qemu_virtio_input or not gpu_node.get('gmu-firmware')):
+        raise ValueError('the GPU node needs its firmware and belongs to the hardware tree')
     defaults = 0
     input_nodes = 0
     if qemu_disable_sleep and not development_root:
@@ -82,7 +86,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
 
     def node(at: int, parents: tuple[str, ...] = ()) -> tuple[bytes, int]:
         nonlocal chosen, asmb, auth, options, proxies, arm_io, gop_nodes, defaults, input_nodes
-        nonlocal touch_arm_io, touch_nodes, memory_maps
+        nonlocal touch_arm_io, touch_nodes, memory_maps, gpu_arm_io, gpu_nodes
         if len(parents) > 32 or at + 8 > len(data):
             raise ValueError('invalid generated device-tree node')
         count, children = struct.unpack_from('<II', data, at)
@@ -150,6 +154,12 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             touch_nodes += 1
             for key, value in touch_node.items():
                 ensure(key, value)
+        if gpu_node is not None and location == ('device-tree', 'arm-io'):
+            gpu_arm_io += 1
+        if gpu_node is not None and location == ('device-tree', 'arm-io', 'native-gpu'):
+            gpu_nodes += 1
+            for key, value in gpu_node.items():
+                ensure(key, value)
         if native_gop_display and location == ('device-tree', 'arm-io', 'native-gop'):
             gop_nodes += 1
             ensure('device_type', b'display-subsystem\0')
@@ -209,6 +219,14 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
                                    value + bytes(-len(value) % 4))
             children += 1
             touch_nodes += 1
+        if gpu_node is not None and location == ('device-tree', 'arm-io') and not gpu_nodes:
+            entries = (('name', b'native-gpu\0'), *gpu_node.items())
+            descendants.extend(struct.pack('<II', len(entries), 0))
+            for key, value in entries:
+                descendants.extend(struct.pack('<32sI', key.encode(), len(value)) +
+                                   value + bytes(-len(value) % 4))
+            children += 1
+            gpu_nodes += 1
         if native_gop_display and location == ('device-tree', 'arm-io') and not gop_nodes:
             # The original framework counts display-subsystem descriptors before matching services.
             entries = (('name', b'native-gop\0'), ('device_type', b'display-subsystem\0'),
@@ -246,6 +264,7 @@ def configure_native_text_state(path: Path, *, development_root: bool = False,
             or qemu_virtio_input and input_nodes != 1
             or native_gop_display and (arm_io != 1 or gop_nodes != 1)
             or touch_node is not None and (touch_arm_io != 1 or touch_nodes != 1)
+            or gpu_node is not None and (gpu_arm_io != 1 or gpu_nodes != 1)
             or trust_cache_slot and memory_maps != 1):
         raise ValueError('requires one complete generated /chosen node')
     path.write_bytes(result)
