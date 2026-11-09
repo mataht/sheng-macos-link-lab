@@ -21,7 +21,7 @@
 | --- | --- |
 | [移植状态](docs/status.md) | 里程碑、现有问题、按功能区域的状态和证据 |
 | [技术路线](docs/technical-route.md) | 每一层怎么做、为什么这样做、哪些验证过 |
-| [CI 说明](docs/ci.md) | CI 做什么、不做什么，每次运行的结果和失败原因 |
+| [CI 说明](docs/ci.md) | 构建流程、历史运行记录和失败原因（构建在私有仓库进行，这里的 Actions 已关闭） |
 | [仓库结构](docs/repository.md) | 分支、标签和目录 |
 | [致谢](ACKNOWLEDGMENTS.md) | 上游项目和参考 |
 | [第三方声明](THIRD_PARTY_NOTICES.md) | 许可证和来源 |

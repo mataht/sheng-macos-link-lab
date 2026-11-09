@@ -4,15 +4,15 @@
 
 | 分支 | 内容 | 说明 |
 | --- | --- | --- |
-| `main` | 项目的当前代码和文档 | 对应 `ci/drv-integrated`（八个驱动分支合并后的状态）加上文档整理。推送到 `main` 不触发 CI |
+| `main` | 项目的当前代码和文档 | 对应 `ci/drv-integrated`（八个驱动分支合并后的状态）加上文档整理 |
 | `ci/drv-integrated` | 八个驱动分支合并后的构建 | 平板上进入桌面用的就是这个分支的构建（见 [ci.md](ci.md)） |
-| `ci/hw-sheng-cn-1tb` | 国行 16 GB / 1 TB 机型的硬件候选，到日志面板修复为止 | 推送到这里会触发完整构建 |
+| `ci/hw-sheng-cn-1tb` | 国行 16 GB / 1 TB 机型的硬件候选，到日志面板修复为止 | 构建在私有仓库里进行 |
 | `ci/drv-gpu`、`ci/drv-touch-display`、`ci/drv-login`、`ci/drv-keyboard`、`ci/drv-power-misc`、`ci/drv-wifi-bt`、`ci/drv-usb`、`ci/drv-adsp-battery` | 各驱动自己的分支 | 每个驱动单独编译，合并前互不影响 |
 | `ci/gpu-adreno`、`ci/gpu-probe`、`ci/gpu-userland` | GPU 相关：Adreno 内核移植的第一版、QEMU 专用探针、用户态（Turnip、Rust 桥、Metal 插件） | `ci/gpu-userland` 有自己的工作流，目前停用（见 [ci.md](ci.md)） |
 | `ci/gop-copy-path`、`ci/gop-source-staging-stage15b`、`ci/stage18b-display-activity` | 早期显示实验的记录 | 只作历史保留 |
 | `ci/apple-arm64e-link` | 本仓库最初的 ARM64E 链接实验，也是改版前 `main` 的内容 | 带自己的小型工作流，只作历史保留 |
 
-分支名以 `ci/` 开头是因为工作流按这个前缀触发。任何不带这个前缀的分支都不会自动跑 CI。
+这个仓库的 Actions 已关闭，推送到任何分支都不会触发构建。分支名以 `ci/` 开头是构建沿用的命名，构建本身在私有仓库里进行（见 [ci.md](ci.md)）。
 
 ## 标签
 
