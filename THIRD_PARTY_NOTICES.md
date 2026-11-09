@@ -77,10 +77,11 @@ BSD-2-Clause-Patent, and files under MIT. This clarifies the general statement
 at the top of this file.
 
 - Distribution: this repository distributes source, tests and documentation
-  only. It makes no release of kernel, driver or firmware binaries. CI artifacts
-  are kept for seven days for the maintainers' own testing and are not releases.
-  The artifacts of the `ci/gpu-userland` branch contain metal2vulkan
-  (GPL-2.0-or-later or LGPL-3.0-or-later) and are not redistributed.
+  only. It makes no release of kernel, driver or firmware binaries. The kernel
+  artifact of the CI workflow is encrypted with a key held by the maintainers and
+  kept for seven days for their own testing; it is not a release. The
+  `gpu-userland` workflow, whose output contains metal2vulkan
+  (GPL-2.0-or-later or LGPL-3.0-or-later), is disabled.
 - Kernel patches: the series under platform/sheng/macos26/patches/ and
   platform/sheng/macos26/pac/ are patches against Apple's open-source XNU, which is
   not vendored here. They apply to code under the Apple Public Source License 2.0

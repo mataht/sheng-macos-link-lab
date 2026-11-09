@@ -8,7 +8,7 @@
 | `ci/drv-integrated` | 八个驱动分支合并后的构建 | 平板上进入桌面用的就是这个分支的构建（见 [ci.md](ci.md)） |
 | `ci/hw-sheng-cn-1tb` | 国行 16 GB / 1 TB 机型的硬件候选，到日志面板修复为止 | 推送到这里会触发完整构建 |
 | `ci/drv-gpu`、`ci/drv-touch-display`、`ci/drv-login`、`ci/drv-keyboard`、`ci/drv-power-misc`、`ci/drv-wifi-bt`、`ci/drv-usb`、`ci/drv-adsp-battery` | 各驱动自己的分支 | 每个驱动单独编译，合并前互不影响 |
-| `ci/gpu-adreno`、`ci/gpu-probe`、`ci/gpu-userland` | GPU 相关：Adreno 内核移植的第一版、QEMU 专用探针、用户态（Turnip、Rust 桥、Metal 插件） | `ci/gpu-userland` 有自己的工作流；它的产物不发布（见 [ci.md](ci.md)） |
+| `ci/gpu-adreno`、`ci/gpu-probe`、`ci/gpu-userland` | GPU 相关：Adreno 内核移植的第一版、QEMU 专用探针、用户态（Turnip、Rust 桥、Metal 插件） | `ci/gpu-userland` 有自己的工作流，目前停用（见 [ci.md](ci.md)） |
 | `ci/gop-copy-path`、`ci/gop-source-staging-stage15b`、`ci/stage18b-display-activity` | 早期显示实验的记录 | 只作历史保留 |
 | `ci/apple-arm64e-link` | 本仓库最初的 ARM64E 链接实验，也是改版前 `main` 的内容 | 带自己的小型工作流，只作历史保留 |
 
@@ -21,12 +21,12 @@
 | 标签 | 提交 | 含义 |
 | --- | --- | --- |
 | `link-lab-20261107` | `2dd4696` | 改版前的 `main`：最初的链接实验 |
-| `milestone-recovery-keys-20261108` | `201bb2a` | Recovery 的显示和按键：CI 42388955103，平板上 2026-11-08 观察 |
-| `milestone-touch-20261108` | `d38cb21` | 触摸可用：CI 42457862443 |
-| `milestone-full-system-boot-20261109` | `bdfe089` | 完整系统第一次在平板上启动，到登录界面：CI 42503540405 |
-| `milestone-desktop-20261109` | `52667ef` | 完整系统在平板上进入桌面：CI 42576253178 |
-| `gpu-fake-a740-qemu-20261109` | `2a02df3` | QEMU 里假的 A740 上画出第一帧：CI 42565690803 |
-| `gpu-userland-20261109` | `2abbb51` | 完整的 Metal 插件（含 Turnip 和 Rust 桥）：CI 42548818622，产物不发布 |
+| `milestone-recovery-keys-20261108` | `e2da63e` | Recovery 的显示和按键：CI 42388955103，平板上 2026-11-08 观察 |
+| `milestone-touch-20261108` | `f01a905` | 触摸可用：CI 42457862443 |
+| `milestone-full-system-boot-20261109` | `239b233` | 完整系统第一次在平板上启动，到登录界面：CI 42503540405 |
+| `milestone-desktop-20261109` | `36e1108` | 完整系统在平板上进入桌面：CI 42576253178 |
+| `gpu-fake-a740-qemu-20261109` | `41091a3` | QEMU 里假的 A740 上画出第一帧：CI 42565690803 |
+| `gpu-userland-20261109` | `1500409` | 完整的 Metal 插件（含 Turnip 和 Rust 桥）：CI 42548818622，产物不发布 |
 
 ## 目录
 

@@ -21,9 +21,9 @@ next_action = ["Keep one CI run per integrated head and record its digests in do
 
 [[area.evidence]]
 kind = "host"
-reference = "https://github.com/mataht/sheng-macos-link-lab/actions/runs/42576253178"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/ci.md"
 command = "GitHub Actions: CN 1 TB sheng hardware candidate build"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Run 42576253178 succeeded: kernel and the eight merged driver branches compile and link, ABI audits pass."
 
 [[area]]
@@ -43,7 +43,7 @@ next_action = ["None until a second unit with a different firmware version is av
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "UEFI and DarwinBoot loaded the kernel built from this revision; the system reached the desktop about two minutes after the command (2026-11-09). Nothing was flashed."
 
 [[area]]
@@ -61,9 +61,9 @@ next_action = ["Measure memory bandwidth with the NativeMemPerf benchmark stage,
 
 [[area.evidence]]
 kind = "device"
-reference = "https://github.com/mataht/sheng-macos-link-lab/blob/f5b9466cbcc1a7afe300a85afee936add90f54a9/platform/sheng/macos26/power/native_cpufreq.cpp"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/96ac3a9e43a4cc80ed1c3ab7bff78a315269bb39/platform/sheng/macos26/power/native_cpufreq.cpp"
 command = "fastboot boot sheng-macos26-kernel.img (sheng-cpufreq=1)"
-revision = "f5b9466cbcc1a7afe300a85afee936add90f54a9"
+revision = "96ac3a9e43a4cc80ed1c3ab7bff78a315269bb39"
 result = "Rows identical from 2 s to 100 s: three clusters at 1670, 2707 and 2956 MHz (2026-11-08)."
 
 [[area]]
@@ -83,7 +83,7 @@ next_action = ["Run the memory benchmark stage and compare cached, device and wr
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The full system ran on the tablet with this kernel and memory map; the NativeMemPerf stage-1 report read the command database (2026-11-09)."
 
 [[area]]
@@ -103,7 +103,7 @@ next_action = ["Enable and verify persistent writes with a separate approval; im
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Root and data volumes mounted from UFS through NativeUfs with the RAM overlay; the system reached the desktop (2026-11-09)."
 
 [[area]]
@@ -123,14 +123,14 @@ next_action = ["Find out why WindowServer composes so slowly (full-screen blur o
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Desktop with wallpaper, widgets and system windows displayed about two minutes after the boot command; very laggy (2026-11-09)."
 
 [[area.evidence]]
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-recovery-keys-20261108/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "201bb2a609e13030d568e105b6af9400875e0666"
+revision = "e2da63e11cc4bc039b7ea090b68a589dc16efecd"
 result = "Recovery's language chooser showed one selection row after the changed-rows copy fix (2026-11-08)."
 
 [[area]]
@@ -150,14 +150,14 @@ next_action = ["Keyboard cover stage 2 (clocks and engine identity) with no rail
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-touch-20261108/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (sheng-touch=4)"
-revision = "d38cb2161d6a4010364219541f167e860597e8ec"
+revision = "f01a90598d66bb68d2fdb941065853c49c96d128"
 result = "Pointer followed the finger and taps selected rows in the language chooser (2026-11-08)."
 
 [[area.evidence]]
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-recovery-keys-20261108/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (native-button-keys=1)"
-revision = "201bb2a609e13030d568e105b6af9400875e0666"
+revision = "e2da63e11cc4bc039b7ea090b68a589dc16efecd"
 result = "Volume keys moved the selection, power and Return advanced the language chooser (2026-11-08)."
 
 [[area]]
@@ -177,14 +177,14 @@ next_action = ["Climb the hardware ladder one stage at a time, each with approva
 kind = "host"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/gpu-fake-a740-qemu-20261109/docs/status.md"
 command = "QEMU aarch64 full-system boot of the CI kernel with sheng-gpu-fake=1"
-revision = "2a02df3bfddeb23a1830f4c0a76b27b0e557d161"
+revision = "41091a32532775aed1457f9bc3f65a4864707204"
 result = "Turnip created a device on the fake A740 and a first frame was submitted; WindowServer exited intermittently afterwards."
 
 [[area.evidence]]
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (sheng-gpu-power=1)"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Stage 1, a read-only snapshot, ran on the tablet without writes or rendering (2026-11-09)."
 
 [[area]]
@@ -204,7 +204,7 @@ next_action = ["Run stage 2 on the same kernel with approval, then decide the fi
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (sheng-wifi=1)"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "Stage-1 rows read without a panic: PCIe0 collapsed, no clock votes, enable pins low (2026-11-09)."
 
 [[area]]
@@ -238,7 +238,7 @@ next_action = ["Measure the memory-bandwidth stage; decide the first ADSP stage 
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (read-only stage 1 of RTC, backlight, ADSP, memory performance)"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The first stages ran without a panic and the command database read returned status 0 (2026-11-09)."
 
 [[area]]
@@ -256,9 +256,9 @@ next_action = ["Document the packager's evidence rules in docs/ so another unit 
 
 [[area.evidence]]
 kind = "host"
-reference = "https://github.com/mataht/sheng-macos-link-lab/actions/runs/42576253178"
+reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/ci.md"
 command = "GitHub Actions: CN 1 TB sheng hardware candidate build"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The tests that cover the changed paths pass in the check job of run 42576253178."
 
 [[area]]
@@ -278,7 +278,7 @@ next_action = ["Add a persistent log of the userland stage for the full system."
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-full-system-boot-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "bdfe089c68944cd78ce7064516503d471be4c8fa"
+revision = "239b233aecf8840c763c24f1589eb5b1578ffa47"
 result = "Boot-progress lines were read from the screen and the panic QR code was scanned and decoded (2026-11-09)."
 
 [[area]]
@@ -298,7 +298,7 @@ next_action = ["Stage 2 with approval, sharing the RPMh channel with the keyboar
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img (sheng-usb=1)"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The read-only stage-1 snapshot ran on the tablet (2026-11-09)."
 
 [[area]]
@@ -318,5 +318,5 @@ next_action = ["Find the cause of the slow composition, then test apps and a lon
 kind = "device"
 reference = "https://github.com/mataht/sheng-macos-link-lab/blob/milestone-desktop-20261109/docs/status.md"
 command = "fastboot boot sheng-macos26-kernel.img"
-revision = "52667eff91f74545b6ae0639a49226a2126dab03"
+revision = "36e11087791ca3b68505ee19c1f8602d7713039d"
 result = "The full system reached the desktop about two minutes after the boot command (2026-11-09)."
