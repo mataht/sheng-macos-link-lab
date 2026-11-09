@@ -582,7 +582,8 @@ def compile_sources(args, record: dict) -> None:
                               button_keys=args.build_button_keys,
                               full_root=args.build_full_root,
                               touch=args.build_touch,
-                              cpufreq=args.build_cpufreq)
+                              cpufreq=args.build_cpufreq,
+                              wifi=args.build_wifi)
             save(record)
 
 
@@ -676,6 +677,8 @@ def main() -> None:
     parser.add_argument('--build-cpufreq', action='store_true',
                         help='include the default-off SM8550 CPU frequency companion (upstream CpuFreqProbe; '
                              'sheng-cpufreq=1 is read-only)')
+    parser.add_argument('--build-wifi', action='store_true',
+                        help='include the default-off WCN7850 Wi-Fi companion (sheng-wifi=1 is read-only; 2 and 3 power and train PCIe0)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
@@ -695,6 +698,8 @@ def main() -> None:
         parser.error('--build-button-keys requires --build-gop-display')
     if args.build_cpufreq and not args.build_ufs_driver:
         parser.error('--build-cpufreq requires --build-ufs-driver')
+    if args.build_wifi and not args.build_ufs_driver:
+        parser.error('--build-wifi requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:
