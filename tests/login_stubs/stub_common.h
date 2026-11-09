@@ -30,6 +30,7 @@ class IORegistryEntry : public OSObject {
 public:
   OSObject *copyProperty(const char *) { return nullptr; }
   bool setProperty(const char *, bool) { return true; }
+  bool setProperty(const char *, unsigned long long, unsigned int) { return true; }
 };
 class IOPlatformExpert;
 class IOService : public IORegistryEntry {
