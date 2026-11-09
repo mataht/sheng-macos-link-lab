@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "sources": [
+    {
+      "path": "sources/metal-bridge/UniXNU",
+      "url": "https://github.com/UniXNU/UniXNU.git",
+      "commit": "d3de950a23a54d454d6ac21d8deceaa3f4ad0e73",
+      "group": "graphics",
+      "sparse": ["scripts/data"]
+    },
+    {
+      "path": "sources/metal-bridge/AdrenoMetal",
+      "url": "https://github.com/UniXNU/AdrenoMetal.git",
+      "commit": "da7aedd827dfdb581eac041615c45cc1cd5e71db",
+      "group": "graphics"
+    },
+    {
+      "path": "sources/metal-bridge/metal2vulkan",
+      "url": "https://github.com/steelbrain/metal2vulkan.git",
+      "commit": "963f0e64f103d2e682cd0cc454a8fe50f52c8cbb",
+      "group": "graphics"
+    }
+  ]
+}

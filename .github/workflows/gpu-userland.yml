@@ -57,3 +57,60 @@ jobs:
             out/turnip-macos/build/meson-logs/
           if-no-files-found: warn
           retention-days: 7
+  metal-bridge:
+    # The Rust bridge from pinned public sources: AdrenoMetal and metal2vulkan with AdrenoMetal's recorded patches, for arm64e with clang's
+    # pointer authentication ABI. Compile and link only.
+    runs-on: xcode-27
+    timeout-minutes: 150
+    steps:
+      - name: Disabled until this workflow encrypts its artifacts
+        run: |
+          echo "Disabled: the artifacts of this workflow contain GPL-licensed code. See docs/ci.md."
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Record toolchain
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n hw.ncpu hw.memsize
+          xcodebuild -version
+          xcrun clang --version
+          test "$(xcrun --sdk macosx --show-sdk-version)" = 27.0
+          git rev-parse HEAD
+      - run: python3 -m unittest discover -s tests -p "test_metal_bridge_macos.py" -v
+      - run: python3 scripts/sources.py fetch --lock config/metal-bridge-sources.json --group graphics
+      - name: Install Rust and llvm-as
+        run: |
+          brew install rustup llvm
+          rustup_bin="$(brew --prefix rustup)/bin"
+          echo "$rustup_bin" >> "$GITHUB_PATH"
+          "$rustup_bin/rustup" toolchain install nightly-2026-11-03 --profile minimal --component rust-src
+          "$rustup_bin/rustup" run nightly-2026-11-03 rustc -Vv
+      - run: python3 scripts/build_metal_bridge_macos.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: gpu-userland-metal-bridge-${{ github.run_id }}
+          path: |
+            out/metal-bridge/build.json
+            out/metal-bridge/libadreno_metal_bridge.a
+            out/metal-bridge/licenses/
+          if-no-files-found: warn
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: gpu-userland-metal-bridge-diagnostics-${{ github.run_id }}
+          path: |
+            out/metal-bridge/logs/
+            out/metal-bridge/Cargo.toml
+            out/metal-bridge/Cargo.lock
+            out/metal-bridge/arm64e-apple-darwin.json
+            out/metal-bridge/rustc-builtin-target.json
+          if-no-files-found: warn
+          retention-days: 7
