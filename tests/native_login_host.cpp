@@ -78,7 +78,7 @@ int main() {
                                 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad};
   check(!std::memcmp(digest, expected, 32), "sha256 abc");
 
-  const uint8_t id[] = "C6DE5FE2-C2A3-4A1D-B2C8-92A28A45383A";
+  const uint8_t id[] = "00000000-1111-2222-3333-444444444444";
   uint8_t key[32];
   sheng_aks::device_key(id, sizeof id - 1, key);
   uint8_t plain[40], blob[sheng_aks::kTagBytes + 40], back[40];
