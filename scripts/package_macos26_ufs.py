@@ -634,8 +634,11 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
-    parser.add_argument('--usb-stage', type=int, choices=(1, 2),
-                        help='start the compiled USB companion (native-usb=N): 1 read-only, 2 power and clocks')
+    parser.add_argument('--usb-stage', type=int, choices=(1, 2, 3),
+                        help='start the compiled USB companion (native-usb=N): 1 read-only, 2 power and clocks, '
+                             '3 host role and port polling, USB 2 only (needs --usb-phy-table)')
+    parser.add_argument('--usb-phy-table', type=Path,
+                        help='local PHY table placed in /arm-io/native-usb, pinned by size and SHA-256; never in a commit or CI build')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -645,6 +648,10 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    if args.usb_stage == 3 and not args.usb_phy_table:
+        parser.error('--usb-stage 3 requires --usb-phy-table')
+    if args.usb_phy_table and args.usb_stage != 3:
+        parser.error('--usb-phy-table is only for --usb-stage 3')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -826,10 +833,14 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
-    usb = None
+    usb = usb_node = None
     if args.usb_stage:
+        import native_usb
         usb = dict(qualify_usb(args.kernel_build), stage=args.usb_stage)
         boot_args += f' native-usb={args.usb_stage}'
+        if args.usb_phy_table:
+            usb_node = native_usb.node_properties(args.usb_phy_table.read_bytes())
+        usb = dict(usb, phy_table_included=usb_node is not None)
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -885,7 +896,7 @@ def main():
                     full_system_volume_group=uuid.UUID(full_contract['volume_group']),
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
-                    platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
+                    platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node, usb_node=usb_node,
                     trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
@@ -893,7 +904,7 @@ def main():
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled, touch_node=touch_node)
+                                            native_gop_display=gop_enabled, touch_node=touch_node, usb_node=usb_node)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'

@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """USB companion: contract, host logic against a simulated SoC, packager argument (no Apple content)."""
 import contextlib
+import hashlib
 import io
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -37,7 +39,7 @@ class NativeUsbTests(unittest.TestCase):
             self.assertIn('PASS', result.stdout)
 
     def test_register_logic_against_a_simulated_soc(self):
-        self.compile_and_run(ROOT / 'tests/native_usb.cpp')
+        self.compile_and_run(ROOT / 'tests/native_usb.cpp', '-I', str(ROOT / 'platform/sheng/macos26/input'))
 
     def test_real_driver_compiles_against_stub_iokit_headers(self):
         compiler = shutil.which('c++') or shutil.which('clang++')
@@ -48,7 +50,8 @@ class NativeUsbTests(unittest.TestCase):
             shutil.copytree(ROOT / 'tests/native_usb_stubs', include)
             for name in native_usb.PLATFORM_SOURCES:
                 shutil.copy(USB / name, include / name)
-            shutil.copy(ROOT / native_usb.ALSO_COPIED[0], include / 'spmi_keys.h')
+            for name in native_usb.ALSO_COPIED:
+                shutil.copy(ROOT / name, include / Path(name).name)
             subprocess.run([compiler, '-std=gnu++17', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
                             '-I', str(include), '-fsyntax-only', str(include / 'native_usb.cpp')],
                            check=True, capture_output=True, text=True, timeout=120)
@@ -75,9 +78,10 @@ class NativeUsbTests(unittest.TestCase):
         self.assertEqual(re.findall(r'weak_import', source + header), [])
         # Stage 1 reaches the controller only through the power/clock gate.
         self.assertIn('if (!coreAccessible(p))', header)
-        # Up to stage 2 the driver never writes the PMIC: the SPMI access is the observer read path.
-        self.assertNotIn('repeaterWrite', source)
-        self.assertNotIn('kSpmiChn +', source)
+        # The PMIC is written only from the stage 3 sequence, and the PHY table only ever comes from the device tree.
+        self.assertIn('if (stage >= 3 && failed == Step::none)', source)
+        self.assertIn('phyTableAccepted(', source)
+        self.assertIn('fromPath("/arm-io/native-usb"', source)
         # No ring, doorbell or run bit is set anywhere.
         self.assertNotIn('kUsbCmdRun)', header.replace('kUsbCmdRun, 0)', ''))
         # Nothing licensed GPL-2.0-only is in this directory, and the Linux-derived PHY tables are not imported.
@@ -85,6 +89,37 @@ class NativeUsbTests(unittest.TestCase):
             self.assertNotRegex(path.read_text(), r'SPDX-License-Identifier: GPL-2\.0', path.name)
         for name in ('QcomEusb2Phy.h', 'QcomQmpUsb3.h'):
             self.assertFalse((USB / name).exists())
+
+    def test_phy_table_is_pinned_and_reaches_the_device_tree(self):
+        from native_devtree import configure_native_text_state
+        with self.assertRaisesRegex(ValueError, 'pinned local file'):
+            native_usb.checked_phy_table(b'\0' * native_usb.PHY_TABLE_BYTES)
+        with self.assertRaisesRegex(ValueError, 'pinned local file'):
+            native_usb.node_properties(b'short')
+        table = bytes(range(native_usb.PHY_TABLE_BYTES))
+        digest = hashlib.sha256(table).hexdigest()
+        with mock.patch.object(native_usb, 'PHY_TABLE_SHA256', digest):
+            props = native_usb.node_properties(table)
+        self.assertEqual(props['table'], table)
+        self.assertEqual(props['table-sha256'], bytes.fromhex(digest))
+
+        def node(name, properties=(), children=()):
+            items = (('name', name.encode() + b'\0'), *properties)
+            return (struct.pack('<II', len(items), len(children)) +
+                    b''.join(struct.pack('<32sI', key.encode(), len(value)) + value + bytes(-len(value) % 4) for key, value in items) +
+                    b''.join(children))
+        tree = node('device-tree', children=(node('chosen', (('random-seed', bytes(32)),)), node('arm-io')))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'adt'
+            path.write_bytes(tree)
+            configure_native_text_state(path, development_root=True, usb_node=props)
+            data = path.read_bytes()
+        self.assertIn(b'native-usb\0', data)
+        self.assertIn(table, data)
+
+    def test_no_real_phy_values_are_committed(self):
+        for path in (*USB.iterdir(), ROOT / 'scripts/native_usb.py', ROOT / 'tests/native_usb.cpp'):
+            self.assertNotIn('kQcomEusb2Init', path.read_text(), path.name)
 
     def test_packager_accepts_only_known_stages(self):
         import package_macos26_ufs as packager
@@ -101,9 +136,12 @@ class NativeUsbTests(unittest.TestCase):
                     packager.main()
             return stderr.getvalue()
 
-        self.assertIn('invalid choice', run('--usb-stage', '3'))
+        self.assertIn('invalid choice', run('--usb-stage', '4'))
         self.assertNotIn('invalid choice', run('--usb-stage', '1'))
         self.assertNotIn('invalid choice', run('--usb-stage', '2'))
+        self.assertIn('requires --usb-phy-table', run('--usb-stage', '3'))
+        self.assertIn('only for --usb-stage 3', run('--usb-stage', '2', '--usb-phy-table', 'x'))
+        self.assertNotIn('requires --usb-phy-table', run('--usb-stage', '3', '--usb-phy-table', 'x'))
 
 
 if __name__ == '__main__':

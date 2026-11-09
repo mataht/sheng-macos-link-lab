@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../platform/sheng/macos26/usb/usb_hw.h"
+#include "../platform/sheng/macos26/usb/usb_phy_table_sha256.h"
 
 using namespace sheng_usb;
 
@@ -173,6 +174,97 @@ static void testHostAndPorts()
     assert(host.ports[0] & kPortConnected);
 }
 
+static std::vector<uint8_t> syntheticTable()
+{
+    // Arbitrary test values, deliberately not the real PHY sequence.
+    std::vector<uint8_t> t = {'U', 'S', 'B', 'P', 1, 0, 3, 2, 0x11, 0x40, 0x22, 0x01, 0x33, 0x44, 0, 0};
+    const uint8_t writes[][4] = {{0x10, 0x00, 0x0f, 0x05}, {0x20, 0x00, 0xf0, 0x30}, {0x04, 0x01, 0xff, 0xaa}};
+    for (const auto &w : writes)
+        t.insert(t.end(), w, w + 4);
+    const uint8_t tune[][2] = {{0x51, 0x07}, {0x52, 0x09}};
+    for (const auto &e : tune)
+        t.insert(t.end(), e, e + 2);
+    return t;
+}
+
+struct FakeRepeater final : RepeaterPort {
+    std::vector<std::pair<uint8_t, uint8_t>> writes;
+    int status = 0x40;
+    bool failWrite = false;
+    bool write(uint8_t offset, uint8_t value) override
+    {
+        writes.push_back({offset, value});
+        return !failWrite;
+    }
+    int read(uint8_t) override { return status; }
+    void delayMicroseconds(unsigned) override {}
+};
+
+static void testPhyTable()
+{
+    const std::vector<uint8_t> blob = syntheticTable();
+    PhyTable table;
+    assert(parsePhyTable(blob.data(), blob.size(), table));
+    assert(table.writeCount == 3 && table.tuneCount == 2);
+    assert(table.repeaterStatus == 0x11 && table.repeaterReady == 0x40 && table.repeaterEnable == 0x22 && table.forceValue == 0x44);
+
+    // Masked writes land at the PHY base with the masks and values from the file.
+    Sim sim;
+    sim.reg[kGcc + kUsb30Gdsc] = kGdscOn;
+    sim.reg[kPhy + 0x10] = 0xf0;
+    sim.reg[kPhy + 0x104] = 0x1234;
+    applyPhyTable(sim, table);
+    assert(sim.reg[kPhy + 0x10] == 0xf5);
+    assert(sim.reg[kPhy + 0x20] == 0x30);
+    assert(sim.reg[kPhy + 0x104] == 0x12aa);
+
+    FakeRepeater port;
+    assert(repeaterInit(port, table));
+    const std::vector<std::pair<uint8_t, uint8_t>> init = {{0x22, 0x01}, {0x51, 0x07}, {0x52, 0x09}, {0x33, 0x00}, {0x44, 0x00}};
+    assert(port.writes == init);
+    port.writes.clear();
+    assert(repeaterHost(port, table));
+    const std::vector<std::pair<uint8_t, uint8_t>> host = {{0x33, 0x40}, {0x44, 0x40}};
+    assert(port.writes == host);
+    FakeRepeater notReady;
+    notReady.status = 0;
+    assert(!repeaterInit(notReady, table));
+    FakeRepeater readFails;
+    readFails.status = -1;
+    assert(!repeaterInit(readFails, table));
+    FakeRepeater writeFails;
+    writeFails.failWrite = true;
+    assert(!repeaterInit(writeFails, table));
+
+    // Malformed files are refused.
+    PhyTable other;
+    assert(!parsePhyTable(nullptr, 0, other));
+    assert(!parsePhyTable(blob.data(), blob.size() - 1, other));
+    std::vector<uint8_t> bad = blob;
+    bad[0] = 'X';
+    assert(!parsePhyTable(bad.data(), bad.size(), other));
+    bad = blob;
+    bad[4] = 2;  // version
+    assert(!parsePhyTable(bad.data(), bad.size(), other));
+    bad = blob;
+    bad[6] = 200;  // more PHY writes than the file holds
+    assert(!parsePhyTable(bad.data(), bad.size(), other));
+    bad = blob;
+    bad[17] = 0x10;  // an offset outside the PHY window
+    assert(!parsePhyTable(bad.data(), bad.size(), other));
+    bad = blob;
+    bad[16] = 0x11;  // an unaligned offset
+    assert(!parsePhyTable(bad.data(), bad.size(), other));
+
+    // The pin: only the exact size and digest are accepted.
+    std::vector<uint8_t> zeros(kPhyTableBytes, 0);
+    assert(!phyTableAccepted(zeros.data(), zeros.size()));
+    assert(!phyTableAccepted(blob.data(), blob.size()));
+    uint8_t digest[32];
+    const uint8_t abc[] = {'a', 'b', 'c'};
+    assert(sheng::touch_firmware::digest(abc, 3, digest) && digest[0] == 0xba && digest[1] == 0x78 && digest[31] == 0xad);
+}
+
 static void testPortscBits()
 {
     // Writing back a PORTSC with all status change bits set must clear none of them unintentionally, keep the writable
@@ -195,5 +287,6 @@ int main()
     testPowerUp();
     testHostAndPorts();
     testPortscBits();
+    testPhyTable();
     puts("PASS");
 }

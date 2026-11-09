@@ -14,7 +14,7 @@
  *   1  read-only: GCC clock/GDSC state, TCSR clock references; the controller's registers only when its power domain
  *      and clocks are on, because an access to an unclocked block can hang the bus.
  *   2  rails, power domains, clocks and resets. Controller registers are then readable.
- * The host-role helpers below (selectUtmi, setHostRole, xhciResetAndPower) are for a later stage; only the host test uses them now.
+ *   3  eUSB2 repeater and PHY (from the locally injected table), host role, xHCI reset, port power, port status polling. USB 2 only, no DMA.
  */
 
 #include <stddef.h>
@@ -309,6 +309,80 @@ inline Step xhciResetAndPower(Bus &bus, uint32_t *capOut)
     for (uint32_t i = 0; i < ports; ++i)
         bus.write(op + portsc(i), portPowerOn(bus.read(op + portsc(i))));
     return Step::none;
+}
+
+// The stage 3 PHY table is a local file injected at packaging (/arm-io/native-usb, property "table"), pinned by size and SHA-256 and never
+// in the repository or a CI build. Layout, little-endian: 'USBP', u16 version 1, u8 PHY write count, u8 repeater tuning count,
+// the repeater's status register, ready mask, enable register, enable bit, force-enable-5 and force-value-5 registers, 2 reserved bytes;
+// then PHY writes (u16 offset, u8 mask, u8 value), then tuning writes (u8 offset, u8 value).
+constexpr uint32_t kPhyHeaderBytes = 16, kPhyWriteBytes = 4, kPhyTuneBytes = 2;
+constexpr unsigned kPhyMaxWrites = 64, kPhyMaxTune = 16;
+
+struct PhyTable {
+    const uint8_t *writes = nullptr, *tune = nullptr;
+    unsigned writeCount = 0, tuneCount = 0;
+    uint8_t repeaterStatus = 0, repeaterReady = 0, repeaterEnable = 0, repeaterEnableBit = 0, forceEnable = 0, forceValue = 0;
+};
+
+inline bool parsePhyTable(const uint8_t *data, size_t size, PhyTable &table)
+{
+    if (!data || size < kPhyHeaderBytes || data[0] != 'U' || data[1] != 'S' || data[2] != 'B' || data[3] != 'P' || data[4] != 1 || data[5] != 0)
+        return false;
+    const unsigned writes = data[6], tune = data[7];
+    if (!writes || writes > kPhyMaxWrites || tune > kPhyMaxTune || size != kPhyHeaderBytes + writes * kPhyWriteBytes + tune * kPhyTuneBytes)
+        return false;
+    for (unsigned i = 0; i < writes; ++i) {
+        const uint8_t *at = data + kPhyHeaderBytes + i * kPhyWriteBytes;
+        if ((at[0] | at[1] << 8) + 4u > kPhyBytes || ((at[0] | at[1] << 8) & 3))
+            return false;
+    }
+    table.writes = data + kPhyHeaderBytes;
+    table.tune = table.writes + writes * kPhyWriteBytes;
+    table.writeCount = writes;
+    table.tuneCount = tune;
+    table.repeaterStatus = data[8];
+    table.repeaterReady = data[9];
+    table.repeaterEnable = data[10];
+    table.repeaterEnableBit = data[11];
+    table.forceEnable = data[12];
+    table.forceValue = data[13];
+    return true;
+}
+
+inline void applyPhyTable(Bus &bus, const PhyTable &table)
+{
+    for (unsigned i = 0; i < table.writeCount; ++i) {
+        const uint8_t *at = table.writes + i * kPhyWriteBytes;
+        setBits(bus, kPhy + (at[0] | at[1] << 8), at[2], at[3]);
+    }
+}
+
+// The PMIC repeater, addressed by the offsets the table carries.
+struct RepeaterPort {
+    virtual bool write(uint8_t offset, uint8_t value) = 0;
+    virtual int read(uint8_t offset) = 0;   // -1 when the read failed
+    virtual void delayMicroseconds(unsigned us) = 0;
+    virtual ~RepeaterPort() = default;
+};
+
+inline bool repeaterInit(RepeaterPort &port, const PhyTable &table)
+{
+    bool ok = port.write(table.repeaterEnable, table.repeaterEnableBit);
+    for (unsigned i = 0; i < table.tuneCount && ok; ++i)
+        ok = port.write(table.tune[i * kPhyTuneBytes], table.tune[i * kPhyTuneBytes + 1]);
+    ok = ok && port.write(table.forceEnable, 0) && port.write(table.forceValue, 0);
+    if (!ok)
+        return false;
+    port.delayMicroseconds(50);
+    const int status = port.read(table.repeaterStatus);
+    return status >= 0 && (status & table.repeaterReady);
+}
+
+// In the host role the repeater keeps its 19.2 MHz clock on (F_CLK_19P2M_EN, V_CLK_19P2M_EN).
+inline bool repeaterHost(RepeaterPort &port, const PhyTable &table)
+{
+    const uint8_t force = 1u << 6;
+    return port.write(table.forceEnable, force) && port.write(table.forceValue, force);
 }
 
 }  // namespace sheng_usb

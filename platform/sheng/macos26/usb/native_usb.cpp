@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // NativeUsb: macOS 26 bring-up of the SM8550 DWC3 USB controller, in stages.
 //
-// Default off: native-usb=<1..2>, hardware only (PE_vmm_present == 0).
+// Default off: native-usb=<1..3>, hardware only (PE_vmm_present == 0).
 //   1  read-only report of the clock and power state; controller registers only when their power domain and clocks are on.
 //   2  votes the rails (RPMh), powers the domains, runs the clocks and resets the controller.
+//   3  eUSB2 repeater and PHY, host role, xHCI reset and port power, port status polling. USB 2 only, no DMA, no ring.
+//      The PHY table is never compiled in: a local packager adds /arm-io/native-usb with the property "table", accepted only
+//      when its size and SHA-256 equal the pinned capture (usb_phy_table_sha256.h). Without it stage 3 stops before the PHY.
 // Nothing here touches storage. A wrong outcome is left by rebooting: every register written is volatile.
 //
-// The register work is in usb_hw.h (host tested). The RPMh rail votes are adapted from UniXNU QcomDwc3.cpp commit e4efe95c,
-// Copyright (c) 2026 UniXNU contributors, BSD-2-Clause-Patent.
+// The register work is in usb_hw.h (host tested). The RPMh rail votes and the repeater sequence are adapted from UniXNU
+// QcomDwc3.cpp commit e4efe95c, Copyright (c) 2026 UniXNU contributors, BSD-2-Clause-Patent.
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
+#include <libkern/c++/OSData.h>
 #include <pexpert/pexpert.h>
 #include <string.h>
 
@@ -20,6 +25,7 @@
 #include "spmi_keys.h"
 #include "usb_rpmh_names.h"
 #include "QcomRpmh.h"
+#include "usb_phy_table_sha256.h"
 
 using namespace sheng_usb;
 
@@ -35,7 +41,7 @@ OSDefineMetaClassAndStructors(NativeUsb, IOService)
 
 namespace {
 
-constexpr unsigned kMaxStage = 2;
+constexpr unsigned kMaxStage = 3;
 constexpr uint64_t kCmdDb = 0x81c60000, kRsc = 0x17a20000;
 constexpr uint32_t kCmdDbBytes = 0x20000, kRscBytes = 0x10000, kRscTcsBlock = 0xd00;
 constexpr unsigned kOwnedTcs = 2;
@@ -110,7 +116,7 @@ struct SpmiIo final : sheng_keys::Mmio {
   void delayMicroseconds(unsigned us) override { IODelay(us); }
 };
 
-struct Pmic {
+struct Pmic final : RepeaterPort {
   SpmiIo io;
   sheng_keys::Arbiter arbiter;
   int apid = -1;
@@ -140,7 +146,56 @@ struct Pmic {
       return -1;
     return value;
   }
+
+  int read(uint8_t offset) override { return repeaterRead(offset); }
+  void delayMicroseconds(unsigned us) override { IODelay(us); }
+
+  // One byte through this EE's channel of the arbiter (spmi-pmic-arb v7, opcode 0: extended write).
+  bool write(uint8_t offset, uint8_t value) override
+  {
+    if (!ready)
+      return false;
+    Window channel;
+    if (!mapWindow(channel, kSpmiChn + kSpmiChnStride * static_cast<uint32_t>(apid), kSpmiChnStride))
+      return false;
+    channel.va[0x10 / 4] = value;
+    __asm__ volatile("dsb sy" ::: "memory");
+    channel.va[0] = static_cast<uint32_t>(offset) << 4;
+    bool ok = false;
+    for (unsigned i = 0; i < 1000; ++i) {
+      const uint32_t status = channel.va[0x08 / 4];
+      if (status) {
+        ok = status == 1;
+        break;
+      }
+      IODelay(10);
+    }
+    unmapWindow(channel);
+    return ok;
+  }
 };
+
+// The local-only table from the device tree, checked against the compiled-in size and digest. The copy lives for the boot.
+bool loadPhyTable(PhyTable &table)
+{
+  IORegistryEntry *node = IORegistryEntry::fromPath("/arm-io/native-usb", gIODTPlane);
+  if (!node) {
+    IOLog("NativeUsb: no /arm-io/native-usb node: stage 3 needs the packager's --usb-phy-table\n");
+    return false;
+  }
+  bool ok = false;
+  OSData *blob = OSDynamicCast(OSData, node->getProperty("table"));
+  if (blob && phyTableAccepted(static_cast<const uint8_t *>(blob->getBytesNoCopy()), blob->getLength())) {
+    uint8_t *copy = static_cast<uint8_t *>(IOMalloc(blob->getLength()));
+    if (copy) {
+      memcpy(copy, blob->getBytesNoCopy(), blob->getLength());
+      ok = parsePhyTable(copy, blob->getLength(), table);
+    }
+  }
+  node->release();
+  IOLog("NativeUsb: PHY table %s\n", ok ? "accepted" : "absent or rejected");
+  return ok;
+}
 
 bool voteRails(KernelBus &)
 {
@@ -244,6 +299,9 @@ void report(KernelBus &bus, Pmic &pmic, const char *when)
   }
   IOLog("NativeUsb %s: core id=%08x gctl=%08x u2=%08x u3=%08x hw0=%08x hw3=%08x\n", when, c.gsnpsid, c.gctl, c.usb2, c.usb3, c.hw0, c.hw3);
   IOLog("NativeUsb %s: core dctl=%08x dsts=%08x scratch hs=%08x ss=%08x gen=%08x\n", when, c.dctl, c.dsts, c.scratchHs, c.scratchSs, c.scratchGeneral);
+  if (c.host)
+    IOLog("NativeUsb %s: xhci cap=%x hcs1=%08x cmd=%08x sts=%08x port0=%08x port1=%08x\n", when, c.capLength, c.hcs1, c.usbCmd, c.usbSts,
+          c.ports[0], c.ports[1]);
 }
 
 void bringUpThread(void *self, wait_result_t)
@@ -258,7 +316,8 @@ void bringUpThread(void *self, wait_result_t)
     IOLog("NativeUsb: cannot map the controller windows\n");
     return;
   }
-  if (!pmic.open())
+  const bool pmicReady = pmic.open();
+  if (!pmicReady)
     IOLog("NativeUsb: PMIC arbiter or repeater channel not available\n");
   report(bus, pmic, "t0");
   Step failed = Step::none;
@@ -269,12 +328,55 @@ void bringUpThread(void *self, wait_result_t)
       failed = powerUp(bus);
     report(bus, pmic, "powered");
   }
+  uint32_t cap = 0;
+  if (stage >= 3 && failed == Step::none) {
+    PhyTable table;
+    if (!loadPhyTable(table))
+      failed = Step::phy;
+    if (failed == Step::none && (!pmicReady || !repeaterInit(pmic, table)))
+      failed = Step::repeater;
+    if (failed == Step::none) {
+      applyPhyTable(bus, table);
+      IOSleep(2);
+      selectUtmi(bus);
+      setHostRole(bus);
+      if (!repeaterHost(pmic, table))
+        failed = Step::role;
+    }
+    if (failed == Step::none)
+      failed = xhciResetAndPower(bus, &cap);
+    report(bus, pmic, "host");
+  }
   IOLog("NativeUsb: stage %u %s%s\n", stage, failed == Step::none ? "reached" : "stopped at ", failed == Step::none ? "" : stepName(failed));
-  for (unsigned second = 10; second <= 60; second += 10) {
-    IOSleep(10000);
-    char when[8];
-    snprintf(when, sizeof when, "t%us", second);
-    report(bus, pmic, when);
+  if (failed != Step::none || stage < 3) {
+    for (unsigned second = 10; second <= 60; second += 10) {
+      IOSleep(10000);
+      char when[8];
+      snprintf(when, sizeof when, "t%us", second);
+      report(bus, pmic, when);
+    }
+    return;
+  }
+  // Port status polling: every 200 ms, printed on any change, with a heartbeat. A device reaches the port only if it has VBUS.
+  uint32_t last[kPortsReported] = {};
+  unsigned attached = 0, polls = 0;
+  const uint64_t op = kCore + cap;
+  const uint32_t portCount = (bus.read(kCore + 4) >> 24) & 0xff;
+  while (polls < 9000) {  // 30 minutes
+    for (unsigned i = 0; i < kPortsReported && i < portCount; ++i) {
+      const uint32_t value = bus.read(op + portsc(i));
+      if ((value ^ last[i]) & (kPortConnected | kPortEnabled | kPortPower | (0xfu << 5) | (0xfu << 10) | kPortChangeBits)) {
+        IOLog("NativeUsb port%u: portsc=%08x %s speed=%s link=%u\n", i, value, (value & kPortConnected) ? "connected" : "empty",
+              speedName(portSpeed(value)), portLinkState(value));
+        if ((value & kPortConnected) && !(last[i] & kPortConnected))
+          ++attached;
+        last[i] = value;
+      }
+    }
+    if (polls % 150 == 0)
+      IOLog("NativeUsb heartbeat: polls=%u attached=%u sts=%08x\n", polls, attached, bus.read(op + kUsbStsOffset));
+    IOSleep(200);
+    ++polls;
   }
 }
 
