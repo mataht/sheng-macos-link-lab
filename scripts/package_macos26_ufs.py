@@ -457,6 +457,11 @@ def qualify_smp(build, observation, identity) -> dict:
                 hardware_qualified=False, scheduler_migration_qualified=False)
 
 
+def without_capture_handoff(boot_args):
+    """-sheng-capture-handoff makes DarwinBoot wait 10 s for a photo of the handoff; packages built earlier keep it."""
+    return boot_args.replace(' -sheng-capture-handoff', '')
+
+
 def parse_panel_size(text: str) -> tuple:
     try:
         width, height = (int(part) for part in text.lower().split('x'))
@@ -510,6 +515,16 @@ def display_copy_forward(panel_patch_sha256):
     return record
 
 
+def display_touch_fixes(forward_patch_sha256):
+    """The reviewed touch-display step chained on the copy-forward patch, or None (hw-touch-display.json)."""
+    path = ROOT / 'platform/sheng/macos26/display/hw-touch-display.json'
+    record = json.loads(path.read_text()) if path.exists() else None
+    if (record is None or record.get('schema') != 'sheng-hw-display-touch-fixes-v1'
+            or record.get('base_patch_sha256') != forward_patch_sha256 or record.get('default_off') is not True):
+        return None
+    return record
+
+
 def qualify_panel_size(build, width_mm: int, height_mm: int) -> dict:
     """The compiled display patch must be the reviewed panel-size step (optionally followed by the copy-forward step);
     the boot arguments mirror its bounds."""
@@ -517,12 +532,13 @@ def qualify_panel_size(build, width_mm: int, height_mm: int) -> dict:
     driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
     compiled = driver.get('build', {}).get('native_gop_display', {}).get('patch_sha256')
     forward = display_copy_forward(panel.get('patch_sha256'))
-    accepted = {panel.get('patch_sha256')} | ({forward['patch_sha256']} if forward else set())
+    fixes = display_touch_fixes(forward['patch_sha256']) if forward else None
+    accepted = {panel.get('patch_sha256')} | ({forward['patch_sha256']} if forward else set()) | ({fixes['patch_sha256']} if fixes else set())
     if panel.get('schema') != 'sheng-hw-display-panel-size-v1' or compiled not in accepted:
         raise ValueError('kernel display companion lacks the reviewed panel-size step')
     return dict(boot_arguments=[f'native-gop-width-mm={width_mm}', f'native-gop-height-mm={height_mm}'],
                 width_mm=width_mm, height_mm=height_mm, patch_sha256=compiled,
-                copy_forward=bool(forward and compiled == forward['patch_sha256']),
+                copy_forward=bool(forward and compiled in (forward['patch_sha256'], (fixes or {}).get('patch_sha256'))),
                 aspect_checked_by_driver=True, hidpi_selection_qualified=False)
 
 
@@ -539,7 +555,10 @@ def qualify_display_keep_awake() -> dict:
                      and panel.get('base_patch_sha256') == record.get('patch_sha256') and panel.get('default_off') is True)
     # ... and that by the always-on copy-forward step (derive_hw_display_copy_forward.py).
     forward = display_copy_forward(panel.get('patch_sha256')) if panel_chained else None
-    chained = panel_chained and (panel.get('patch_sha256') == patch or (forward is not None and forward['patch_sha256'] == patch))
+    # ... and that by the default-off touch-display step (hw-touch-display.json).
+    fixes = display_touch_fixes(forward['patch_sha256']) if forward else None
+    chained = panel_chained and (panel.get('patch_sha256') == patch or (forward is not None and forward['patch_sha256'] == patch)
+                                 or (fixes is not None and fixes['patch_sha256'] == patch))
     if (record.get('schema') != 'sheng-hw-display-keep-awake-v1' or not (record.get('patch_sha256') == patch or chained)
             or switch.get('boot_argument') != 'native-gop-keep-awake=1' or switch.get('default_off') is not True):
         raise ValueError('display patch lacks the reviewed hardware keep-awake switch')
@@ -623,6 +642,14 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
+    parser.add_argument('--no-capture-handoff', action='store_true',
+                        help='remove -sheng-capture-handoff (the fixed 10 s handoff photo stall in DarwinBoot)')
+    parser.add_argument('--gop-diag', action='store_true',
+                        help='native-gop-diag=1: counter strip across the top of the panel (needs the GOP display)')
+    parser.add_argument('--gop-retire-displayed', action='store_true',
+                        help='native-gop-retire-displayed=1: report the last completed swap as done (see display patch)')
+    parser.add_argument('--touch-diag', action='store_true',
+                        help='native-touch-diag=1: keep counting HID user clients for the diagnostic strip')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -632,6 +659,8 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    if args.touch_diag and not args.touch_stage:
+        parser.error('--touch-diag requires --touch-stage')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -759,6 +788,8 @@ def main():
     geometry = tomllib.loads((ROOT / 'uefi-sheng/Resources/Configs/sheng.toml').read_text())['boot_image']
     os_version = stock_version_for_v0(boot, stock_boot.stat().st_size, geometry['header_version'])
     boot_args = NATIVE_BOOT_ARGS + ' -sheng-early-console -sheng-capture-handoff native-ufs-root=1 native-ufs-diagnostics=1'
+    if args.no_capture_handoff:
+        boot_args = without_capture_handoff(boot_args)
     reuse = None
     dyld_build, dyld_observation, dyld_identity = args.kernel_build, args.dyld_observation, identity
     if args.qualification_reference:
@@ -818,6 +849,8 @@ def main():
         import native_touch
         touch = qualify_touch(args.kernel_build)
         boot_args += f' sheng-touch={args.touch_stage}'
+        if args.touch_diag:
+            boot_args += ' native-touch-diag=1'
         if args.touch_orient is not None:
             boot_args += f' native-touch-orient={args.touch_orient}'
         if args.touch_firmware:
@@ -838,6 +871,12 @@ def main():
         smp_qualification = qualify_smp(args.kernel_build, args.smp_observation, identity)
         boot_args = hardware_smp_boot_args(boot_args)
         cpu_regs, cpu_compatible = list(SMP_CPU_REGS), list(SMP_CPU_COMPATIBLE)
+    if (args.gop_diag or args.gop_retire_displayed) and 'native-gop-display=1' not in boot_args:
+        raise ValueError('--gop-diag and --gop-retire-displayed require the GOP display in this package')
+    if args.gop_diag:
+        boot_args += ' native-gop-diag=1'
+    if args.gop_retire_displayed:
+        boot_args += ' native-gop-retire-displayed=1'
     keep_awake = None
     if args.display_keep_awake:
         keep_awake = qualify_display_keep_awake()

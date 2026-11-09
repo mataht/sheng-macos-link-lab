@@ -1,6 +1,6 @@
 --- a/DroidVMDisplay.cpp
 +++ b/DroidVMDisplay.cpp
-@@ -1,21 +1,19 @@
+@@ -1,21 +1,22 @@
  // SPDX-License-Identifier: BSD-2-Clause-Patent
 -// DroidVMDisplay: the macOS display of a DroidVM guest, an IOMobileFramebufferLegacy (IOMobileGraphicsFamily) over the firmware
 -// framebuffer, as AppleParavirtDisplay (AppleParavirtGPUIOGPUFamily, the vma2 display) is over the paravirtual GPU. The family runs
@@ -28,14 +28,17 @@
 +// Exact paired pexpert.h XNU_KERNEL_PRIVATE declaration; selects the VM or hardware opt-in.
 +extern "C" uint32_t PE_vmm_present;
 +extern "C" volatile uint64_t sheng_panel_ready, sheng_status_pixels;
++// Touch counters for the on-screen diagnostic: native_touch.cpp writes them when the touch companion is built; zero otherwise.
++extern "C" { volatile uint32_t sheng_touch_diag[8]; }
  #include <IOKit/IOLib.h>
 +#include "gop_scanout.h"
 +#include "framebuffer_owner.h"
 +#include "gop_layers.h"
++#include "gop_diag.h"
  #include <IOKit/IOPlatformExpert.h>
  #include <IOKit/IOTimerEventSource.h>
  #include <IOKit/IOUserClient.h>
-@@ -47,8 +45,7 @@
+@@ -47,8 +48,7 @@
  static constexpr size_t kSwapDropReasons = 844;    // programmed when nothing but bit 3 is set, else dropped (swap_begin_gated 0x...dbac0)
  static constexpr size_t kSwapInfoA = 752;         // swap info words 3 and 4 (notify_swap_done_gated 0x...d93f4)
  static constexpr size_t kSwapInfoB = 816;
@@ -45,7 +48,7 @@
  static constexpr size_t kSwapNext = 3192;          // TAILQ entry of the queue
  static constexpr size_t kSwapPrev = 3200;
  // IOMFBNotifyRequest
-@@ -86,44 +83,11 @@
+@@ -86,44 +86,11 @@
      __asm("__ZN21IOAVVideoColorElement16withCapabilitiesE16IOAVStandardTypej22IOAVVideoPixelEncoding26IOAVVideoColorDynamicRange"
            "18IOAVVideoColorEOTF20IOAVVideoColorimetrybPK12OSDictionaryS7_S7_PK5OSSet");
  
@@ -56,7 +59,9 @@
 -static constexpr uint32_t kSwapRecordSplit = 0x51e, kSwapRecordInserted = 16;
 -extern const char iomfbUserClientMetaClass[] __asm("__ZN29IOMobileFramebufferUserClient10gMetaClassE");
 -extern "C" void virt_set_external_method_hook(void (*)(IOUserClient *, IOExternalMethodArguments *));   // xnu-m IOUserClient.cpp
--
++static_assert(sizeof(IOMobileFramebuffer) == 144, "paired framebuffer base size");
++static_assert(sizeof(IOMobileFramebufferLegacy) == 6904, "paired legacy framebuffer size");
+ 
 -static void convertSwapRecord(IOUserClient *client, IOExternalMethodArguments *args)
 -{
 -    if (args->selector != kSwapSubmitSelector || args->structureInputSize != kSwapRecord27 ||
@@ -87,15 +92,12 @@
 -
 -class DroidVMDisplay : public IOMobileFramebufferLegacy {
 -    OSDeclareDefaultStructors(DroidVMDisplay)
-+static_assert(sizeof(IOMobileFramebuffer) == 144, "paired framebuffer base size");
-+static_assert(sizeof(IOMobileFramebufferLegacy) == 6904, "paired legacy framebuffer size");
-+
 +class NativeGOPDisplay : public IOMobileFramebufferLegacy {
 +    OSDeclareDefaultStructors(NativeGOPDisplay)
  public:
      bool start(IOService *) override;
      void stop(IOService *) override;
-@@ -156,12 +120,13 @@
+@@ -156,12 +123,13 @@
  
  private:
      static constexpr uint32_t kRefreshHz = 60;
@@ -110,7 +112,7 @@
      bool createDisplayAttributes();
      static void vblFired(OSObject *, IOTimerEventSource *);
  
-@@ -172,37 +137,149 @@
+@@ -172,37 +140,164 @@
      static_assert(sizeof(SwapInfo) == 48, "IOMobileFramebufferLegacy::SwapInfoBlob");
      static constexpr unsigned kSwapInfoRing = 6;
  
@@ -173,10 +175,25 @@
 +    uint64_t fRowsWritten = 0, fRowsSkipped = 0;   // diagnostic: scanout rows rewritten / left unchanged
 +    SourceMap *fMappedSource = nullptr;           // the cache entry mapSource returned last
 +    uint64_t fForwardCopies = 0, fForwardFailures = 0;   // diagnostic: copy-forward surface updates / unmappable
++    // Diagnostics, appended after every earlier field so their offsets are unchanged (default off).
++    bool fRetireDisplayed = false;           // native-gop-retire-displayed=1: see swap_wait
++    uint64_t fBusyWaits = 0, fRetiredWaits = 0;   // swap_wait answers of kIOReturnBusy, of which reported as done
++    uint64_t fCursorLayerSwaps = 0;          // swaps that carry another surface besides the one scanned out
++    uint8_t fDiagMask = 0;                   // layer mask of the last swap
++    bool fDiag = false;                      // native-gop-diag=1: a strip of counters across the top of the panel
++    uint32_t *fDiagStrip = nullptr;
++    uint32_t fDiagWidth = 0;
++    uint64_t fDiagNext = 0, fDiagBeat = 0;
++    uint64_t fDiagLast[4]{};                 // submitted, shown, busy, touch reports at the last strip update
++    void updateDiagStrip();
++    void showDiagStrip();
  };
  
 -OSDefineMetaClassAndStructors(DroidVMDisplay, IOMobileFramebufferLegacy)
 +OSDefineMetaClassAndStructors(NativeGOPDisplay, IOMobileFramebufferLegacy)
++
++static constexpr unsigned kFirstFrameClaimAttempts = 200;   // the boot panel holds the writer for one text row at a time
++static void nativeGopClaimDelay(void) { IODelay(100); }
 +
 +// Explicit display-activity policy, default off. These are requests to the original PM
 +// user-activity consumer, not HID events, a display assertion, or power overrides.
@@ -253,11 +270,10 @@
  };
  
 -bool DroidVMDisplay::start(IOService *provider)
--{
++bool NativeGOPDisplay::start(IOService *provider)
+ {
 -    if (getPlatform()->getConsoleInfo(&fVideo) != kIOReturnSuccess || !fVideo.v_baseAddr || fVideo.v_depth != 32) {
 -        IOLog("DroidVMDisplay: no 32-bit boot framebuffer (base %#lx depth %lu)\n", fVideo.v_baseAddr, fVideo.v_depth);
-+bool NativeGOPDisplay::start(IOService *provider)
-+{
 +    unsigned enabled = 0, cpus = 0, vmKeepAwake = 0;
 +    PE_parse_boot_argn("native-gop-vm-keep-awake", &vmKeepAwake, sizeof(vmKeepAwake));
 +    if (vmKeepAwake > 1 || (vmKeepAwake == 1 && PE_vmm_present != 1)) {
@@ -283,7 +299,7 @@
          return false;
      }
      IOMemoryDescriptor *memory = IOMemoryDescriptor::withPhysicalAddress(fVideo.v_baseAddr & ~3UL, fVideo.v_rowBytes * fVideo.v_height,
-@@ -212,49 +289,60 @@
+@@ -212,49 +307,74 @@
          memory->release();
      }
      if (!fScanoutMap) {
@@ -298,8 +314,17 @@
 -        auto *row = reinterpret_cast<volatile uint32_t *>(fScanout + y * fVideo.v_rowBytes);
 -        for (unsigned long x = 0; x < fVideo.v_width; x++)
 -            row[x] = 0xff203050;
--    }
 +    IOLog("NativeGOPDisplay: scanout %#lx %lux%lu row %lu\n", fVideo.v_baseAddr, fVideo.v_width, fVideo.v_height, fVideo.v_rowBytes);
++    unsigned retire = 0, diag = 0;
++    PE_parse_boot_argn("native-gop-retire-displayed", &retire, sizeof(retire));
++    fRetireDisplayed = retire == 1;
++    PE_parse_boot_argn("native-gop-diag", &diag, sizeof(diag));
++    if (diag == 1) {
++        fDiagWidth = nativeGopDiagClampWidth(static_cast<uint32_t>(fVideo.v_width));
++        fDiagStrip = static_cast<uint32_t *>(IOMallocData(static_cast<uint64_t>(fDiagWidth) * kNativeGopDiagHeight * 4));
++        fDiag = fDiagStrip != nullptr;
++        IOLog("NativeGOPDisplay: diagnostic strip %s, retire-displayed %u\n", fDiag ? "on" : "no memory", retire);
+     }
      if (!IOMobileFramebufferLegacy::start(provider)) {
 -        IOLog("DroidVMDisplay: IOMobileFramebufferLegacy::start failed\n");
 +        IOLog("NativeGOPDisplay: IOMobileFramebufferLegacy::start failed\n");
@@ -317,10 +342,9 @@
  }
  
 -void DroidVMDisplay::stop(IOService *provider)
--{
--    virt_set_external_method_hook(nullptr);
 +void NativeGOPDisplay::stop(IOService *provider)
-+{
+ {
+-    virt_set_external_method_hook(nullptr);
 +    // Suspend before the base stops/removes the existing timer; release the
 +    // owner only after base stop has completed, so a new owner cannot race it.
 +    if (__atomic_load_n(&gVMKeepAwakeOwner, __ATOMIC_ACQUIRE) == this)
@@ -343,6 +367,10 @@
 +    fShadow = fConverted = nullptr;
 +    fShadowBytes = fConvertedBytes = 0;
 +    fShadowValid = false;
++    if (fDiagStrip)
++        IOFreeData(fDiagStrip, static_cast<uint64_t>(fDiagWidth) * kNativeGopDiagHeight * 4);
++    fDiagStrip = nullptr;
++    fDiag = false;
      OSSafeReleaseNULL(fScanoutMap);
      fScanout = nullptr;
  }
@@ -360,7 +388,7 @@
          OSSafeReleaseNULL(fVBL);
          return false;
      }
-@@ -267,11 +355,11 @@
+@@ -267,11 +387,11 @@
      // AppleParavirtDisplay does when the host reports its display. Unplugged (0), WindowServer kept this display disabled and composited
      // a virtual one as the main display ("get_hotplug_state - not active").
      hotPlug_notify(1);
@@ -374,15 +402,14 @@
  {
      if (fVBL) {
          fVBL->cancelTimeout();
-@@ -281,13 +369,13 @@
+@@ -281,13 +401,13 @@
      return kIOReturnSuccess;
  }
  
 -void DroidVMDisplay::vblFired(OSObject *owner, IOTimerEventSource *)
--{
--    static_cast<DroidVMDisplay *>(owner)->swap_begin_gated();
 +void NativeGOPDisplay::vblFired(OSObject *owner, IOTimerEventSource *)
-+{
+ {
+-    static_cast<DroidVMDisplay *>(owner)->swap_begin_gated();
 +    static_cast<NativeGOPDisplay *>(owner)->swap_begin_gated();
  }
  
@@ -392,7 +419,7 @@
  {
      if (at<IOMFBSwapIORequest *>(this, kCurrentSwap) || !at<IOMFBSwapIORequest *>(this, kSwapQueueFirst))
          return false;
-@@ -300,10 +388,13 @@
+@@ -300,10 +420,13 @@
  }
  
  // AppleParavirtDisplay::swap_begin_gated: the family calls it when a swap is submitted, the VBL timer every 16 ms.
@@ -407,7 +434,7 @@
      fVBL->cancelTimeout();
      while (clean_queue_gated()) {
          IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kSwapQueueFirst);
-@@ -327,19 +418,20 @@
+@@ -327,19 +450,31 @@
          fStalled++;
      if (++fTicks % 625 == 0 && fSubmitted + fFrames + fDropped + fStalled != fReported) {   // about every 10 s while swaps arrive
          fReported = fSubmitted + fFrames + fDropped + fStalled;
@@ -417,6 +444,7 @@
 +              fSubmitted, fFrames, fDropped, fStalled, at<IOMFBSwapIORequest *>(this, kCurrentSwap), fLastLit, fLastCenter,
 +              fRowsWritten, fRowsSkipped, fForwardCopies, fForwardFailures);
      }
++    updateDiagStrip();
      return fVBL->setTimeoutMS(16);
  }
  
@@ -426,13 +454,24 @@
 +IOReturn NativeGOPDisplay::swap_wait(IOMobileFramebufferUserClient *client, unsigned int swapID, unsigned int options, unsigned int timeout)
  {
      IOReturn result = IOMobileFramebufferLegacy::swap_wait(client, swapID, options, timeout);
-     if (result != kIOReturnSuccess && (++fWaitFailures <= 20 || fWaitFailures % 1000 == 0))
+-    if (result != kIOReturnSuccess && (++fWaitFailures <= 20 || fWaitFailures % 1000 == 0))
 -        IOLog("DroidVMDisplay: swap_wait(%u, 0x%x, %u) = 0x%x (%llu failures): +6412 %u power %u/%u +6436 %u +140 0x%x current %p queue %p\n",
++    if (result == kIOReturnBusy)
++        fBusyWaits++;
++    // swap_wait_gated answers a non-blocking mode-0 query (0x80000000) for the swap it last completed (+6412) with Busy until a
++    // newer swap completes, because a real display keeps that buffer on glass. Here the swap was copied out before it completed
++    // and no surface is held afterwards, so with native-gop-retire-displayed=1 such a swap is reported as done.
++    if (fRetireDisplayed && result == kIOReturnBusy && options == 0x80000000u && !timeout && swapID == at<uint32_t>(this, 6412) &&
++        !at<IOMFBSwapIORequest *>(this, kCurrentSwap) && !at<IOMFBSwapIORequest *>(this, kSwapQueueFirst)) {
++        fRetiredWaits++;
++        return kIOReturnSuccess;
++    }
++    if (result != kIOReturnSuccess && (++fWaitFailures <= 3 || fWaitFailures % 1000 == 0))
 +        IOLog("NativeGOPDisplay: swap_wait(%u, 0x%x, %u) = 0x%x (%llu failures): +6412 %u power %u/%u +6436 %u +140 0x%x current %p queue %p\n",
                swapID, options, timeout, result, fWaitFailures, at<uint32_t>(this, 6412), at<uint32_t>(this, kSystemPowerState),
                at<uint32_t>(this, kAPIPowerState), at<uint32_t>(this, kHardwarePowered), at<uint8_t>(this, kHardwareStarted),
                at<IOMFBSwapIORequest *>(this, kCurrentSwap), at<IOMFBSwapIORequest *>(this, kSwapQueueFirst));
-@@ -348,52 +440,45 @@
+@@ -348,52 +483,54 @@
  
  // AppleParavirtDisplay::do_power_state_change_gated: the display is on while both the system and WindowServer (setAPIPowerState)
  // want it on; each change goes to WindowServer as a power state notification, which CoreAnimation waits for before it swaps.
@@ -481,15 +520,14 @@
 -            area = width * height;
 -            surface = candidate;
 -        }
--    }
--    if (shape != fLayerShape) {   // bring-up: each new combination of layers
 +        surfaces[i] = at<IOSurface *>(swap, kSwapMainSurface + i * sizeof(IOSurface *));
 +        if (!surfaces[i])
 +            continue;
 +        geometry[i] = {ioSurfaceWidth(surfaces[i]), ioSurfaceHeight(surfaces[i]),
 +                       ioSurfacePixelFormat(surfaces[i])};
 +        shape = shape * 31 + geometry[i].width * 65537 + geometry[i].height;
-+    }
+     }
+-    if (shape != fLayerShape) {   // bring-up: each new combination of layers
 +    int selected = nativeGopScanoutLayer(geometry, mask, fVideo.v_width, fVideo.v_height);
 +    if (shape != fLayerShape) {
          fLayerShape = shape;
@@ -498,19 +536,26 @@
 -            IOSurface *candidate = (layers >> layer & 1) ? at<IOSurface *>(swap, kSwapMainSurface + 8 * layer) : nullptr;
 -            if (candidate)
 -                IOLog(" %u: %llux%llu %#x", layer, ioSurfaceWidth(candidate), ioSurfaceHeight(candidate), ioSurfacePixelFormat(candidate));
--        }
++        IOLog("NativeGOPDisplay: swap mask=%#x scanout layer=%d\n", mask, selected);
++        IOLog("NativeGOPDisplay: layers %llux%llu %llux%llu %llux%llu %llux%llu\n", geometry[0].width, geometry[0].height,
++              geometry[1].width, geometry[1].height, geometry[2].width, geometry[2].height, geometry[3].width, geometry[3].height);
++    }
++    fDiagMask = mask;
++    for (unsigned i = 0; i < kNativeGopSwapLayerCount; i++) {
++        if (surfaces[i] && static_cast<int>(i) != selected) {
++            fCursorLayerSwaps++;
++            break;
+         }
 -        IOLog("\n");
--    }
+     }
 -    if (surface && area * 4 >= static_cast<uint64_t>(fVideo.v_width) * fVideo.v_height)   // a quarter of the screen at least
 -        copySurface(surface);
-+        IOLog("NativeGOPDisplay: swap mask=%#x scanout layer=%d\n", mask, selected);
-+    }
 +    if (selected >= 0)
 +        copySurface(surfaces[selected]);
      swap_complete_gated();
  }
  
-@@ -412,61 +497,244 @@
+@@ -412,61 +549,290 @@
      return static_cast<uint8_t>((scaled + (1u << (shift - 1))) >> shift);
  }
  
@@ -569,6 +614,51 @@
 +    fMappedSource = nullptr;
 +}
 +
++// native-gop-diag=1: refresh the counter strip once a second (field order: docs in gop_diag.h).
++void NativeGOPDisplay::updateDiagStrip()
++{
++    if (!fDiag || mach_absolute_time() < fDiagNext)
++        return;
++    clock_interval_to_deadline(1, kSecondScale, &fDiagNext);
++    const uint64_t submitted = fSubmitted, shown = fFrames, busy = fBusyWaits, reports = sheng_touch_diag[0];
++    const NativeGopDiagField fields[] = {
++        {static_cast<uint32_t>(submitted - fDiagLast[0]), 4},   // swaps per second
++        {static_cast<uint32_t>(shown - fDiagLast[1]), 4},       // frames per second
++        {static_cast<uint32_t>(busy - fDiagLast[2]), 4},        // swap_wait Busy per second
++        {fDiagMask, 2},                                         // layer mask of the last swap
++        {static_cast<uint32_t>(fCursorLayerSwaps), 6},          // swaps with a surface besides the scanned-out one
++        {static_cast<uint32_t>(reports - fDiagLast[3]), 4},     // touch reports per second
++        {sheng_touch_diag[1], 4},                               // finger-down transitions
++        {sheng_touch_diag[2], 4},                               // finger-up transitions
++        {sheng_touch_diag[3], 4},                               // last X (0..7fff)
++        {sheng_touch_diag[4], 4},                               // last Y (0..7fff)
++        {sheng_touch_diag[5], 2},                               // HID user clients (hidd, WindowServer)
++        {sheng_touch_diag[6], 2},                               // handleReport failures
++        {static_cast<uint32_t>(++fDiagBeat), 2},                // heartbeat
++    };
++    nativeGopDiagRender(fDiagStrip, fDiagWidth, fields, sizeof(fields) / sizeof(fields[0]));
++    fDiagLast[0] = submitted;
++    fDiagLast[1] = shown;
++    fDiagLast[2] = busy;
++    fDiagLast[3] = reports;
++    showDiagStrip();
++}
++
++// The strip is written over the scanout rows only, not recorded in the shadow: a changed source row replaces it until the next
++// frame end or the next second, which is acceptable for a diagnostic and keeps the row comparison unchanged.
++void NativeGOPDisplay::showDiagStrip()
++{
++    if (!fDiag || !fScanout)
++        return;
++    for (uint32_t y = 0; y < kNativeGopDiagHeight && y < fVideo.v_height; y++) {
++        uint64_t saved;
++        if (!sheng_fb_begin(SHENG_FB_GUI, &saved))
++            return;
++        __builtin_memcpy(fScanout + y * fVideo.v_rowBytes, fDiagStrip + y * fDiagWidth, fDiagWidth * 4);
++        sheng_fb_end(saved);
++    }
++}
++
 +void NativeGOPDisplay::copySurface(IOSurface *surface)
  {
      uint64_t width = ioSurfaceWidth(surface), height = ioSurfaceHeight(surface), rowBytes = ioSurfaceBytesPerRow(surface);
@@ -579,23 +669,20 @@
 -        PE_initialize_console(nullptr, kPEDisableScreen);
 -    if (format != fSurfaceFormat || !fFrames) {
 -        IOLog("DroidVMDisplay: surface %llux%llu row %llu offset %llu format %#x memory %p\n", width, height, rowBytes, base, format, memory);
-+    if (format != fSurfaceFormat || width != fSourceWidth || height != fSourceHeight || !fFrames) {
++    if (format != fSurfaceFormat || width != fSourceWidth || height != fSourceHeight) {
 +        IOLog("NativeGOPDisplay: surface %llux%llu row %llu offset %llu format %#x memory %p\n", width, height, rowBytes, base, format, memory);
          fSurfaceFormat = format;
--    }
--    fFrames++;
 +        fSourceWidth = width;
 +        fSourceHeight = height;
 +        fShadowValid = false;
-+    }
+     }
+-    fFrames++;
      uint64_t pixelBytes = format == kFormatRGhA ? 8 : 4;
 -    if (!memory || !fScanout || rowBytes < width * pixelBytes || (format != kFormatBGRA && format != kFormatRGhA))
 +    if (!memory || !fScanout || !width || !height || width > 16384 || height > 16384 ||
 +        rowBytes < width * pixelBytes || (format != kFormatBGRA && format != kFormatRGhA) ||
 +        base > memory->getLength() || rowBytes > (memory->getLength() - base) / height)
-         return;
--    uint64_t copyWidth = width < fVideo.v_width ? width : fVideo.v_width;
--    uint64_t copyHeight = height < fVideo.v_height ? height : fVideo.v_height;
++        return;
 +    const uint64_t copyWidth = fVideo.v_width, copyHeight = fVideo.v_height;
 +    const bool scaled = width != copyWidth || height != copyHeight;
 +    if (scaled && (width * copyHeight != height * copyWidth ||
@@ -603,7 +690,9 @@
 +                   copyWidth > width * 4 || copyHeight > height * 4)) {
 +        IOLog("NativeGOPDisplay: unsupported root surface geometry %llux%llu for %llux%llu\n",
 +              width, height, copyWidth, copyHeight);
-+        return;
+         return;
+-    uint64_t copyWidth = width < fVideo.v_width ? width : fVideo.v_width;
+-    uint64_t copyHeight = height < fVideo.v_height ? height : fVideo.v_height;
 +    }
      if (format == kFormatRGhA && !fHalfToByte) {
          fHalfToByte = static_cast<uint8_t *>(IOMalloc(65536));
@@ -666,21 +755,13 @@
 +        bool active = false, committed = false;
 +        uint64_t ready = 0, status = 0;
 +        explicit DiagnosticHandoff(bool first) {
-+            if (!first || !sheng_fb_claim_gui()) return;
++            if (!first || !sheng_fb_claim_gui_bounded(kFirstFrameClaimAttempts, nativeGopClaimDelay)) return;
 +            active = true;
 +            ready = sheng_panel_ready; status = sheng_status_pixels;
 +            sheng_panel_ready = 0; sheng_status_pixels = 0;
          }
 -        memory->readBytes(base + y * rowBytes, fRow, copyWidth * 8);
 -        auto *pixels = reinterpret_cast<uint32_t *>(line);
--        for (uint64_t x = 0; x < copyWidth; x++) {
--            const uint16_t *rgba = fRow + x * 4;
--            pixels[x] = 0xff000000u | fHalfToByte[rgba[0]] << 16 | fHalfToByte[rgba[1]] << 8 | fHalfToByte[rgba[2]];
--            if (sample) {
--                lit += (pixels[x] & 0xffffff) != 0;
--                raw += (rgba[0] | rgba[1] | rgba[2] | rgba[3]) != 0;
--                if (y == copyHeight / 2 && x == copyWidth / 2)
--                    center = static_cast<uint64_t>(rgba[3]) << 48 | static_cast<uint64_t>(rgba[2]) << 32 | rgba[1] << 16 | rgba[0];
 +        ~DiagnosticHandoff() {
 +            if (!active || committed) return;
 +            sheng_fb_abort_gui();
@@ -688,10 +769,8 @@
 +            if (sheng_fb_begin(SHENG_FB_BOOT, &saved)) {
 +                sheng_panel_ready = ready; sheng_status_pixels = status;
 +                sheng_fb_end(saved);
-             }
-         }
--    }
--    memory->complete();
++            }
++        }
 +    } handoff(!fFrames);
 +    if (!fFrames && !handoff.active) return;
 +    if (fFrames % kFullRefreshFrames == 0)
@@ -701,7 +780,14 @@
 +    auto sampleRow = [&](uint64_t y, const uint16_t *row) {
 +        if (format != kFormatRGhA)
 +            return;
-+        for (uint64_t x = 0; x < copyWidth; x++) {
+         for (uint64_t x = 0; x < copyWidth; x++) {
+-            const uint16_t *rgba = fRow + x * 4;
+-            pixels[x] = 0xff000000u | fHalfToByte[rgba[0]] << 16 | fHalfToByte[rgba[1]] << 8 | fHalfToByte[rgba[2]];
+-            if (sample) {
+-                lit += (pixels[x] & 0xffffff) != 0;
+-                raw += (rgba[0] | rgba[1] | rgba[2] | rgba[3]) != 0;
+-                if (y == copyHeight / 2 && x == copyWidth / 2)
+-                    center = static_cast<uint64_t>(rgba[3]) << 48 | static_cast<uint64_t>(rgba[2]) << 32 | rgba[1] << 16 | rgba[0];
 +            const uint16_t *rgba = row + (x * width / copyWidth) * 4;
 +            lit += (fHalfToByte[rgba[0]] | fHalfToByte[rgba[1]] | fHalfToByte[rgba[2]]) != 0;
 +            raw += (rgba[0] | rgba[1] | rgba[2] | rgba[3]) != 0;
@@ -757,7 +843,7 @@
 +                other.forwardRefused = true;   // not retried for this cached surface
 +                fForwardFailures++;
 +                continue;
-+            }
+             }
 +            uint8_t *target = reinterpret_cast<uint8_t *>(other.writable->getVirtualAddress());
 +            for (uint64_t y = 0; y < height; y++)
 +                __builtin_memcpy(target + y * rowBytes, source + y * rowBytes, sourceRowBytes);
@@ -765,10 +851,12 @@
 +            // and no dirty line written back later can overwrite what it draws next.
 +            other.memory->performOperation(kIOMemoryIncoherentIOStore, other.base, span);
 +            fForwardCopies++;
-+        }
-+    }
+         }
+     }
+-    memory->complete();
 +    fRowsWritten += blit.written;
 +    fRowsSkipped += blit.skipped;
++    showDiagStrip();
 +    if (!blit.complete)
 +        return;   // rows written so far match the shadow; an earlier invalid shadow stays invalid
 +    fShadowValid = source != nullptr;
@@ -791,7 +879,7 @@
  }
  
  static bool appendNumber(OSDictionary *dictionary, const char *key, uint64_t value, unsigned bits = 32)
-@@ -500,18 +768,43 @@
+@@ -500,18 +866,43 @@
      return dictionary;
  }
  
@@ -837,7 +925,7 @@
      // CVT reduced blanking as IOAVFamily's sCVTTimingData has it (1280x800@60: 1440x823, 71 MHz). Sync rates are 16.16 fixed point
      // (IOAVVideoTimingGetSyncRateRounded); the table leaves the horizontal one 0.
      uint8_t timingData[80] = {};
-@@ -541,8 +834,8 @@
+@@ -541,8 +932,8 @@
          if (!colors->setObject(color) || !timingColors->setObject(color) || !timings->setObject(timing))
              break;
          ioavTimingSetColorElements(timing, timingColors);
@@ -848,7 +936,7 @@
                appendNumber(product, "WeekOfManufacture", 24) && appendNumber(product, "YearOfManufacture", 2021)))
              break;
          if (!(appendDictionary(chromaticity, "Red", point(41943, 21627)) && appendDictionary(chromaticity, "Green", point(19661, 39322)) &&
-@@ -554,8 +847,8 @@
+@@ -554,8 +945,8 @@
                attributes->setObject("Chromaticity", chromaticity) && attributes->setObject("DefaultColorSpaceIsSRGB", kOSBooleanFalse) &&
                attributes->setObject("DefaultWhitePoint", whitePoint) && attributes->setObject("SupportsStandby", kOSBooleanTrue) &&
                appendNumber(attributes, "ContinuousFrequencySupport", 3) &&
@@ -859,7 +947,7 @@
                appendNumber(attributes, "NativeFormatHorizontalPixels", width) && appendNumber(attributes, "NativeFormatVerticalPixels", height) &&
                appendNumber(attributes, "PreciseAspectRatio", (static_cast<uint64_t>(width) << 16) / height)))
              break;
-@@ -567,8 +860,8 @@
+@@ -567,8 +958,8 @@
              break;
          if (!(appendNumber(scalingLimits, "RGBLayer_MinScaleFraction", 4) && appendNumber(scalingLimits, "RGBLayer_MaxScale", 4)))
              break;
@@ -870,7 +958,7 @@
          setProperty("primary", 0ULL, 32);   // AppleParavirtDisplay's display index
          done = setProperty("DisplayAttributes", attributes) && setProperty("Transport", transport) &&
              setProperty("ColorElements", colors) && setProperty("TimingElements", timings) &&
-@@ -587,14 +880,14 @@
+@@ -587,14 +978,14 @@
      OSSafeReleaseNULL(color);
      OSSafeReleaseNULL(timing);
      if (!done || set_digital_out_mode(kColorID, kTimingID) != kIOReturnSuccess) {
@@ -887,17 +975,16 @@
  {
      if (colorID != kColorID || timingID != kTimingID)
          return kIOReturnBadArgument;
-@@ -606,55 +899,59 @@
+@@ -606,55 +997,59 @@
      return kIOReturnSuccess;
  }
  
 -// AppleParavirtDisplay: dots per inch from the physical width (IOMobileFramebufferLegacy's reads "dot-pitch" of the AppleARMIODevice).
 -IOReturn DroidVMDisplay::get_dot_pitch(unsigned int *pitch)
--{
--    *pitch = static_cast<unsigned int>(fVideo.v_width * 25.46 / kWidthMM + 0.5);
 +// GOP supplies no EDID here: the explicit panel size when given (see nativeGopPanelSize), else a 96-dpi logical fallback.
 +IOReturn NativeGOPDisplay::get_dot_pitch(unsigned int *pitch)
-+{
+ {
+-    *pitch = static_cast<unsigned int>(fVideo.v_width * 25.46 / kWidthMM + 0.5);
 +    const uint32_t width = static_cast<uint32_t>(fVideo.v_width), height = static_cast<uint32_t>(fVideo.v_height);
 +    uint32_t widthMM = 0, heightMM = 0;
 +    *pitch = nativeGopPanelSize(width, height, &widthMM, &heightMM) ? (width * 254 + widthMM * 5) / (widthMM * 10) : 96;
@@ -907,11 +994,10 @@
  // AppleParavirtDisplay's hooks with nothing to do on a CPU-copied scanout: the swap and its layers need no mapping, there is no
  // gamma or color hardware (the family's defaults are unsupported, AppleParavirtDisplay accepts them).
 -IOReturn DroidVMDisplay::verify_swap(IOMFBSwapIORequest *)   // AppleParavirtDisplay returns 1 (IOMobileFramebufferLegacy: 0)
--{
++IOReturn NativeGOPDisplay::verify_swap(IOMFBSwapIORequest *)   // AppleParavirtDisplay returns 1 (IOMobileFramebufferLegacy: 0)
+ {
 -    if (!fSubmitted++)
 -        IOLog("DroidVMDisplay: first swap submitted\n");
-+IOReturn NativeGOPDisplay::verify_swap(IOMFBSwapIORequest *)   // AppleParavirtDisplay returns 1 (IOMobileFramebufferLegacy: 0)
-+{
 +    if (!fSubmitted++) {
 +        sheng_boot_checkpoint(8);
 +        IOLog("NativeGOPDisplay: first swap submitted\n");
@@ -970,7 +1056,7 @@
  {
      IOMFBSwapIORequest *swap = at<IOMFBSwapIORequest *>(this, kCurrentSwap);
      if (at<uint32_t>(swap, kSwapDropReasons))
-@@ -672,7 +969,7 @@
+@@ -672,7 +1067,7 @@
  }
  
  // AppleParavirtDisplay::do_swap_info_notify_gated: the request's async result is the mask, the swap ID and the words it asks for.
@@ -979,7 +1065,7 @@
  {
      const SwapInfo *info = reinterpret_cast<const SwapInfo *>(blob);
      uint32_t mask = at<uint32_t>(request, kNotifyMask);
-@@ -698,5 +995,5 @@
+@@ -698,5 +1093,5 @@
      return userClientSendAsyncResult(&at<io_user_reference_t>(request, kNotifyAsyncReference), kIOReturnSuccess, args, count,
                                       kIOUserNotifyOptionCanDrop);
  }

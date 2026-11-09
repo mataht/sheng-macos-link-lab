@@ -58,6 +58,17 @@ static inline int sheng_fb_claim_gui(void)
     return claimed;
 }
 
+/* Called from the first frame: the boot panel holds the writer only while it stores one text row. */
+static inline int sheng_fb_claim_gui_bounded(unsigned attempts, void (*wait)(void))
+{
+    while (attempts--) {
+        if (sheng_fb_claim_gui()) return 1;
+        if (__atomic_load_n(&sheng_framebuffer.owner, __ATOMIC_ACQUIRE) != SHENG_FB_BOOT) return 0;
+        wait();
+    }
+    return 0;
+}
+
 static inline void sheng_fb_abort_gui(void)
 {
     /* Only the serialized first-frame caller may roll back; panic is irreversible. */

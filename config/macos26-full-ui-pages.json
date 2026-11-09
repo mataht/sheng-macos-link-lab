@@ -88,6 +88,20 @@
   },
   {
    "file": "dyld_shared_cache_arm64e.01",
+   "file_offset": 118177792,
+   "edits": [
+    {
+     "offset": 16096,
+     "before": "7f2303d5ffc301d1eb2b026de923036d",
+     "after": "20008052c0035fd61f2003d51f2003d5",
+     "policy": "sw-cursor-forced"
+    }
+   ],
+   "before_sha256": "b9499bf724c6c749d1b9315fed7c61f42a9c5952ead3a8483ef5e237358d9c1f",
+   "after_sha256": "1d780a198461353136695d0023e3faa9bc51b54f6842ab4c76595136aed408b8"
+  },
+  {
+   "file": "dyld_shared_cache_arm64e.01",
    "file_offset": 176832512,
    "edits": [
     {
@@ -109,7 +123,8 @@
    "software-pool-bgra",
    "legacy-syslog",
    "activity-stream",
-   "dyld-cryptex-root"
+   "dyld-cryptex-root",
+   "sw-cursor-forced"
   ],
   "provenance": [
    {
@@ -190,6 +205,16 @@
     "target": {
      "file": "dyld_shared_cache_arm64e.01",
      "offset": 727508
+    }
+   },
+   {
+    "policy": "sw-cursor-forced",
+    "image": "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight",
+    "function": "_CGXSWCursorIsForced",
+    "function_offset": 0,
+    "target": {
+     "file": "dyld_shared_cache_arm64e.01",
+     "offset": 118193888
     }
    }
   ]
