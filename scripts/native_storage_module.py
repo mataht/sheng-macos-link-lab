@@ -164,7 +164,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if evidence.get('qemu_only_display') is True and not evidence.get('combined_driver'):
             # Display (and optionally the QEMU input companion) compiled directly into the QEMU-only bundle.
             if (not evidence.get('native_gop_display') or evidence.get('hardware_admitted') is not False
-                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_rtc'))):
+                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_rtc', 'native_backlight'))):
                 raise ValueError('the QEMU display bundle may carry only the GOP display and QEMU input companions')
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
@@ -239,6 +239,14 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                    CFBundleIdentifier=evidence['bundle']):
                 raise ValueError('wall clock companion personality differs')
             allowed |= {'NativeRtc'}
+        backlight = evidence.get('native_backlight')
+        if backlight:
+            import native_backlight
+            native_backlight.validate(backlight)
+            if info['IOKitPersonalities'].get('NativeBacklight') != dict(native_backlight.PERSONALITY,
+                                                                         CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('backlight companion personality differs')
+            allowed |= {'NativeBacklight'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')

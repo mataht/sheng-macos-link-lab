@@ -588,7 +588,8 @@ def compile_sources(args, record: dict) -> None:
                               full_root=args.build_full_root,
                               touch=args.build_touch,
                               cpufreq=args.build_cpufreq,
-                              rtc=args.build_rtc)
+                              rtc=args.build_rtc,
+                              backlight=args.build_backlight)
             save(record)
 
 
@@ -684,6 +685,8 @@ def main() -> None:
                              'sheng-cpufreq=1 is read-only)')
     parser.add_argument('--build-rtc', action='store_true',
                         help='include the default-off PMIC RTC companion and the platform clock hook (sheng-rtc=1 is read-only)')
+    parser.add_argument('--build-backlight', action='store_true',
+                        help='include the default-off panel brightness companion (sheng-backlight=1 is read-only)')
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
@@ -705,6 +708,8 @@ def main() -> None:
         parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_rtc and not args.build_ufs_driver:
         parser.error('--build-rtc requires --build-ufs-driver')
+    if args.build_backlight and not args.build_ufs_driver:
+        parser.error('--build-backlight requires --build-ufs-driver')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:

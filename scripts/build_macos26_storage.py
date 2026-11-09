@@ -15,6 +15,7 @@ from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
 import native_rtc
+import native_backlight
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -50,9 +51,11 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, rtc=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, rtc=False, backlight=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
+    if backlight and transport != 'ufs':
+        raise ValueError('the backlight companion belongs to the hardware (UFS) storage driver')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
     if rtc and transport != 'ufs':
@@ -275,6 +278,23 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
                        for arg in rtc_base]
         run(rtc_command, directory + '-rtc-compile', record, cwd=Path(compile_record['directory']), env=env)
         objects.append(str(rtc_object))
+    if backlight:
+        backlight_dir = destination / 'backlight'
+        backlight_dir.mkdir(exist_ok=True)
+        for name in native_backlight.PLATFORM_SOURCES:
+            (backlight_dir / name).write_bytes((root / native_backlight.PLATFORM_DIR / name).read_bytes())
+        backlight_base = list(command)
+        user_headers = backlight_base.index(str(sdk / 'usr/include'))
+        if backlight_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del backlight_base[user_headers - 1:user_headers + 1]
+        backlight_base[1:1] = ['-I', str(backlight_dir)]
+        backlight_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        backlight_object = backlight_dir / 'NativeBacklight.o'
+        backlight_command = [str(backlight_object) if arg == str(obj) else
+                             str(backlight_dir / 'native_backlight.cpp') if arg == str(wrapper) else arg for arg in backlight_base]
+        run(backlight_command, directory + '-backlight-compile', record, cwd=Path(compile_record['directory']), env=env)
+        objects.append(str(backlight_object))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -332,6 +352,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
     if rtc:
         info['IOKitPersonalities']['NativeRtc'] = dict(native_rtc.PERSONALITY, CFBundleIdentifier=bundle)
+    if backlight:
+        info['IOKitPersonalities']['NativeBacklight'] = dict(native_backlight.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -353,6 +375,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
     if rtc:
         evidence['native_rtc'] = native_rtc.evidence(root)
+    if backlight:
+        evidence['native_backlight'] = native_backlight.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,
