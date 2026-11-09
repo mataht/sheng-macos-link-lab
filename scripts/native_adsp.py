@@ -37,6 +37,9 @@ POWER_SOURCE_ABI = dict(base_class='IOPMPowerSource', object_bytes=0x138, vtable
 NODE = 'native-adsp'
 CONTRACT = 'sheng-adsp-v1'
 MAX_IMAGE_BYTES = 128 << 20
+# DarwinBoot reads kernel.macho.adt with this limit (drivers/DarwinBoot: ReadFile (Root, TreePath, SIZE_16MB, ...)): a larger file stops
+# the boot before the kernel runs.
+DARWINBOOT_ADT_LIMIT = 16 << 20
 IMAGES = ('adsp', 'adsp_dtb')
 
 
@@ -166,6 +169,15 @@ def node_properties(adsp: bytes, dtb: bytes, pin: dict) -> dict:
     return {'compatible': b'sheng,adsp-firmware\0', 'contract': CONTRACT.encode() + b'\0', 'firmware': adsp,
             'firmware-sha256': bytes.fromhex(pin['adsp']['sha256']), 'firmware-dtb': dtb,
             'firmware-dtb-sha256': bytes.fromhex(pin['adsp_dtb']['sha256'])}
+
+
+def check_adt_size(path: Path) -> int:
+    """Refuse an ADT the bootloader would reject, instead of producing a package that cannot boot."""
+    size = path.stat().st_size
+    if size > DARWINBOOT_ADT_LIMIT:
+        raise ValueError(f'the ADT with the ADSP images is {size} bytes; DarwinBoot refuses more than {DARWINBOOT_ADT_LIMIT} '
+                         '(see hw-build/driver-port/adsp-battery-status.md, firmware delivery)')
+    return size
 
 
 def main() -> int:

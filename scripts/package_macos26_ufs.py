@@ -918,6 +918,8 @@ def main():
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
                                             native_gop_display=gop_enabled, touch_node=touch_node, adsp_node=adsp_node)
+            if adsp_node is not None:
+                native_adsp.check_adt_size(files / 'kernel.macho.adt')
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'

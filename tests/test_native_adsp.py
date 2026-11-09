@@ -201,6 +201,16 @@ class NativeAdspTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'differ'):
             native_adsp.node_properties(adsp, dtb, pin | dict(schema='other'))
 
+    def test_adt_size_limit(self):
+        self.assertEqual(native_adsp.DARWINBOOT_ADT_LIMIT, 16 << 20)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'adt'
+            path.write_bytes(bytes(1024))
+            self.assertEqual(native_adsp.check_adt_size(path), 1024)
+            path.write_bytes(bytes(native_adsp.DARWINBOOT_ADT_LIMIT + 1))
+            with self.assertRaisesRegex(ValueError, 'DarwinBoot refuses'):
+                native_adsp.check_adt_size(path)
+
     def test_device_tree_node(self):
         adsp, dtb = b'A' * 8192, b'B' * 4096
         properties = native_adsp.node_properties(adsp, dtb, native_adsp.pin_record(adsp, dtb))
