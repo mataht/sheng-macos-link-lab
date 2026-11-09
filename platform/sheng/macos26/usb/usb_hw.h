@@ -15,6 +15,7 @@
  *      and clocks are on, because an access to an unclocked block can hang the bus.
  *   2  rails, power domains, clocks and resets. Controller registers are then readable.
  *   3  eUSB2 repeater and PHY (from the locally injected table), host role, xHCI reset, port power, port status polling. USB 2 only, no DMA.
+ *   4  (--build-usb-host only, native_usb_host.cpp) macOS 26's own xHCI driver on the controller stage 3 left in the host role.
  */
 
 #include <stddef.h>
@@ -185,7 +186,7 @@ inline void setBits(Bus &bus, uint64_t pa, uint32_t clear, uint32_t set)
     bus.write(pa, (bus.read(pa) & ~clear) | set);
 }
 
-enum class Step : int { none = 0, rails = 1, gdscPhy = 2, gdscUsb30 = 3, rcg = 4, clock = 5, coreId = 6, repeater = 7, phy = 8, role = 9, reset = 10, ports = 11 };
+enum class Step : int { none = 0, rails = 1, gdscPhy = 2, gdscUsb30 = 3, rcg = 4, clock = 5, coreId = 6, repeater = 7, phy = 8, role = 9, reset = 10, ports = 11, hostStack = 12 };
 
 inline const char *stepName(Step step)
 {
@@ -202,6 +203,7 @@ inline const char *stepName(Step step)
     case Step::role: return "host-role";
     case Step::reset: return "xhci-reset";
     case Step::ports: return "port-power";
+    case Step::hostStack: return "host-stack";
     }
     return "?";
 }

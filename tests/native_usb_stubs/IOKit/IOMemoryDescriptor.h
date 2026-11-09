@@ -6,6 +6,6 @@ public:
 };
 class IOMemoryDescriptor : public OSObject {
 public:
-  static IOMemoryDescriptor *withPhysicalAddress(IOPhysicalAddress64, uint64_t, IODirection) { return nullptr; }
+  static IOMemoryDescriptor *withPhysicalAddress(uint64_t, uint64_t, IODirection) { return nullptr; }
   IOMemoryMap *createMappingInTask(task_t, mach_vm_address_t, IOOptionBits) { return nullptr; }
 };

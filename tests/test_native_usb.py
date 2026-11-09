@@ -3,6 +3,7 @@
 import contextlib
 import hashlib
 import io
+import json
 from pathlib import Path
 import re
 import shutil
@@ -48,13 +49,13 @@ class NativeUsbTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             include = Path(temporary) / 'include'
             shutil.copytree(ROOT / 'tests/native_usb_stubs', include)
-            for name in native_usb.PLATFORM_SOURCES:
+            for name in native_usb.PLATFORM_SOURCES + native_usb.HOST_SOURCES:
                 shutil.copy(USB / name, include / name)
             for name in native_usb.ALSO_COPIED:
                 shutil.copy(ROOT / name, include / Path(name).name)
-            subprocess.run([compiler, '-std=gnu++17', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
-                            '-I', str(include), '-fsyntax-only', str(include / 'native_usb.cpp')],
-                           check=True, capture_output=True, text=True, timeout=120)
+            flags = ['-std=gnu++17', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function', '-I', str(include), '-fsyntax-only']
+            for extra, source in (([], 'native_usb.cpp'), (['-DNATIVE_USB_HOST=1'], 'native_usb.cpp'), ([], 'native_usb_host.cpp')):
+                subprocess.run([compiler, *flags, *extra, str(include / source)], check=True, capture_output=True, text=True, timeout=120)
             # The imported C file compiles on its own.
             subprocess.run([compiler.replace('++', '') if shutil.which(compiler.replace('++', '')) else 'cc', '-std=gnu11', '-Wall', '-Werror',
                             '-I', str(include), '-c', str(include / 'native_usb_rpmh.c'), '-o', str(Path(temporary) / 'rpmh.o')],
@@ -117,6 +118,58 @@ class NativeUsbTests(unittest.TestCase):
         self.assertIn(b'native-usb\0', data)
         self.assertIn(table, data)
 
+    def test_host_contract_requires_the_module_closure_and_declares_dma(self):
+        record = native_usb.evidence(host=True)
+        native_usb.validate(record)
+        self.assertTrue(record['host'] and record['dma'])
+        self.assertIn('4', record['stages'])
+        self.assertIn(native_usb.XHCI_BUNDLE, native_usb.modules_contract()['original_modules'])
+        for change in (dict(dma=False), dict(schema='sheng-usb-v1'), dict(apple_usb_stack=False)):
+            with self.assertRaisesRegex(ValueError, 'default-off contract'):
+                native_usb.validate(record | change)
+
+    def test_personality_policy_gates_boot_time_services(self):
+        contract = native_usb.modules_contract()
+        family = dict(IOKitPersonalities={name: dict(IOProviderClass='IOResources', IOResourceMatch='IOKit')
+                                          for name in contract['gated_personalities']['com.apple.iokit.IOUSBHostFamily']})
+        native_usb.personality_policy(family, 'com.apple.iokit.IOUSBHostFamily', contract)
+        self.assertEqual({p['IOResourceMatch'] for p in family['IOKitPersonalities'].values()}, {contract['gate_resource']})
+        other = dict(IOKitPersonalities=dict(Anything=dict(IOProviderClass='AppleSMCInterface')))
+        native_usb.personality_policy(other, 'com.apple.driver.AppleSMC', contract)
+        self.assertNotIn('IOKitPersonalities', other)
+        hub = dict(IOKitPersonalities=dict(Hub=dict(IOProviderClass='IOUSBHostDevice')))
+        native_usb.personality_policy(hub, 'com.apple.driver.usb.AppleUSBHub', contract)
+        self.assertEqual(hub['IOKitPersonalities']['Hub']['IOProviderClass'], 'IOUSBHostDevice')
+        self.assertEqual(native_usb.personality_policy({}, 'x', contract), {})
+
+    def test_opaque_declarations_reproduce_the_original_signing(self):
+        compiler = shutil.which('c++') or shutil.which('clang++')
+        nm = shutil.which('nm')
+        if compiler is None or nm is None:
+            self.skipTest('requires a host C++ compiler and nm')
+        import gen_macos26_usb_abi as gen
+        contract = json.loads((ROOT / native_usb.ABI_CONFIG).read_text())
+        header = (USB / 'OriginalUsbXhciABI.h').read_text()
+        self.assertEqual(hashlib.sha256(header.encode()).hexdigest(), contract['header_sha256'])
+        self.assertEqual(len(contract['methods']), contract['slots'] - contract['ioservice_slots'])
+        for method in contract['methods']:
+            self.assertEqual(gen.discriminator(method['mangled']), method['discriminator'], method['mangled'])
+        # Every declared name is opaque: nothing from the original symbol table is in the header.
+        declared = re.findall(r'virtual [^\n]*? (\w+)\(', header)
+        self.assertEqual(len(declared), len(contract['methods']))
+        self.assertTrue(all(re.fullmatch(r'opaque\d+_\d+', name) for name in declared))
+        with tempfile.TemporaryDirectory() as temporary:
+            include = Path(temporary) / 'include'
+            shutil.copytree(ROOT / 'tests/native_usb_stubs', include)
+            shutil.copy(USB / 'OriginalUsbXhciABI.h', include / 'OriginalUsbXhciABI.h')
+            shutil.copy(ROOT / 'tests/native_usb_host_abi.cpp', include / 'abi.cpp')
+            obj = Path(temporary) / 'abi.o'
+            subprocess.run([compiler, '-std=gnu++17', '-fno-rtti', '-I', str(include), '-c', str(include / 'abi.cpp'), '-o', str(obj)],
+                           check=True, capture_output=True, text=True, timeout=120)
+            listing = subprocess.run([nm, '-u', str(obj)], check=True, capture_output=True, text=True).stdout
+        symbols = {line.split()[-1] for line in listing.splitlines() if line.strip()}
+        self.assertEqual({s for s in symbols if 'opaque' in s}, {m['mangled'] for m in contract['methods']})
+
     def test_no_real_phy_values_are_committed(self):
         for path in (*USB.iterdir(), ROOT / 'scripts/native_usb.py', ROOT / 'tests/native_usb.cpp'):
             self.assertNotIn('kQcomEusb2Init', path.read_text(), path.name)
@@ -136,12 +189,14 @@ class NativeUsbTests(unittest.TestCase):
                     packager.main()
             return stderr.getvalue()
 
-        self.assertIn('invalid choice', run('--usb-stage', '4'))
+        self.assertIn('invalid choice', run('--usb-stage', '5'))
+        self.assertNotIn('invalid choice', run('--usb-stage', '4', '--usb-phy-table', 'x'))
         self.assertNotIn('invalid choice', run('--usb-stage', '1'))
         self.assertNotIn('invalid choice', run('--usb-stage', '2'))
-        self.assertIn('requires --usb-phy-table', run('--usb-stage', '3'))
-        self.assertIn('only for --usb-stage 3', run('--usb-stage', '2', '--usb-phy-table', 'x'))
-        self.assertNotIn('requires --usb-phy-table', run('--usb-stage', '3', '--usb-phy-table', 'x'))
+        self.assertIn('require --usb-phy-table', run('--usb-stage', '3'))
+        self.assertIn('require --usb-phy-table', run('--usb-stage', '4'))
+        self.assertIn('only for --usb-stage 3 and 4', run('--usb-stage', '2', '--usb-phy-table', 'x'))
+        self.assertNotIn('require --usb-phy-table', run('--usb-stage', '3', '--usb-phy-table', 'x'))
 
 
 if __name__ == '__main__':

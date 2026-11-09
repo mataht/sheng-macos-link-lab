@@ -114,7 +114,7 @@ def chain_blob(segments, relocations):
     return struct.pack('<7I', 0, 28, 0, 0, 0, 0, 0) + starts, writes
 
 
-def emit(native_data, original, native_names, identity, slide, roots=ROOTS, storage_driver=None, *, allow_combined_virtio_gop=False):
+def emit(native_data, original, native_names, identity, slide, roots=ROOTS, storage_driver=None, *, allow_combined_virtio_gop=False, usb_contract=None):
     image = macho(native_data, 'arm64e')
     marker = native_names.get('_sheng_security_prelink_version')
     if marker is None or struct.unpack_from('<I', native_data,
@@ -234,6 +234,9 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
     selected_entries = []
     for n in [*report['kernel_interfaces'], *sorted(modules)]:
         entry = copy.deepcopy(entries[n])
+        if usb_contract is not None:
+            from native_usb import personality_policy
+            personality_policy(entry, n, usb_contract)
         if n in modules:
             if native_boot_primary:
                 entry['_NativePrelinkPrimary'] = True
@@ -340,8 +343,10 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
         struct.pack_into('<Q', output, at(kmod + 156), old_header + slide)
         if not any(command == 0x1e for command, _, _ in module['commands']):
             count, size = struct.unpack_from('<II', output, header_at + 16)
-            first_section = min(sec['va'] for seg in module['segments'] if seg['name'] == '__TEXT'
-                                for sec in seg['sections'] if sec['size'])
+            # IOPortFamily's __TEXT carries no sections, so its header padding runs to the end of the segment.
+            text_end = next(seg['va'] + seg['size'] for seg in module['segments'] if seg['name'] == '__TEXT')
+            first_section = min((sec['va'] for seg in module['segments'] if seg['name'] == '__TEXT'
+                                 for sec in seg['sections'] if sec['size']), default=text_end)
             marker_at = header_at + 32 + size
             if first_section - old_header < 32 + size + 16 or any(output[marker_at:marker_at + 16]):
                 raise ValueError('no verified header padding for split-segment descriptor')
@@ -453,6 +458,9 @@ def emit(native_data, original, native_names, identity, slide, roots=ROOTS, stor
             report['storage_driver']['button_keys_vtable_abi'] = driver['button_keys_vtable_abi']
         if 'touch_vtable_abi' in driver:
             report['storage_driver']['touch_vtable_abi'] = driver['touch_vtable_abi']
+        if 'usb_host_vtable_abi' in driver:
+            report['storage_driver']['usb_host_vtable_abi'] = driver['usb_host_vtable_abi']
+            report['storage_driver']['usb_host_private_vtable_bindings'] = driver['usb_host_private_vtable_bindings']
     return final_data, report
 
 
@@ -469,6 +477,8 @@ def main():
                         help='include the paired original BaseSystem startup components')
     parser.add_argument('--hid-components', action='store_true',
                         help='include the paired original HID service for Recovery display experiments')
+    parser.add_argument('--usb-components', action='store_true',
+                        help='include the USB host modules for NativeUsb stage 4 (config/macos26-usb-modules.json), with their boot-time personalities gated')
     parser.add_argument('--storage-driver', type=Path, help='standalone ARM64E transport build directory')
     parser.add_argument('--allow-combined-virtio-gop', action='store_true',
                         help='explicit QEMU-only opt-in for the fixed two-object VirtIO/GOP probe bundle')
@@ -497,13 +507,20 @@ def main():
                     or hid_contract['architecture'] != identity['architecture']):
                 raise ValueError('HID component contract differs from the paired native kernel')
             modules += hid_contract['original_modules']
+        usb_contract = None
+        if args.usb_components:
+            import native_usb
+            usb_contract = native_usb.modules_contract()
+            modules += usb_contract['original_modules']
         candidate, report = emit(kernel.read_bytes(), args.bootkc.read_bytes(), names, identity,
                                  args.slide, (*ROOTS, *modules), args.storage_driver,
-                                 allow_combined_virtio_gop=args.allow_combined_virtio_gop)
+                                 allow_combined_virtio_gop=args.allow_combined_virtio_gop, usb_contract=usb_contract)
         if recovery_contract:
             report['recovery_components'] = recovery_contract
         if hid_contract:
             report['hid_components'] = hid_contract
+        if usb_contract:
+            report['usb_components'] = usb_contract
         args.output.mkdir(parents=True, exist_ok=False)
         (args.output / kernel.name).write_bytes(candidate)
         shutil.copytree(args.kernel_build / 'kernel.development.sheng.dSYM', args.output / 'kernel.development.sheng.dSYM')

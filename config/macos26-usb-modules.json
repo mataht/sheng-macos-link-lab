@@ -1,0 +1,22 @@
+{
+  "build": "25F71",
+  "xnu": "12377.121.6",
+  "architecture": "arm64e",
+  "original_modules": [
+    "com.apple.driver.usb.AppleUSBXHCI",
+    "com.apple.driver.usb.AppleUSBHub",
+    "com.apple.driver.usb.AppleUSBHostCompositeDevice",
+    "com.apple.driver.usb.IOUSBHostHIDDevice"
+  ],
+  "keep_personalities": [
+    "com.apple.driver.usb.AppleUSBHub",
+    "com.apple.driver.usb.AppleUSBHostCompositeDevice",
+    "com.apple.driver.usb.IOUSBHostHIDDevice",
+    "com.apple.driver.AppleUSBHostMergeProperties",
+    "com.apple.driver.usb.AppleUSBHostPlatformProperties"
+  ],
+  "gated_personalities": {
+    "com.apple.iokit.IOUSBHostFamily": ["AppleUSBHostResources", "AppleUSBHostResourcesTypeC"]
+  },
+  "gate_resource": "NativeUsbHost"
+}

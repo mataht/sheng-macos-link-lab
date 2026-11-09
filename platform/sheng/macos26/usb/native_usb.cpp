@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // NativeUsb: macOS 26 bring-up of the SM8550 DWC3 USB controller, in stages.
 //
-// Default off: native-usb=<1..3>, hardware only (PE_vmm_present == 0).
+// Default off: native-usb=<1..4>, hardware only (PE_vmm_present == 0).
 //   1  read-only report of the clock and power state; controller registers only when their power domain and clocks are on.
 //   2  votes the rails (RPMh), powers the domains, runs the clocks and resets the controller.
 //   3  eUSB2 repeater and PHY, host role, xHCI reset and port power, port status polling. USB 2 only, no DMA, no ring.
 //      The PHY table is never compiled in: a local packager adds /arm-io/native-usb with the property "table", accepted only
 //      when its size and SHA-256 equal the pinned capture (usb_phy_table_sha256.h). Without it stage 3 stops before the PHY.
+//   4  (only built with --build-usb-host, native_usb_host.cpp) macOS 26's own xHCI driver on the controller stage 3 left in the host role.
 // Nothing here touches storage. A wrong outcome is left by rebooting: every register written is volatile.
 //
 // The register work is in usb_hw.h (host tested). The RPMh rail votes and the repeater sequence are adapted from UniXNU
@@ -27,7 +28,16 @@
 #include "QcomRpmh.h"
 #include "usb_phy_table_sha256.h"
 
+#ifndef NATIVE_USB_HOST
+#define NATIVE_USB_HOST 0
+#endif
+
 using namespace sheng_usb;
+
+#if NATIVE_USB_HOST
+extern "C" bool native_usb_host_start(void);
+extern "C" void native_usb_host_stats(void);
+#endif
 
 class NativeUsb : public IOService {
   OSDeclareDefaultStructors(NativeUsb)
@@ -41,7 +51,7 @@ OSDefineMetaClassAndStructors(NativeUsb, IOService)
 
 namespace {
 
-constexpr unsigned kMaxStage = 3;
+constexpr unsigned kMaxStage = NATIVE_USB_HOST ? 4 : 3;
 constexpr uint64_t kCmdDb = 0x81c60000, kRsc = 0x17a20000;
 constexpr uint32_t kCmdDbBytes = 0x20000, kRscBytes = 0x10000, kRscTcsBlock = 0xd00;
 constexpr unsigned kOwnedTcs = 2;
@@ -343,11 +353,30 @@ void bringUpThread(void *self, wait_result_t)
       if (!repeaterHost(pmic, table))
         failed = Step::role;
     }
-    if (failed == Step::none)
+    // Stage 4 leaves the controller to Apple's driver, which resets it itself.
+    if (failed == Step::none && stage == 3)
       failed = xhciResetAndPower(bus, &cap);
     report(bus, pmic, "host");
   }
   IOLog("NativeUsb: stage %u %s%s\n", stage, failed == Step::none ? "reached" : "stopped at ", failed == Step::none ? "" : stepName(failed));
+#if NATIVE_USB_HOST
+  if (stage == 4 && failed == Step::none) {
+    if (!native_usb_host_start())
+      failed = Step::hostStack;
+    IOLog("NativeUsb: stage 4 %s\n", failed == Step::none ? "host stack up" : "host stack failed");
+    if (failed == Step::none) {
+      for (unsigned second = 5;; second += 5) {
+        IOSleep(5000);
+        native_usb_host_stats();
+        if (second % 60 == 0) {
+          char when[12];
+          snprintf(when, sizeof when, "t%us", second);
+          report(bus, pmic, when);
+        }
+      }
+    }
+  }
+#endif
   if (failed != Step::none || stage < 3) {
     for (unsigned second = 10; second <= 60; second += 10) {
       IOSleep(10000);

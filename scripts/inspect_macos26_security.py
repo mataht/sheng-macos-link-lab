@@ -158,6 +158,10 @@ def inspect(data: bytes, native_names: dict, roots=ROOTS) -> dict:
         entry = entries[name]
         if entry.get('OSKernelResource') is True:
             interfaces.add(name)
+        elif name not in kc['entries']:
+            # A codeless kext (Info.plist only, e.g. AppleUSBHostPlatformProperties): no image to relocate, only its dependency edge.
+            interfaces.add(name)
+            pending.extend(entry.get('OSBundleLibraries', {}))
         else:
             selected.add(name)
             pending.extend(entry.get('OSBundleLibraries', {}))

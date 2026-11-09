@@ -583,7 +583,7 @@ def compile_sources(args, record: dict) -> None:
                               full_root=args.build_full_root,
                               touch=args.build_touch,
                               cpufreq=args.build_cpufreq,
-                              usb=args.build_usb)
+                              usb=args.build_usb, usb_host=args.build_usb_host)
             save(record)
 
 
@@ -679,6 +679,8 @@ def main() -> None:
                              'sheng-cpufreq=1 is read-only)')
     parser.add_argument('--build-usb', action='store_true',
                         help='include the default-off SM8550 USB companion (native-usb=1 is read-only, 2 powers the controller)')
+    parser.add_argument('--build-usb-host', action='store_true',
+                        help="add stage 4: a subclass of macOS 26's AppleUSBXHCI (needs the emit --usb-components candidate at assembly)")
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-full-root', action='store_true',
@@ -700,6 +702,8 @@ def main() -> None:
         parser.error('--build-cpufreq requires --build-ufs-driver')
     if args.build_usb and not args.build_ufs_driver:
         parser.error('--build-usb requires --build-ufs-driver')
+    if args.build_usb_host and not args.build_usb:
+        parser.error('--build-usb-host requires --build-usb')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_full_root and not args.build_ufs_driver:

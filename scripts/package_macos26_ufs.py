@@ -634,9 +634,10 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
-    parser.add_argument('--usb-stage', type=int, choices=(1, 2, 3),
+    parser.add_argument('--usb-stage', type=int, choices=(1, 2, 3, 4),
                         help='start the compiled USB companion (native-usb=N): 1 read-only, 2 power and clocks, '
-                             '3 host role and port polling, USB 2 only (needs --usb-phy-table)')
+                             '3 host role and port polling, USB 2 only (needs --usb-phy-table); 4 Apple xHCI stack (also needs '
+                             'a --build-usb-host kernel assembled with emit --usb-components)')
     parser.add_argument('--usb-phy-table', type=Path,
                         help='local PHY table placed in /arm-io/native-usb, pinned by size and SHA-256; never in a commit or CI build')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
@@ -648,10 +649,10 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
-    if args.usb_stage == 3 and not args.usb_phy_table:
-        parser.error('--usb-stage 3 requires --usb-phy-table')
-    if args.usb_phy_table and args.usb_stage != 3:
-        parser.error('--usb-phy-table is only for --usb-stage 3')
+    if args.usb_stage in (3, 4) and not args.usb_phy_table:
+        parser.error('--usb-stage 3 and 4 require --usb-phy-table')
+    if args.usb_phy_table and args.usb_stage not in (3, 4):
+        parser.error('--usb-phy-table is only for --usb-stage 3 and 4')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -837,6 +838,8 @@ def main():
     if args.usb_stage:
         import native_usb
         usb = dict(qualify_usb(args.kernel_build), stage=args.usb_stage)
+        if args.usb_stage == 4 and not usb.get('host'):
+            raise ValueError('stage 4 needs a kernel built with --build-usb-host and assembled with --usb-components')
         boot_args += f' native-usb={args.usb_stage}'
         if args.usb_phy_table:
             usb_node = native_usb.node_properties(args.usb_phy_table.read_bytes())

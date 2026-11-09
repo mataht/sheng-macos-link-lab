@@ -50,13 +50,15 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, usb=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, usb=False, usb_host=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
     if usb and transport != 'ufs':
         raise ValueError('the USB companion belongs to the hardware (UFS) storage driver')
+    if usb_host and not usb:
+        raise ValueError('the USB host stack requires the USB companion')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -260,7 +262,7 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
     if usb:
         usb_dir = destination / 'usb'
         usb_dir.mkdir(exist_ok=True)
-        for name in native_usb.PLATFORM_SOURCES:
+        for name in native_usb.PLATFORM_SOURCES + (native_usb.HOST_SOURCES if usb_host else ()):
             (usb_dir / name).write_bytes((root / native_usb.PLATFORM_DIR / name).read_bytes())
         for name in native_usb.ALSO_COPIED:
             (usb_dir / Path(name).name).write_bytes((root / name).read_bytes())
@@ -270,8 +272,11 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             raise ValueError('unexpected user SDK include option')
         del usb_base[user_headers - 1:user_headers + 1]
         usb_base[1:1] = ['-I', str(usb_dir)]
+        if usb_host:
+            usb_base[1:1] = ['-DNATIVE_USB_HOST=1']
         usb_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
         for source_file, object_file, language in ((usb_dir / 'native_usb.cpp', usb_dir / 'NativeUsb.o', 'c++'),
+                                                   *(((usb_dir / 'native_usb_host.cpp', usb_dir / 'NativeUsbHost.o', 'c++'),) if usb_host else ()),
                                                    *((usb_dir / name, usb_dir / (Path(name).stem + '.o'), 'c')
                                                      for name in native_usb.COMPILE_C)):
             one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg
@@ -361,7 +366,7 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
     if usb:
-        evidence['native_usb'] = native_usb.evidence(root)
+        evidence['native_usb'] = native_usb.evidence(root, host=usb_host)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,
