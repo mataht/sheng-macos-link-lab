@@ -1,0 +1,856 @@
+{
+ "build": "25F71",
+ "instance_size": 3872,
+ "slots": 420,
+ "ioservice_slots": 272,
+ "identity": {
+  "uuid": "C66F6293-7F68-3FDE-AC6D-35C0CE83170E",
+  "text_sha256": "17e707e9f569897ec64b4df6f820071a401184b6ff891a93ba4fd6eb066bccfc"
+ },
+ "overrides": [
+  292,
+  412,
+  414
+ ],
+ "ioservice_overrides": [
+  {
+   "slot": 22,
+   "method": "free"
+  },
+  {
+   "slot": 77,
+   "method": "init"
+  },
+  {
+   "slot": 100,
+   "method": "setProperties"
+  },
+  {
+   "slot": 133,
+   "method": "didTerminate"
+  },
+  {
+   "slot": 135,
+   "method": "systemWillShutdown"
+  },
+  {
+   "slot": 188,
+   "method": "registerService"
+  },
+  {
+   "slot": 190,
+   "method": "start"
+  },
+  {
+   "slot": 191,
+   "method": "stop"
+  },
+  {
+   "slot": 192,
+   "method": "open"
+  },
+  {
+   "slot": 193,
+   "method": "close"
+  },
+  {
+   "slot": 195,
+   "method": "handleOpen"
+  },
+  {
+   "slot": 196,
+   "method": "handleClose"
+  },
+  {
+   "slot": 197,
+   "method": "handleIsOpen"
+  },
+  {
+   "slot": 198,
+   "method": "terminate"
+  },
+  {
+   "slot": 205,
+   "method": "matchPropertyTable"
+  },
+  {
+   "slot": 212,
+   "method": "attach"
+  },
+  {
+   "slot": 215,
+   "method": "getWorkLoop"
+  },
+  {
+   "slot": 236,
+   "method": "message"
+  },
+  {
+   "slot": 249,
+   "method": "PMstop"
+  },
+  {
+   "slot": 259,
+   "method": "setPowerState"
+  },
+  {
+   "slot": 260,
+   "method": "maxCapabilityForDomainState"
+  },
+  {
+   "slot": 261,
+   "method": "initialPowerStateForDomainState"
+  },
+  {
+   "slot": 263,
+   "method": "powerStateWillChangeTo"
+  },
+  {
+   "slot": 264,
+   "method": "powerStateDidChangeTo"
+  }
+ ],
+ "methods": [
+  {
+   "slot": 272,
+   "mangled": "_ZN12AppleUSBXHCI15opaque272_62852Ev",
+   "discriminator": 24677
+  },
+  {
+   "slot": 273,
+   "mangled": "_ZN12AppleUSBXHCI15opaque273_63800Ev",
+   "discriminator": 34617
+  },
+  {
+   "slot": 274,
+   "mangled": "_ZN12AppleUSBXHCI15opaque274_52510Ev",
+   "discriminator": 49032
+  },
+  {
+   "slot": 275,
+   "mangled": "_ZN12AppleUSBXHCI14opaque275_2558Ev",
+   "discriminator": 31395
+  },
+  {
+   "slot": 276,
+   "mangled": "_ZN12AppleUSBXHCI15opaque276_52731Ev",
+   "discriminator": 62001
+  },
+  {
+   "slot": 277,
+   "mangled": "_ZN12AppleUSBXHCI15opaque277_67569Ev",
+   "discriminator": 34456
+  },
+  {
+   "slot": 278,
+   "mangled": "_ZN12AppleUSBXHCI15opaque278_17436Ev",
+   "discriminator": 5899
+  },
+  {
+   "slot": 279,
+   "mangled": "_ZN12AppleUSBXHCI15opaque279_44633Ev",
+   "discriminator": 26324
+  },
+  {
+   "slot": 280,
+   "mangled": "_ZN12AppleUSBXHCI16opaque280_105003Ev",
+   "discriminator": 57469
+  },
+  {
+   "slot": 281,
+   "mangled": "_ZN12AppleUSBXHCI16opaque281_112915Ev",
+   "discriminator": 20327
+  },
+  {
+   "slot": 282,
+   "mangled": "_ZN12AppleUSBXHCI15opaque282_92847Ev",
+   "discriminator": 56444
+  },
+  {
+   "slot": 283,
+   "mangled": "_ZN12AppleUSBXHCI15opaque283_89280Ev",
+   "discriminator": 61234
+  },
+  {
+   "slot": 284,
+   "mangled": "_ZN12AppleUSBXHCI15opaque284_37890Ev",
+   "discriminator": 63315
+  },
+  {
+   "slot": 285,
+   "mangled": "_ZN12AppleUSBXHCI15opaque285_52163Ev",
+   "discriminator": 18450
+  },
+  {
+   "slot": 286,
+   "mangled": "_ZN12AppleUSBXHCI13opaque286_899Ev",
+   "discriminator": 59719
+  },
+  {
+   "slot": 287,
+   "mangled": "_ZN12AppleUSBXHCI16opaque287_106891Ev",
+   "discriminator": 30510
+  },
+  {
+   "slot": 288,
+   "mangled": "_ZN12AppleUSBXHCI16opaque288_120610Ev",
+   "discriminator": 7400
+  },
+  {
+   "slot": 289,
+   "mangled": "_ZN12AppleUSBXHCI15opaque289_23133Ev",
+   "discriminator": 61549
+  },
+  {
+   "slot": 290,
+   "mangled": "_ZN12AppleUSBXHCI16opaque290_123308Ev",
+   "discriminator": 2847
+  },
+  {
+   "slot": 291,
+   "mangled": "_ZN12AppleUSBXHCI14opaque291_7768Ev",
+   "discriminator": 25620
+  },
+  {
+   "slot": 292,
+   "mangled": "_ZN12AppleUSBXHCI16opaque292_101362Ev",
+   "discriminator": 19575
+  },
+  {
+   "slot": 293,
+   "mangled": "_ZN12AppleUSBXHCI15opaque293_24931Ev",
+   "discriminator": 45113
+  },
+  {
+   "slot": 294,
+   "mangled": "_ZN12AppleUSBXHCI14opaque294_8441Ev",
+   "discriminator": 8541
+  },
+  {
+   "slot": 295,
+   "mangled": "_ZN12AppleUSBXHCI16opaque295_144337Ev",
+   "discriminator": 39270
+  },
+  {
+   "slot": 296,
+   "mangled": "_ZN12AppleUSBXHCI15opaque296_16772Ev",
+   "discriminator": 16696
+  },
+  {
+   "slot": 297,
+   "mangled": "_ZN12AppleUSBXHCI15opaque297_50735Ev",
+   "discriminator": 37278
+  },
+  {
+   "slot": 298,
+   "mangled": "_ZN12AppleUSBXHCI15opaque298_28808Ev",
+   "discriminator": 33606
+  },
+  {
+   "slot": 299,
+   "mangled": "_ZN12AppleUSBXHCI15opaque299_43151Ev",
+   "discriminator": 49940
+  },
+  {
+   "slot": 300,
+   "mangled": "_ZN12AppleUSBXHCI15opaque300_40423Ev",
+   "discriminator": 807
+  },
+  {
+   "slot": 301,
+   "mangled": "_ZN12AppleUSBXHCI15opaque301_35247Ev",
+   "discriminator": 46512
+  },
+  {
+   "slot": 302,
+   "mangled": "_ZN12AppleUSBXHCI15opaque302_17150Ev",
+   "discriminator": 7245
+  },
+  {
+   "slot": 303,
+   "mangled": "_ZN12AppleUSBXHCI15opaque303_13958Ev",
+   "discriminator": 58975
+  },
+  {
+   "slot": 304,
+   "mangled": "_ZN12AppleUSBXHCI16opaque304_142634Ev",
+   "discriminator": 39530
+  },
+  {
+   "slot": 305,
+   "mangled": "_ZN12AppleUSBXHCI16opaque305_140835Ev",
+   "discriminator": 58736
+  },
+  {
+   "slot": 306,
+   "mangled": "_ZN12AppleUSBXHCI16opaque306_121612Ev",
+   "discriminator": 54853
+  },
+  {
+   "slot": 307,
+   "mangled": "_ZN12AppleUSBXHCI15opaque307_12822Ev",
+   "discriminator": 36576
+  },
+  {
+   "slot": 308,
+   "mangled": "_ZN12AppleUSBXHCI15opaque308_61984Ev",
+   "discriminator": 18688
+  },
+  {
+   "slot": 309,
+   "mangled": "_ZN12AppleUSBXHCI15opaque309_33959Ev",
+   "discriminator": 38039
+  },
+  {
+   "slot": 310,
+   "mangled": "_ZN12AppleUSBXHCI15opaque310_57113Ev",
+   "discriminator": 5977
+  },
+  {
+   "slot": 311,
+   "mangled": "_ZN12AppleUSBXHCI16opaque311_113018Ev",
+   "discriminator": 44989
+  },
+  {
+   "slot": 312,
+   "mangled": "_ZN12AppleUSBXHCI16opaque312_145600Ev",
+   "discriminator": 14680
+  },
+  {
+   "slot": 313,
+   "mangled": "_ZN12AppleUSBXHCI16opaque313_167111Ev",
+   "discriminator": 47982
+  },
+  {
+   "slot": 314,
+   "mangled": "_ZN12AppleUSBXHCI16opaque314_257702Ev",
+   "discriminator": 25470
+  },
+  {
+   "slot": 315,
+   "mangled": "_ZN12AppleUSBXHCI15opaque315_12963Ev",
+   "discriminator": 10957
+  },
+  {
+   "slot": 316,
+   "mangled": "_ZN12AppleUSBXHCI16opaque316_137612Ev",
+   "discriminator": 25219
+  },
+  {
+   "slot": 317,
+   "mangled": "_ZN12AppleUSBXHCI15opaque317_59175Ev",
+   "discriminator": 20668
+  },
+  {
+   "slot": 318,
+   "mangled": "_ZN12AppleUSBXHCI14opaque318_4706Ev",
+   "discriminator": 47885
+  },
+  {
+   "slot": 319,
+   "mangled": "_ZN12AppleUSBXHCI16opaque319_135446Ev",
+   "discriminator": 13631
+  },
+  {
+   "slot": 320,
+   "mangled": "_ZN12AppleUSBXHCI16opaque320_143951Ev",
+   "discriminator": 45276
+  },
+  {
+   "slot": 321,
+   "mangled": "_ZN12AppleUSBXHCI15opaque321_58396Ev",
+   "discriminator": 42682
+  },
+  {
+   "slot": 322,
+   "mangled": "_ZN12AppleUSBXHCI16opaque322_103951Ev",
+   "discriminator": 62155
+  },
+  {
+   "slot": 323,
+   "mangled": "_ZN12AppleUSBXHCI14opaque323_3785Ev",
+   "discriminator": 19605
+  },
+  {
+   "slot": 324,
+   "mangled": "_ZN12AppleUSBXHCI15opaque324_54304Ev",
+   "discriminator": 4209
+  },
+  {
+   "slot": 325,
+   "mangled": "_ZN12AppleUSBXHCI15opaque325_19167Ev",
+   "discriminator": 12549
+  },
+  {
+   "slot": 326,
+   "mangled": "_ZN12AppleUSBXHCI15opaque326_60964Ev",
+   "discriminator": 5856
+  },
+  {
+   "slot": 327,
+   "mangled": "_ZN12AppleUSBXHCI15opaque327_15606Ev",
+   "discriminator": 25418
+  },
+  {
+   "slot": 328,
+   "mangled": "_ZN12AppleUSBXHCI16opaque328_139045Ev",
+   "discriminator": 23039
+  },
+  {
+   "slot": 329,
+   "mangled": "_ZN12AppleUSBXHCI16opaque329_118053Ev",
+   "discriminator": 4545
+  },
+  {
+   "slot": 330,
+   "mangled": "_ZN12AppleUSBXHCI15opaque330_25353Ev",
+   "discriminator": 12857
+  },
+  {
+   "slot": 331,
+   "mangled": "_ZN12AppleUSBXHCI16opaque331_183064Ev",
+   "discriminator": 54427
+  },
+  {
+   "slot": 332,
+   "mangled": "_ZN12AppleUSBXHCI15opaque332_44398Ev",
+   "discriminator": 62239
+  },
+  {
+   "slot": 333,
+   "mangled": "_ZN12AppleUSBXHCI15opaque333_52762Ev",
+   "discriminator": 23845
+  },
+  {
+   "slot": 334,
+   "mangled": "_ZN12AppleUSBXHCI15opaque334_16738Ev",
+   "discriminator": 58229
+  },
+  {
+   "slot": 335,
+   "mangled": "_ZN12AppleUSBXHCI12opaque335_35Ev",
+   "discriminator": 55410
+  },
+  {
+   "slot": 336,
+   "mangled": "_ZN12AppleUSBXHCI16opaque336_255561Ev",
+   "discriminator": 52193
+  },
+  {
+   "slot": 337,
+   "mangled": "_ZN12AppleUSBXHCI15opaque337_30733Ev",
+   "discriminator": 25187
+  },
+  {
+   "slot": 338,
+   "mangled": "_ZN12AppleUSBXHCI15opaque338_79069Ev",
+   "discriminator": 15817
+  },
+  {
+   "slot": 339,
+   "mangled": "_ZN12AppleUSBXHCI16opaque339_103835Ev",
+   "discriminator": 16819
+  },
+  {
+   "slot": 340,
+   "mangled": "_ZN12AppleUSBXHCI15opaque340_23301Ev",
+   "discriminator": 15215
+  },
+  {
+   "slot": 341,
+   "mangled": "_ZN12AppleUSBXHCI15opaque341_22807Ev",
+   "discriminator": 62232
+  },
+  {
+   "slot": 342,
+   "mangled": "_ZN12AppleUSBXHCI15opaque342_15388Ev",
+   "discriminator": 14632
+  },
+  {
+   "slot": 343,
+   "mangled": "_ZN12AppleUSBXHCI15opaque343_10793Ev",
+   "discriminator": 44476
+  },
+  {
+   "slot": 344,
+   "mangled": "_ZN12AppleUSBXHCI15opaque344_12030Ev",
+   "discriminator": 14142
+  },
+  {
+   "slot": 345,
+   "mangled": "_ZN12AppleUSBXHCI15opaque345_46003Ev",
+   "discriminator": 56327
+  },
+  {
+   "slot": 346,
+   "mangled": "_ZN12AppleUSBXHCI15opaque346_12864Ev",
+   "discriminator": 30137
+  },
+  {
+   "slot": 347,
+   "mangled": "_ZN12AppleUSBXHCI15opaque347_28411Ev",
+   "discriminator": 35379
+  },
+  {
+   "slot": 348,
+   "mangled": "_ZN12AppleUSBXHCI16opaque348_111160Ev",
+   "discriminator": 34897
+  },
+  {
+   "slot": 349,
+   "mangled": "_ZN12AppleUSBXHCI15opaque349_47986Ev",
+   "discriminator": 6940
+  },
+  {
+   "slot": 350,
+   "mangled": "_ZN12AppleUSBXHCI13opaque350_256Ev",
+   "discriminator": 17935
+  },
+  {
+   "slot": 351,
+   "mangled": "_ZN12AppleUSBXHCI16opaque351_118781Ev",
+   "discriminator": 14638
+  },
+  {
+   "slot": 352,
+   "mangled": "_ZN12AppleUSBXHCI15opaque352_10087Ev",
+   "discriminator": 12748
+  },
+  {
+   "slot": 353,
+   "mangled": "_ZN12AppleUSBXHCI15opaque353_15892Ev",
+   "discriminator": 32984
+  },
+  {
+   "slot": 354,
+   "mangled": "_ZN12AppleUSBXHCI15opaque354_41592Ev",
+   "discriminator": 29326
+  },
+  {
+   "slot": 355,
+   "mangled": "_ZN12AppleUSBXHCI14opaque355_1732Ev",
+   "discriminator": 15216
+  },
+  {
+   "slot": 356,
+   "mangled": "_ZN12AppleUSBXHCI15opaque356_42064Ev",
+   "discriminator": 41337
+  },
+  {
+   "slot": 357,
+   "mangled": "_ZN12AppleUSBXHCI16opaque357_122620Ev",
+   "discriminator": 48147
+  },
+  {
+   "slot": 358,
+   "mangled": "_ZN12AppleUSBXHCI16opaque358_135052Ev",
+   "discriminator": 9984
+  },
+  {
+   "slot": 359,
+   "mangled": "_ZN12AppleUSBXHCI15opaque359_21952Ev",
+   "discriminator": 14792
+  },
+  {
+   "slot": 360,
+   "mangled": "_ZN12AppleUSBXHCI15opaque360_32642Ev",
+   "discriminator": 10149
+  },
+  {
+   "slot": 361,
+   "mangled": "_ZN12AppleUSBXHCI16opaque361_224260Ev",
+   "discriminator": 25483
+  },
+  {
+   "slot": 362,
+   "mangled": "_ZN12AppleUSBXHCI15opaque362_25331Ev",
+   "discriminator": 40860
+  },
+  {
+   "slot": 363,
+   "mangled": "_ZN12AppleUSBXHCI15opaque363_65129Ev",
+   "discriminator": 12483
+  },
+  {
+   "slot": 364,
+   "mangled": "_ZN12AppleUSBXHCI16opaque364_100221Ev",
+   "discriminator": 8645
+  },
+  {
+   "slot": 365,
+   "mangled": "_ZN12AppleUSBXHCI16opaque365_100071Ev",
+   "discriminator": 54741
+  },
+  {
+   "slot": 366,
+   "mangled": "_ZN12AppleUSBXHCI16opaque366_173759Ev",
+   "discriminator": 44340
+  },
+  {
+   "slot": 367,
+   "mangled": "_ZN12AppleUSBXHCI15opaque367_53767Ev",
+   "discriminator": 63523
+  },
+  {
+   "slot": 368,
+   "mangled": "_ZN12AppleUSBXHCI16opaque368_112443Ev",
+   "discriminator": 61416
+  },
+  {
+   "slot": 369,
+   "mangled": "_ZN12AppleUSBXHCI16opaque369_301709Ev",
+   "discriminator": 40333
+  },
+  {
+   "slot": 370,
+   "mangled": "_ZN12AppleUSBXHCI15opaque370_36053Ev",
+   "discriminator": 31318
+  },
+  {
+   "slot": 371,
+   "mangled": "_ZN12AppleUSBXHCI15opaque371_38396Ev",
+   "discriminator": 21469
+  },
+  {
+   "slot": 372,
+   "mangled": "_ZN12AppleUSBXHCI14opaque372_8624Ev",
+   "discriminator": 50356
+  },
+  {
+   "slot": 373,
+   "mangled": "_ZN12AppleUSBXHCI15opaque373_14661Ev",
+   "discriminator": 4980
+  },
+  {
+   "slot": 374,
+   "mangled": "_ZN12AppleUSBXHCI15opaque374_33438Ev",
+   "discriminator": 2778
+  },
+  {
+   "slot": 375,
+   "mangled": "_ZN12AppleUSBXHCI16opaque375_147119Ev",
+   "discriminator": 9499
+  },
+  {
+   "slot": 376,
+   "mangled": "_ZN12AppleUSBXHCI16opaque376_112468Ev",
+   "discriminator": 42801
+  },
+  {
+   "slot": 377,
+   "mangled": "_ZN12AppleUSBXHCI15opaque377_50736Ev",
+   "discriminator": 100
+  },
+  {
+   "slot": 378,
+   "mangled": "_ZN12AppleUSBXHCI15opaque378_30851Ev",
+   "discriminator": 33393
+  },
+  {
+   "slot": 379,
+   "mangled": "_ZN12AppleUSBXHCI16opaque379_138109Ev",
+   "discriminator": 50767
+  },
+  {
+   "slot": 380,
+   "mangled": "_ZN12AppleUSBXHCI15opaque380_32326Ev",
+   "discriminator": 35754
+  },
+  {
+   "slot": 381,
+   "mangled": "_ZN12AppleUSBXHCI15opaque381_91495Ev",
+   "discriminator": 27254
+  },
+  {
+   "slot": 382,
+   "mangled": "_ZN12AppleUSBXHCI15opaque382_48069Ev",
+   "discriminator": 26913
+  },
+  {
+   "slot": 383,
+   "mangled": "_ZN12AppleUSBXHCI15opaque383_32977Ev",
+   "discriminator": 13253
+  },
+  {
+   "slot": 384,
+   "mangled": "_ZN12AppleUSBXHCI15opaque384_60700Ev",
+   "discriminator": 52336
+  },
+  {
+   "slot": 385,
+   "mangled": "_ZN12AppleUSBXHCI15opaque385_62358Ev",
+   "discriminator": 58217
+  },
+  {
+   "slot": 386,
+   "mangled": "_ZN12AppleUSBXHCI14opaque386_2873Ev",
+   "discriminator": 16691
+  },
+  {
+   "slot": 387,
+   "mangled": "_ZN12AppleUSBXHCI16opaque387_230337Ev",
+   "discriminator": 55590
+  },
+  {
+   "slot": 388,
+   "mangled": "_ZN12AppleUSBXHCI15opaque388_15308Ev",
+   "discriminator": 52580
+  },
+  {
+   "slot": 389,
+   "mangled": "_ZN12AppleUSBXHCI15opaque389_70715Ev",
+   "discriminator": 3797
+  },
+  {
+   "slot": 390,
+   "mangled": "_ZN12AppleUSBXHCI15opaque390_23061Ev",
+   "discriminator": 33914
+  },
+  {
+   "slot": 391,
+   "mangled": "_ZN12AppleUSBXHCI14opaque391_4362Ev",
+   "discriminator": 13219
+  },
+  {
+   "slot": 392,
+   "mangled": "_ZN12AppleUSBXHCI15opaque392_34966Ev",
+   "discriminator": 29333
+  },
+  {
+   "slot": 393,
+   "mangled": "_ZN12AppleUSBXHCI14opaque393_6585Ev",
+   "discriminator": 12497
+  },
+  {
+   "slot": 394,
+   "mangled": "_ZN12AppleUSBXHCI13opaque394_796Ev",
+   "discriminator": 32869
+  },
+  {
+   "slot": 395,
+   "mangled": "_ZN12AppleUSBXHCI15opaque395_18429Ev",
+   "discriminator": 40782
+  },
+  {
+   "slot": 396,
+   "mangled": "_ZN12AppleUSBXHCI15opaque396_40879Ev",
+   "discriminator": 6468
+  },
+  {
+   "slot": 397,
+   "mangled": "_ZN12AppleUSBXHCI15opaque397_86420Ev",
+   "discriminator": 63333
+  },
+  {
+   "slot": 398,
+   "mangled": "_ZN12AppleUSBXHCI16opaque398_238108Ev",
+   "discriminator": 32363
+  },
+  {
+   "slot": 399,
+   "mangled": "_ZN12AppleUSBXHCI16opaque399_206236Ev",
+   "discriminator": 28550
+  },
+  {
+   "slot": 400,
+   "mangled": "_ZN12AppleUSBXHCI15opaque400_85482Ev",
+   "discriminator": 16947
+  },
+  {
+   "slot": 401,
+   "mangled": "_ZN12AppleUSBXHCI15opaque401_64055Ev",
+   "discriminator": 26172
+  },
+  {
+   "slot": 402,
+   "mangled": "_ZN12AppleUSBXHCI15opaque402_34022Ev",
+   "discriminator": 51255
+  },
+  {
+   "slot": 403,
+   "mangled": "_ZN12AppleUSBXHCI16opaque403_127222Ev",
+   "discriminator": 54887
+  },
+  {
+   "slot": 404,
+   "mangled": "_ZN12AppleUSBXHCI16opaque404_150199Ev",
+   "discriminator": 12956
+  },
+  {
+   "slot": 405,
+   "mangled": "_ZN12AppleUSBXHCI15opaque405_42549Ev",
+   "discriminator": 31516
+  },
+  {
+   "slot": 406,
+   "mangled": "_ZN12AppleUSBXHCI14opaque406_3807Ev",
+   "discriminator": 28570
+  },
+  {
+   "slot": 407,
+   "mangled": "_ZN12AppleUSBXHCI15opaque407_16078Ev",
+   "discriminator": 35775
+  },
+  {
+   "slot": 408,
+   "mangled": "_ZN12AppleUSBXHCI15opaque408_22275Ev",
+   "discriminator": 9175
+  },
+  {
+   "slot": 409,
+   "mangled": "_ZN12AppleUSBXHCI15opaque409_12644Ev",
+   "discriminator": 59517
+  },
+  {
+   "slot": 410,
+   "mangled": "_ZN12AppleUSBXHCI15opaque410_19877Ev",
+   "discriminator": 36481
+  },
+  {
+   "slot": 411,
+   "mangled": "_ZN12AppleUSBXHCI15opaque411_10775Ev",
+   "discriminator": 61601
+  },
+  {
+   "slot": 412,
+   "mangled": "_ZN12AppleUSBXHCI15opaque412_66923Eyj",
+   "discriminator": 57967
+  },
+  {
+   "slot": 413,
+   "mangled": "_ZN12AppleUSBXHCI15opaque413_73443Ev",
+   "discriminator": 53060
+  },
+  {
+   "slot": 414,
+   "mangled": "_ZN12AppleUSBXHCI14opaque414_8318Eyjy",
+   "discriminator": 24713
+  },
+  {
+   "slot": 415,
+   "mangled": "_ZN12AppleUSBXHCI15opaque415_50719Ev",
+   "discriminator": 61384
+  },
+  {
+   "slot": 416,
+   "mangled": "_ZN12AppleUSBXHCI16opaque416_416002Ev",
+   "discriminator": 45233
+  },
+  {
+   "slot": 417,
+   "mangled": "_ZN12AppleUSBXHCI15opaque417_24646Ev",
+   "discriminator": 1797
+  },
+  {
+   "slot": 418,
+   "mangled": "_ZN12AppleUSBXHCI16opaque418_102156Ev",
+   "discriminator": 39210
+  },
+  {
+   "slot": 419,
+   "mangled": "_ZN12AppleUSBXHCI15opaque419_54814Ev",
+   "discriminator": 49335
+  }
+ ],
+ "header_sha256": "f2026788384df4b51f097dc884ee448f08150ffcc859d196f9254a512d475af8"
+}

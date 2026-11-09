@@ -483,6 +483,17 @@ def qualify_button_keys(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_usb(build) -> dict:
+    """The USB companion must be compiled into this kernel's storage driver under its reviewed default-off contract."""
+    import native_usb
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_usb')
+    if not record:
+        raise ValueError('kernel lacks the USB companion')
+    native_usb.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_cpufreq(build) -> dict:
     """The CPU frequency companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_cpufreq
@@ -759,6 +770,12 @@ def main():
                         help='let a reboot or shutdown reach PSCI (sheng-psci-reset=1); a panic stays on the screen')
     parser.add_argument('--wifi-stage', type=int, choices=(1, 2, 3),
                         help='start the compiled Wi-Fi companion (sheng-wifi=N): 1 read-only, 2 power and PCIe link, 3 endpoint registers')
+    parser.add_argument('--usb-stage', type=int, choices=(1, 2, 3, 4),
+                        help='start the compiled USB companion (native-usb=N): 1 read-only, 2 power and clocks, '
+                             '3 host role and port polling, USB 2 only (needs --usb-phy-table); 4 Apple xHCI stack (also needs '
+                             'a --build-usb-host kernel assembled with emit --usb-components)')
+    parser.add_argument('--usb-phy-table', type=Path,
+                        help='local PHY table placed in /arm-io/native-usb, pinned by size and SHA-256; never in a commit or CI build')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -790,6 +807,10 @@ def main():
         parser.error('--keyboard-stage 4 and 5 download the controller image: give --keyboard-firmware')
     if args.keyboard_rails and args.keyboard_stage and args.keyboard_stage < 3:
         parser.error('--keyboard-rails votes at stage 3: use --keyboard-stage 3 or higher')
+    if args.usb_stage in (3, 4) and not args.usb_phy_table:
+        parser.error('--usb-stage 3 and 4 require --usb-phy-table')
+    if args.usb_phy_table and args.usb_stage not in (3, 4):
+        parser.error('--usb-phy-table is only for --usb-stage 3 and 4')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -1010,6 +1031,16 @@ def main():
     if args.wifi_stage:
         wifi = dict(qualify_wifi(args.kernel_build), stage=args.wifi_stage)
         boot_args += f' sheng-wifi={args.wifi_stage}'
+    usb = usb_node = None
+    if args.usb_stage:
+        import native_usb
+        usb = dict(qualify_usb(args.kernel_build), stage=args.usb_stage)
+        if args.usb_stage == 4 and not usb.get('host'):
+            raise ValueError('stage 4 needs a kernel built with --build-usb-host and assembled with --usb-components')
+        boot_args += f' native-usb={args.usb_stage}'
+        if args.usb_phy_table:
+            usb_node = native_usb.node_properties(args.usb_phy_table.read_bytes())
+        usb = dict(usb, phy_table_included=usb_node is not None)
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -1102,6 +1133,7 @@ def main():
                                                if args.full_system_adt_snapshot_name else None),
                     platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node, gpu_node=gpu_node,
                     extra_arm_io_nodes=extra_arm_io_nodes,
+                    usb_node=usb_node,
                     trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
@@ -1110,7 +1142,8 @@ def main():
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
                                             native_gop_display=gop_enabled, touch_node=touch_node, gpu_node=gpu_node,
-                                            extra_arm_io_nodes=extra_arm_io_nodes)
+                                            extra_arm_io_nodes=extra_arm_io_nodes,
+                                            usb_node=usb_node)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
@@ -1180,6 +1213,7 @@ def main():
                 keyboard=keyboard,
                 rtc=rtc, backlight=backlight, memperf=memperf, psci_reset=psci_reset,
                 wifi=wifi,
+                usb=usb,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,

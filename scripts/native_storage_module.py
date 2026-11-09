@@ -63,6 +63,21 @@ def framebuffer_private_slots(original, kc, own, base, slide):
     return bindings, names
 
 
+USB_HOST_PREFIXES = ('__ZN12AppleUSBXHCI', '__ZNK12AppleUSBXHCI')
+
+
+def usb_host_original_slots(original, kc):
+    """The 420 slots of the original AppleUSBXHCI vtable. The subclass's opaque method names exist nowhere in the collection, so its
+    inherited slots are bound by position to the original implementation of that slot, with the slot's signing checked."""
+    family = kc_macho(original, kc['entries']['com.apple.driver.usb.AppleUSBXHCI'][1])
+    table = next(a for a, ns in exports(original, family).items() if '__ZTV12AppleUSBXHCI' in ns)
+    slots = {p['site']: p for p in chains(original, kc)}
+    original_slots = [slots[table + 16 + index * 8] for index in range(420)]
+    if table + 16 + 420 * 8 in slots:
+        raise ValueError('unreviewed AppleUSBXHCI vtable length')
+    return original_slots
+
+
 def validate_private_slot(item, allowed):
     matches = [slot for slot in allowed if all(item[key] == slot[key] for key in ('new_site', 'new_target'))
                and all(item[key] == slot['original'][key]
@@ -290,6 +305,15 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                     CFBundleIdentifier=evidence['bundle']):
                 raise ValueError('Wi-Fi companion personality differs')
             allowed |= {'NativeWifi'}
+        usb_record = evidence.get('native_usb')
+        if usb_record:
+            import native_usb
+            native_usb.validate(usb_record)
+            if info['IOKitPersonalities'].get('NativeUsb') != dict(native_usb.PERSONALITY, CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('USB companion personality differs')
+            if usb_record.get('host') and not set(native_usb.modules_contract()['original_modules']) <= selected.keys():
+                raise ValueError('USB host stage requires the emit --usb-components candidate')
+            allowed |= {'NativeUsb'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -306,6 +330,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
     private_slots, private_names = ({}, {})
     if evidence.get('native_gop_display'):
         private_slots, private_names = framebuffer_private_slots(original, kc, own, base, slide)
+    usb_host_slots = usb_host_original_slots(original, kc) if (evidence.get('native_usb') or {}).get('host') else None
     imported = {}
     for name in selected:
         module = kc_macho(original, kc['entries'][name][1])
@@ -314,6 +339,8 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                 imported.setdefault(symbol, set()).add(address + slide)
 
     def resolve(name):
+        if usb_host_slots is not None and name.startswith(USB_HOST_PREFIXES) and name not in imported:
+            return 0  # an opaque vtable slot, bound by position below
         targets = {native[name]} if name in native else imported.get(name, set())
         if not targets and name in private_slots:
             targets = {slot['new_target'] for slot in private_slots[name]}
@@ -413,6 +440,20 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
             slot = validate_private_slot(item, private_slots[item['import_name']])
             private_bindings.append(dict(name=item['import_name'], slot=slot['slot'],
                 site=hex(item['new_site']), target=hex(item['new_target']), pac_metadata_matches=True))
+    usb_host_bindings = []
+    if usb_host_slots is not None:
+        usb_vtable = base + own['__ZTV13NativeUsbXhci'] + 16
+        for item in relocations:
+            name = item['import_name']
+            if name and name.startswith(USB_HOST_PREFIXES) and usb_vtable <= item['new_site'] < usb_vtable + 420 * 8:
+                index = (item['new_site'] - usb_vtable) // 8
+                slot = usb_host_slots[index]
+                if any(item[key] != slot[key] for key in ('authenticated', 'key', 'diversity', 'address_diversity')):
+                    raise ValueError(f'USB host slot {index} differs from the original pointer-authentication contract')
+                item['new_target'] = slot['target'] + slide
+                usb_host_bindings.append(dict(slot=index, site=hex(item['new_site']), target=hex(item['new_target']), pac_metadata_matches=True))
+        if any(item['import_name'] and item['import_name'].startswith(USB_HOST_PREFIXES) and not item['new_target'] for item in relocations):
+            raise ValueError('USB host opaque method referenced outside the subclass vtable')
     reserved = '__ZN15OSMetaClassBase25_RESERVEDOSMetaClassBase3Ev'
     dispatch = '__ZN15OSMetaClassBase8DispatchE5IORPC'
     slots = {base + address + 16 + 16 * 8 for name, address in own.items() if name.startswith('__ZTV')}
@@ -491,6 +532,15 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != contract['device_slots']:
             raise ValueError('keyboard HID vtable slot count differs')
         driver['keyboard_vtable_abi'] = audit
+    if (evidence.get('native_usb') or {}).get('host'):
+        contract = json.loads((Path(__file__).resolve().parents[1] / 'config/macos26-usb-host-slots.json').read_text())
+        audit = audit_storage_vtable(driver, original, kc, native, slide,
+            family_bundle='com.apple.driver.usb.AppleUSBXHCI', base_class='AppleUSBXHCI',
+            own_class='NativeUsbXhci', opaque_override_slots=tuple(contract['overrides']))
+        if audit['slots'] != contract['slots']:
+            raise ValueError('USB host controller vtable slot count differs')
+        driver['usb_host_vtable_abi'] = audit
+        driver['usb_host_private_vtable_bindings'] = usb_host_bindings
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {
@@ -507,7 +557,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
 def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, slide: int, *,
                          family_bundle='com.apple.iokit.IOStorageFamily',
                          base_class='IOBlockStorageDevice', own_class=None, additional_names=None,
-                         pure_declaration_class=None) -> dict:
+                         pure_declaration_class=None, opaque_override_slots=()) -> dict:
     family = kc_macho(original, kc['entries'][family_bundle][1])
     kernel = kc_macho(original, kc['entries']['com.apple.kernel'][1])
     old_names = exports(original, kernel)
@@ -573,7 +623,7 @@ def audit_storage_vtable(driver: dict, original: bytes, kc: dict, native: dict, 
             for n in own_names[own['new_target']])
         if override:
             actual = own_names[own['new_target']]
-            if index not in (0, 1) and '___cxa_pure_virtual' not in names and not any(
+            if index not in (0, 1) and index not in opaque_override_slots and '___cxa_pure_virtual' not in names and not any(
                     methods[n] is not None and methods[n] == methods[a] for n in names for a in actual):
                 raise ValueError(f'transport override ABI mismatch at slot {index}: {names} / {actual}')
             overrides += 1

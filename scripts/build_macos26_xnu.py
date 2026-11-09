@@ -600,7 +600,8 @@ def compile_sources(args, record: dict) -> None:
                               backlight=args.build_backlight,
                               keyboard=args.build_keyboard,
                               memperf=args.build_memperf,
-                              wifi=args.build_wifi)
+                              wifi=args.build_wifi,
+                              usb=args.build_usb, usb_host=args.build_usb_host)
             save(record)
 
 
@@ -709,6 +710,10 @@ def main() -> None:
                         help='add the default-off PSCI reboot and power-off hook to the platform expert (sheng-psci-reset=1)')
     parser.add_argument('--build-wifi', action='store_true',
                         help='include the default-off WCN7850 Wi-Fi companion (sheng-wifi=1 is read-only; 2 and 3 power and train PCIe0)')
+    parser.add_argument('--build-usb', action='store_true',
+                        help='include the default-off SM8550 USB companion (native-usb=1 is read-only, 2 powers the controller)')
+    parser.add_argument('--build-usb-host', action='store_true',
+                        help="add stage 4: a subclass of macOS 26's AppleUSBXHCI (needs the emit --usb-components candidate at assembly)")
     parser.add_argument('--build-touch', action='store_true',
                         help='include the default-off NT36532E touch companion (upstream bring-up; firmware only via a local ADT)')
     parser.add_argument('--build-keyboard', action='store_true',
@@ -740,6 +745,10 @@ def main() -> None:
         parser.error('--build-memperf requires --build-ufs-driver')
     if args.build_wifi and not args.build_ufs_driver:
         parser.error('--build-wifi requires --build-ufs-driver')
+    if args.build_usb and not args.build_ufs_driver:
+        parser.error('--build-usb requires --build-ufs-driver')
+    if args.build_usb_host and not args.build_usb:
+        parser.error('--build-usb-host requires --build-usb')
     if args.build_touch and not args.build_gop_display:
         parser.error('--build-touch requires --build-gop-display')
     if args.build_keyboard and not args.build_gop_display:

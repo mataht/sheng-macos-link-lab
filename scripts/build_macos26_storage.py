@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_usb
 import native_adreno
 import native_login
 import native_keyboard
@@ -56,7 +57,7 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False, wifi=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, gpu=False, login=False, keyboard=False, rtc=False, backlight=False, memperf=False, wifi=False, usb=False, usb_host=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if gpu and (transport != 'ufs' or not gop_display):
@@ -73,6 +74,10 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         raise ValueError('the RTC companion belongs to the hardware (UFS) storage driver')
     if wifi and transport != 'ufs':
         raise ValueError('the Wi-Fi companion belongs to the hardware (UFS) storage driver')
+    if usb and transport != 'ufs':
+        raise ValueError('the USB companion belongs to the hardware (UFS) storage driver')
+    if usb_host and not usb:
+        raise ValueError('the USB host stack requires the USB companion')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -407,6 +412,36 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-wifi-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if usb:
+        usb_dir = destination / 'usb'
+        usb_dir.mkdir(exist_ok=True)
+        for name in native_usb.PLATFORM_SOURCES + (native_usb.HOST_SOURCES if usb_host else ()):
+            (usb_dir / name).write_bytes((root / native_usb.PLATFORM_DIR / name).read_bytes())
+        for name in native_usb.ALSO_COPIED:
+            (usb_dir / Path(name).name).write_bytes((root / name).read_bytes())
+        usb_base = list(command)
+        user_headers = usb_base.index(str(sdk / 'usr/include'))
+        if usb_base[user_headers - 1] != '-I':
+            raise ValueError('unexpected user SDK include option')
+        del usb_base[user_headers - 1:user_headers + 1]
+        usb_base[1:1] = ['-I', str(usb_dir)]
+        if usb_host:
+            usb_base[1:1] = ['-DNATIVE_USB_HOST=1']
+        usb_base += ['-I', str(sdk / 'System/Library/Frameworks/Kernel.framework/Versions/A/Headers')]
+        for source_file, object_file, language in ((usb_dir / 'native_usb.cpp', usb_dir / 'NativeUsb.o', 'c++'),
+                                                   *(((usb_dir / 'native_usb_host.cpp', usb_dir / 'NativeUsbHost.o', 'c++'),) if usb_host else ()),
+                                                   *((usb_dir / name, usb_dir / (Path(name).stem + '.o'), 'c')
+                                                     for name in native_usb.COMPILE_C)):
+            one = [str(object_file) if arg == str(obj) else str(source_file) if arg == str(wrapper) else arg
+                   for arg in usb_base]
+            if language == 'c':
+                one = ['-xc' if arg == '-xc++' else '-std=gnu17' if arg.startswith('-std=gnu++') else arg for arg in one
+                       if arg not in ('--driver-mode=g++', '-fsized-deallocation', '-fapple-kext',
+                                      '-fc++-static-destructors=none')]
+                one += ['-Wno-unused-command-line-argument']
+            run(one, directory + '-usb-' + object_file.stem + '-compile', record,
+                cwd=Path(compile_record['directory']), env=env)
+            objects.append(str(object_file))
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -481,6 +516,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['IOKitPersonalities']['NativeMemPerf'] = dict(native_memperf.PERSONALITY, CFBundleIdentifier=bundle)
     if wifi:
         info['IOKitPersonalities']['NativeWifi'] = dict(native_wifi.PERSONALITY, CFBundleIdentifier=bundle)
+    if usb:
+        info['IOKitPersonalities']['NativeUsb'] = dict(native_usb.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -514,6 +551,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_memperf'] = native_memperf.evidence(root)
     if wifi:
         evidence['native_wifi'] = native_wifi.evidence(root)
+    if usb:
+        evidence['native_usb'] = native_usb.evidence(root, host=usb_host)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,
