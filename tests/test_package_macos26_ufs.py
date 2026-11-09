@@ -341,7 +341,7 @@ class DisplayKeepAwake(unittest.TestCase):
             display = root / 'platform/sheng/macos26/display'
             display.mkdir(parents=True)
             for name in ('0001-native-gop-display.patch', 'hw-keep-awake.json', 'hw-panel-size.json',
-                         'hw-copy-forward.json'):
+                         'hw-copy-forward.json', 'hw-touch-display.json'):
                 if (source / name).exists():
                     (display / name).write_bytes((source / name).read_bytes())
             with patch.object(package_macos26_ufs, 'ROOT', root):

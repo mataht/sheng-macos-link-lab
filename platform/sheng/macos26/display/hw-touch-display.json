@@ -1,0 +1,25 @@
+{
+  "schema": "sheng-hw-display-touch-fixes-v1",
+  "status": "source_only",
+  "compiled": false,
+  "ci_submitted": false,
+  "hardware_run": false,
+  "vm_run": false,
+  "base_record": "hw-copy-forward.json",
+  "base_patch_sha256": "ba63f68b27d72376c470ad4bfa76f48d48fe7c499b03f08467cbc84b64d217c1",
+  "patch_sha256": "1c64478a607577025a03328cbafb47545092281953476598b795a994bdd2c105",
+  "source_sha256": "a96b71cd640f28c95245217d1160d83f7ef6da72163384f1a104b74d4a97f660",
+  "original_sha256": "050ae69eec6f0340c4f3659285dfb16fce13058648a044f9149b89d40344bcac",
+  "default_off": true,
+  "boot_arguments": [
+    "native-gop-diag",
+    "native-gop-retire-displayed"
+  ],
+  "always_on": [
+    "swap_wait failure log limited to the first 3 and every 1000th",
+    "surface line printed once per geometry instead of every frame before the first one",
+    "first-frame framebuffer claim retried up to 200 x 100 us (bounded) instead of dropping the frame"
+  ],
+  "evidence": "swap_wait(N, 0x80000000, 0) = kIOReturnBusy with +6412 == N and current/queue empty on the tablet (boot 03 video); IOMobileFramebufferLegacy::swap_wait_gated returns Busy for a non-blocking mode-0 query of the last completed swap",
+  "hardware_qualified": false
+}

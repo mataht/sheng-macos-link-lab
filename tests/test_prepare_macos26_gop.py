@@ -20,6 +20,7 @@ class PinnedDisplayInputs(unittest.TestCase):
         (self.root / 'platform/sheng/macos26/display').mkdir(parents=True)
         (self.root / 'platform/sheng/macos26/display/gop_scanout.h').write_text('// scanout\n')
         (self.root / 'platform/sheng/macos26/display/gop_layers.h').write_text('// layers\n')
+        (self.root / 'platform/sheng/macos26/display/gop_diag.h').write_text('// diag\n')
         (self.root / 'platform/sheng/macos26/log').mkdir()
         (self.root / 'platform/sheng/macos26/log/framebuffer_owner.h').write_text('// owner\n')
         self.output = self.root / 'output'

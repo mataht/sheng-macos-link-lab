@@ -84,8 +84,15 @@ class NativeGopKeepAwake(unittest.TestCase):
                 forward = json.loads((DISPLAY / 'hw-copy-forward.json').read_text())
                 self.assertEqual(forward['schema'], 'sheng-hw-display-copy-forward-v1')
                 self.assertEqual(forward['base_patch_sha256'], panel['patch_sha256'])
-                self.assertEqual(forward['patch_sha256'], current)
                 self.assertEqual(forward['scanout_sha256'], record['scanout_sha256'])
+                if forward['patch_sha256'] != current:
+                    fixes = json.loads((DISPLAY / 'hw-touch-display.json').read_text())
+                    self.assertEqual(fixes['schema'], 'sheng-hw-display-touch-fixes-v1')
+                    self.assertEqual(fixes['base_patch_sha256'], forward['patch_sha256'])
+                    self.assertTrue(fixes['default_off'])
+                    self.assertEqual(fixes['patch_sha256'], current)
+                else:
+                    self.assertEqual(forward['patch_sha256'], current)
         self.assertEqual(record['scanout_sha256'], hashlib.sha256((DISPLAY / 'gop_scanout.h').read_bytes()).hexdigest())
         self.assertEqual(record['hardware_switch']['boot_argument'], 'native-gop-keep-awake=1')
         self.assertFalse(record['compiled'] or record['hardware_run'] or record['ci_submitted'])

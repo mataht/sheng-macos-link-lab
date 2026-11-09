@@ -59,7 +59,8 @@ class RecoveryUiPolicy(unittest.TestCase):
     def test_full_system_table_is_separate_and_exclusive(self):
         recovery = json.loads((ROOT / 'config/macos26-recovery-ui-pages.json').read_text())
         full = json.loads((ROOT / 'config/macos26-full-ui-pages.json').read_text())
-        self.assertEqual(len(validate(full)), 6)
+        self.assertEqual(len(validate(full)), 7)
+        self.assertIn('sw-cursor-forced', {edit['policy'] for page in full['pages'] for edit in page['edits']})
         self.assertEqual(full['boot_argument'], 'sheng-full-ui=1')
         self.assertTrue(full['default_off'] and not full['disk_writes'] and not full['hardware_admitted'])
         header = render_sets(recovery, full)

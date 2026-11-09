@@ -11,6 +11,7 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
+#include <IOKit/IOUserClient.h>
 #include <IOKit/IODeviceTreeSupport.h>
 #include <IOKit/hid/IOHIDDevice.h>
 #include <libkern/c++/OSData.h>
@@ -32,7 +33,12 @@ extern volatile uint32_t native_touch_stage_done, native_touch_step;
 extern volatile int native_touch_error;
 volatile uint32_t native_touch_firmware_state;   // 0 none, 1 accepted, 2 rejected (size or SHA-256)
 volatile uint32_t native_touch_pointer_reports;
+// Input counters shown by the display companion's native-gop-diag strip (defined there, zero until the first touch):
+// 0 reports, 1 finger-down count, 2 finger-up count, 3 last X, 4 last Y, 5 HID user clients, 6 handleReport failures.
+extern volatile uint32_t sheng_touch_diag[8];
 }
+
+static inline void touchDiagBump(unsigned index) { sheng_touch_diag[index] = sheng_touch_diag[index] + 1; }
 
 namespace {
 const uint8_t *gFirmware;
@@ -102,7 +108,9 @@ class NativeTouch : public IOService {
   sheng_touch::Orientation fOrientation;
 
   static void sink(void *self);
+  static void diagThread(void *self, wait_result_t);
   void loadFirmware(uint32_t &orientBits);
+  unsigned countUserClients();
 
 public:
   bool start(IOService *provider) override;
@@ -177,7 +185,33 @@ bool NativeTouch::start(IOService *provider)
     thread_deallocate(reporter);
   else
     IOLog("NativeTouch: cannot start the diagnostic reporter\n");
+  // native-touch-diag=1 keeps counting who has opened the HID service (hidd, WindowServer) for the display's diagnostic strip.
+  unsigned diag = 0;
+  if (PE_parse_boot_argn("native-touch-diag", &diag, sizeof(diag)) && diag == 1 &&
+      kernel_thread_start(diagThread, this, &reporter) == KERN_SUCCESS)
+    thread_deallocate(reporter);
   return true;
+}
+
+unsigned NativeTouch::countUserClients()
+{
+  unsigned clients = 0;
+  OSIterator *all = IORegistryIterator::iterateOver(fHid, gIOServicePlane, kIORegistryIterateRecursively);
+  if (all) {
+    while (OSObject *entry = all->getNextObject())
+      clients += OSDynamicCast(IOUserClient, entry) != nullptr;
+    all->release();
+  }
+  return clients;
+}
+
+void NativeTouch::diagThread(void *self, wait_result_t)
+{
+  NativeTouch *touch = static_cast<NativeTouch *>(self);
+  for (;;) {
+    sheng_touch_diag[5] = touch->countUserClients();
+    IOSleep(5000);
+  }
 }
 
 void NativeTouch::sink(void *self)
@@ -197,12 +231,19 @@ void NativeTouch::sink(void *self)
     count = 0;
   }
   uint8_t bytes[sheng_touch::kReportBytes];
+  const bool wasDown = touch->fPointer.down;
   if (!sheng_touch::update(touch->fPointer, fingers, count, touch->fOrientation, bytes))
     return;
+  if (touch->fPointer.down != wasDown)
+    touchDiagBump(touch->fPointer.down ? 1 : 2);
+  sheng_touch_diag[3] = touch->fPointer.x;
+  sheng_touch_diag[4] = touch->fPointer.y;
   IOBufferMemoryDescriptor *report = IOBufferMemoryDescriptor::withBytes(bytes, sizeof(bytes), kIODirectionNone);
   if (report) {
-    touch->fHid->handleReport(report);
+    if (touch->fHid->handleReport(report) != kIOReturnSuccess)
+      touchDiagBump(6);
     report->release();
     native_touch_pointer_reports = native_touch_pointer_reports + 1;
+    touchDiagBump(0);
   }
 }
