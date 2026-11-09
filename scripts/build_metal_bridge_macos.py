@@ -214,6 +214,23 @@ def code_and_relocations(data):
     return code, signed
 
 
+def defined_symbols(data):
+    """The external symbols a Mach-O object defines, from its symbol table. Xcode's nm cannot be used: it reads the bitcode Rust's newer LLVM embeds."""
+    commands = struct.unpack_from('<8I', data)[4]
+    offset, names = 32, set()
+    for _ in range(commands):
+        command, size = struct.unpack_from('<II', data, offset)
+        if command == 2:
+            symbols, count, strings = struct.unpack_from('<III', data, offset + 8)
+            for index in range(count):
+                name, kind = struct.unpack_from('<IB', data, symbols + 16 * index)
+                if kind & 1 and kind & 0xe == 0xe:
+                    start = strings + name
+                    names.add(data[start:data.index(b'\0', start)].decode())
+        offset += size
+    return names
+
+
 def census(code):
     """How many of each interesting instruction a run of code holds."""
     counts = dict.fromkeys(INSTRUCTIONS, 0)
@@ -228,7 +245,7 @@ def census(code):
 
 def inspect_library(data):
     """What the archive holds: member CPU subtypes and the pointer-authentication evidence in its code."""
-    totals, members, foreign = dict.fromkeys(INSTRUCTIONS, 0), [], []
+    totals, members, foreign, defined = dict.fromkeys(INSTRUCTIONS, 0), [], [], set()
     signed = 0
     for name, body in archive_members(data):
         subtype = object_identity(body)
@@ -238,11 +255,12 @@ def inspect_library(data):
             continue
         code, relocations = code_and_relocations(body)
         signed += relocations
+        defined |= defined_symbols(body)
         for part in code:
             for key, value in census(part).items():
                 totals[key] += value
     totals.update(authenticated_calls=sum(totals[key] for key in ('blraaz', 'blrabz', 'blraa', 'blrab')), auth_relocations=signed)
-    return dict(members=members, non_arm64e_members=foreign, census=totals)
+    return dict(members=members, non_arm64e_members=foreign, census=totals, defined=defined)
 
 
 def header_exports(text):
@@ -266,9 +284,9 @@ def validate(record):
     if record.get('non_arm64e_members'):
         fail(f"the library holds objects that are not arm64e: {record['non_arm64e_members'][:8]}")
     counts = record.get('census', {})
-    if not (counts.get('authenticated_calls') and counts.get('pacibsp') and counts.get('auth_relocations')):
-        fail('the library shows no pointer authentication: calls %s, pacibsp %s, signed pointers %s'
-             % (counts.get('authenticated_calls'), counts.get('pacibsp'), counts.get('auth_relocations')))
+    if not (counts.get('authenticated_calls') and counts.get('pacibsp') and counts.get('paciza')):
+        fail('the library shows no pointer authentication: calls %s, pacibsp %s, paciza %s'
+             % (counts.get('authenticated_calls'), counts.get('pacibsp'), counts.get('paciza')))
     if record.get('missing_exports'):
         fail(f"the library does not define {record['missing_exports'][:8]}")
     link = record.get('link_check', {})
@@ -324,8 +342,9 @@ def link_check(tools, sdk, library, out):
         data = bundle.read_bytes()
         linked = subprocess.check_output([tools['otool'], '-L', str(bundle)], text=True)
         (out / 'logs/link-check-otool-L.txt').write_text(linked)
+        undefined = subprocess.run([tools['nm'], '--no-llvm-bc', '-u', str(bundle)], capture_output=True, text=True)
         outcome.update(ok=is_arm64e(data), bytes=len(data), cpu_subtype=hex(object_identity(data)), foreign_libraries=foreign_libraries(linked),
-                       undefined_symbols=len(subprocess.check_output([tools['nm'], '-u', str(bundle)], text=True).split()))
+                       undefined_symbols=len(undefined.stdout.split()) if undefined.returncode == 0 else None)
         bundle.unlink()
     return outcome
 
@@ -372,7 +391,8 @@ def build(args, sources):
     for prefix, directory in (('translator', translator), ('adreno_metal', adreno_metal)):
         for name in LICENSE_FILES[prefix]:
             shutil.copyfile(directory / name, licenses / f"{'metal2vulkan' if prefix == 'translator' else 'AdrenoMetal'}-{name}")
-    defined = set(subprocess.check_output([tools['nm'], '-gU', str(library)], text=True).split())
+    inspection = inspect_library(data)
+    defined = inspection.pop('defined')
     declared = sorted(header_exports((adreno_metal / 'bridge/NativeMetalBridge.h').read_text(encoding='utf-8'))
                       | header_exports((adreno_metal / 'bridge/NativeMetalObjects.h').read_text(encoding='utf-8')))
     record = dict(schema=SCHEMA, built_utc=datetime.now(timezone.utc).isoformat(), target=TARGET, abi=ABI, deployment_target=DEPLOYMENT, sdk_version=sdk_version, toolchain=TOOLCHAIN,
@@ -381,12 +401,12 @@ def build(args, sources):
                   target_spec_sha256=sha256(spec_path.read_bytes()), cargo_lock_sha256=sha256((out / 'Cargo.lock').read_bytes()), cargo_lock_pinned=bool(locked), air_sha256=air_digests,
                   bytes=len(data), sha256=sha256(data), declared_exports=len(declared), missing_exports=[name for name in declared if '_' + name not in defined],
                   license='metal2vulkan GPL-2.0-or-later OR LGPL-3.0-or-later; AdrenoMetal MIT', hardware_qualified=False, runtime_tested=False, apple_content=False,
-                  vendor_firmware=False, **sources, **inspect_library(data))
+                  vendor_firmware=False, **sources, **inspection)
     record['link_check'] = link_check(tools, sdk, library, out)
     (out / 'build.json').write_text(json.dumps(record, indent=2) + '\n')
     validate(record)
     counts = record['census']
-    print(f"PASS: {LIBRARY} {len(data)} bytes, {counts['authenticated_calls']} authenticated calls, {counts['blr']} plain, {counts['auth_relocations']} signed pointers; nothing was run")
+    print(f"PASS: {LIBRARY} {len(data)} bytes, {counts['authenticated_calls']} authenticated calls, {counts['blr']} plain, {counts['paciza']} pointers signed in code; nothing was run")
 
 
 def main():

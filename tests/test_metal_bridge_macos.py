@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import build_metal_bridge_macos as bridge  # noqa: E402
 
-PAC_CENSUS = dict(authenticated_calls=10, pacibsp=20, auth_relocations=30)
+PAC_CENSUS = dict(authenticated_calls=10, pacibsp=20, paciza=30)
 
 
 def record(**changes):
@@ -146,6 +146,14 @@ class InspectionTests(unittest.TestCase):
     def test_plain_arm64_objects_are_reported(self):
         result = bridge.inspect_library(archive(('a.o', object_file(self.WORDS, cpu_subtype=0))))
         self.assertEqual(result['non_arm64e_members'], ['a.o'])
+
+    def test_symbols_come_from_the_object_itself(self):
+        names = b'\0_nmb_a\0_nmb_undefined\0_private\0'
+        start = 32 + 24
+        table = struct.pack('<IBBHQ', 1, 0x0f, 1, 0, 0) + struct.pack('<IBBHQ', 8, 0x01, 0, 0, 0) + struct.pack('<IBBHQ', 23, 0x0e, 1, 0, 0)
+        header = struct.pack('<8I', 0xfeedfacf, 0x0100000c, 0x80000002, 1, 1, 24, 0, 0)
+        symtab = struct.pack('<6I', 2, 24, start, 3, start + len(table), len(names))
+        self.assertEqual(bridge.defined_symbols(header + symtab + table + names), {'_nmb_a'})
 
     def test_homebrew_libraries_are_foreign(self):
         listing = 'x:\n\t/usr/lib/libSystem.B.dylib (x)\n\t/System/Library/Frameworks/Metal.framework/Metal (x)\n\t/opt/homebrew/lib/libz.dylib (x)\n'
