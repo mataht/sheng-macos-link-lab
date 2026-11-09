@@ -1,0 +1,4 @@
+Unmodified copies from UniXNU-sheng package/ (and package/tests/) at commit a68ee4ee67cc71792fbf519de7e3e28072c717b5.
+Line endings normalized to LF only. License: BSD-2-Clause-Patent, as each file's SPDX line states.
+These sources are newer than this project's pinned UniXNU-sheng revision. They are proven on iPadOS only, not on macOS 26.
+Do not edit them here: changes for macOS belong in ../native_adsp.cpp and ../native_battery.cpp.

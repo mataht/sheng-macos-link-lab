@@ -14,6 +14,7 @@ from native_button_keys import EVENT_DRIVER as BUTTON_KEYS_EVENT_DRIVER, PERSONA
 from native_button_keys import evidence as button_keys_evidence
 import native_touch
 import native_cpufreq
+import native_adsp
 
 BUNDLE = 'org.unixnu.driver.NativeVirtioBlock'
 PROTOCOL_CHARACTERISTICS = {
@@ -49,11 +50,13 @@ def full_root_contract(root):
 
 
 def build(root, out, compile_record, source, run, record, env, *, transport='virtio', gop_display=False,
-          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False):
+          recovery_input=False, button_keys=False, full_root=False, touch=False, cpufreq=False, adsp=False):
     if transport not in ('virtio', 'ufs'):
         raise ValueError('unsupported native storage transport')
     if cpufreq and transport != 'ufs':
         raise ValueError('the CPU frequency companion belongs to the hardware (UFS) storage driver')
+    if adsp and transport != 'ufs':
+        raise ValueError('the ADSP companion belongs to the hardware (UFS) storage driver')
     if touch and not gop_display:
         raise ValueError('the touch companion requires the GOP companion')
     if full_root and transport != 'ufs':
@@ -254,6 +257,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
             run(one, directory + '-cpufreq-' + object_file.stem + '-compile', record,
                 cwd=Path(compile_record['directory']), env=env)
             objects.append(str(object_file))
+    if adsp:
+        native_adsp.build_objects(root, destination, command, obj, wrapper, sdk, compile_record, directory, run, record, env, objects)
     binary = destination / (component + '.macho')
     run(['xcrun', 'ld', '-arch', 'arm64e', '-kext', '-kexts_use_stubs',
          '-platform_version', 'macos', '26.5', '26.5',
@@ -309,6 +314,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         info['OSBundleLibraries']['com.apple.iokit.IOHIDFamily'] = '2.0.0'
     if cpufreq:
         info['IOKitPersonalities']['NativeCpuFreq'] = dict(native_cpufreq.PERSONALITY, CFBundleIdentifier=bundle)
+    if adsp:
+        info['IOKitPersonalities']['NativeAdsp'] = dict(native_adsp.PERSONALITY, CFBundleIdentifier=bundle)
     (destination / 'Info.plist').write_bytes(plistlib.dumps(info))
     evidence = dict(bundle=bundle, upstream_source_sha256=hashlib.sha256(upstream.read_bytes()).hexdigest(),
                     binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -328,6 +335,8 @@ def build(root, out, compile_record, source, run, record, env, *, transport='vir
         evidence['native_touch'] = native_touch.evidence(root)
     if cpufreq:
         evidence['native_cpufreq'] = native_cpufreq.evidence(root)
+    if adsp:
+        evidence['native_adsp'] = native_adsp.evidence(root)
     if transport == 'ufs':
         evidence['macoslog'] = dict(contract=log, layout=layout_of(log)['name'],
             layout_defines=geometry_defines(layout_of(log)), default_off=True,

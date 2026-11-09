@@ -27,6 +27,10 @@ vendored into this repository except for the QR encoder listed below.
   adapter replaces libc and assertion callbacks with freestanding helpers;
   it preserves the upstream notices in generated code.
 
+- `platform/sheng/macos26/adsp/upstream/` holds unmodified copies from
+  UniXNU-sheng at the commit named in `UPSTREAM.txt`, under BSD-2-Clause-Patent;
+  `native_adsp.cpp` and `native_battery.cpp` beside it are derived works under the
+  same license. Vendor ADSP firmware is never part of this repository.
 - UniXNU and UniXNU-sheng: BSD-2-Clause-Patent. The ShengPreflight patch extends
   `UniXNU/UniXNU-sheng` at the commit recorded in `sources.lock.json` and retains
   its source license. See that repository's LICENSE for the complete terms.

@@ -164,7 +164,7 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if evidence.get('qemu_only_display') is True and not evidence.get('combined_driver'):
             # Display (and optionally the QEMU input companion) compiled directly into the QEMU-only bundle.
             if (not evidence.get('native_gop_display') or evidence.get('hardware_admitted') is not False
-                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq'))):
+                    or any(evidence.get(name) for name in ('native_button_keys', 'native_touch', 'native_cpufreq', 'native_adsp'))):
                 raise ValueError('the QEMU display bundle may carry only the GOP display and QEMU input companions')
             allowed = {component, 'NativeGOPDisplay'}
             if evidence.get('native_recovery_input'):
@@ -231,6 +231,13 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
                                                                        CFBundleIdentifier=evidence['bundle']):
                 raise ValueError('CPU frequency companion personality differs')
             allowed |= {'NativeCpuFreq'}
+        adsp = evidence.get('native_adsp')
+        if adsp:
+            import native_adsp
+            native_adsp.validate(adsp)
+            if info['IOKitPersonalities'].get('NativeAdsp') != dict(native_adsp.PERSONALITY, CFBundleIdentifier=evidence['bundle']):
+                raise ValueError('ADSP companion personality differs')
+            allowed |= {'NativeAdsp'}
         if info['CFBundleExecutable'] != component or any(
                 item['IOClass'] not in allowed for item in info['IOKitPersonalities'].values()):
             raise ValueError('UFS personality differs from the qualified component')
@@ -416,6 +423,14 @@ def prepare(directory: Path, base: int, native: dict, original: bytes,
         if audit['slots'] != contract['device_slots']:
             raise ValueError('touch HID vtable slot count differs')
         driver['touch_vtable_abi'] = audit
+    if evidence.get('native_adsp'):
+        # NativeBattery subclasses a class of the kernel itself, so the original table is the kernel's own.
+        import native_adsp
+        audit = audit_storage_vtable(driver, original, kc, native, slide, family_bundle='com.apple.kernel',
+            base_class=native_adsp.POWER_SOURCE_ABI['base_class'], own_class=native_adsp.BATTERY_CLASS)
+        if audit['slots'] != native_adsp.POWER_SOURCE_ABI['vtable_slots']:
+            raise ValueError('IOPMPowerSource vtable slot count differs from the audited 25F71 table')
+        driver['adsp_battery_vtable_abi'] = audit
     if evidence.get('combined_driver'):
         from native_combined_driver import audit_combined_initialization, audit_combined_metaclasses
         driver['retained_vtable_abi'] = {

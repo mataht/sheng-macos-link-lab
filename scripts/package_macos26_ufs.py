@@ -489,6 +489,17 @@ def qualify_cpufreq(build) -> dict:
     return dict(record, runtime_qualified=False)
 
 
+def qualify_adsp(build) -> dict:
+    """The ADSP companion must be compiled into this kernel's storage driver under its reviewed contract."""
+    import native_adsp
+    driver = json.loads((build / 'security-relink.json').read_text())['storage_driver']
+    record = driver.get('build', {}).get('native_adsp')
+    if not record or 'adsp_battery_vtable_abi' not in driver:
+        raise ValueError('kernel lacks the audited ADSP companion')
+    native_adsp.validate(record)
+    return dict(record, runtime_qualified=False)
+
+
 def qualify_touch(build) -> dict:
     """The touch companion must be compiled into this kernel's storage driver under its reviewed contract."""
     import native_touch
@@ -623,6 +634,15 @@ def main():
                              'power = Return, both volume = Tab; read-only SPMI polling, not qualified on hardware')
     parser.add_argument('--cpufreq-mode', type=int, choices=(1,),
                         help='start the compiled CPU frequency companion (sheng-cpufreq=N); only the read-only mode 1')
+    parser.add_argument('--adsp-stage', type=int, choices=(1, 2, 3),
+                        help='enable the compiled audio DSP companion up to this stage (sheng-adsp=N): 1 read-only, 2 adds a secure query, '
+                             '3 starts the DSP and needs --adsp-firmware-dir and --adsp-firmware-pin')
+    parser.add_argument('--adsp-firmware-dir', type=Path,
+                        help='local directory with adsp.mbn and adsp_dtb.mbn, placed in /arm-io/native-adsp (the package then contains '
+                             'vendor firmware and must stay local)')
+    parser.add_argument('--adsp-firmware-pin', type=Path, help='adsp-firmware-pin.json from scripts/native_adsp.py join')
+    parser.add_argument('--battery-stage', type=int, choices=(1, 2),
+                        help='battery manager under --adsp-stage 3 (sheng-battery=N): 1 logs the values, 2 also publishes the IOPMPowerSource')
     parser.add_argument('--touch-stage', type=int, choices=(1, 2, 3, 4),
                         help='enable the compiled touch bring-up up to this stage (sheng-touch=N); 4 needs --touch-firmware')
     parser.add_argument('--touch-firmware', type=Path,
@@ -632,6 +652,14 @@ def main():
     parser.add_argument('--panel-size-mm', type=parse_panel_size,
                         help='WIDTHxHEIGHT physical panel size for the compiled panel-size display step, e.g. 262x175')
     args = parser.parse_args()
+    if (args.adsp_firmware_dir is None) != (args.adsp_firmware_pin is None):
+        parser.error('--adsp-firmware-dir and --adsp-firmware-pin go together')
+    if args.adsp_firmware_dir and not args.adsp_stage:
+        parser.error('--adsp-firmware-dir requires --adsp-stage')
+    if args.adsp_stage == 3 and not args.adsp_firmware_dir:
+        parser.error('--adsp-stage 3 needs the local firmware (--adsp-firmware-dir, --adsp-firmware-pin)')
+    if args.battery_stage and args.adsp_stage != 3:
+        parser.error('--battery-stage requires --adsp-stage 3')
     if (args.touch_firmware or args.touch_orient is not None) and not args.touch_stage:
         parser.error('--touch-firmware and --touch-orient require --touch-stage')
     if args.touch_stage == 4 and not args.touch_firmware:
@@ -813,6 +841,19 @@ def main():
     if args.cpufreq_mode:
         cpufreq = dict(qualify_cpufreq(args.kernel_build), mode=args.cpufreq_mode)
         boot_args += f' sheng-cpufreq={args.cpufreq_mode}'
+    adsp = adsp_node = None
+    if args.adsp_stage:
+        import native_adsp
+        adsp = qualify_adsp(args.kernel_build)
+        boot_args += f' sheng-adsp={args.adsp_stage}'
+        if args.battery_stage:
+            boot_args += f' sheng-battery={args.battery_stage}'
+        if args.adsp_firmware_dir:
+            adsp_node = native_adsp.node_properties((args.adsp_firmware_dir / 'adsp.mbn').read_bytes(),
+                                                    (args.adsp_firmware_dir / 'adsp_dtb.mbn').read_bytes(),
+                                                    json.loads(args.adsp_firmware_pin.read_text()))
+        adsp = dict(adsp, stage=args.adsp_stage, battery_stage=args.battery_stage, firmware_included=adsp_node is not None,
+                    package_contains_vendor_firmware=adsp_node is not None)
     touch = touch_node = None
     if args.touch_stage:
         import native_touch
@@ -869,14 +910,14 @@ def main():
                     full_system_root_snapshot=(full_contract['root_snapshot']
                                                if args.full_system_adt_snapshot_name else None),
                     platform_uuid=args.platform_uuid, native_gop_display=gop_enabled, touch_node=touch_node,
-                    trust_cache_slot=True,
+                    adsp_node=adsp_node, trust_cache_slot=True,
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
             else:
                 configure_native_text_state(files / 'kernel.macho.adt', development_root=True,
                                             root_hash=root_hash, boot_volume_uuid=args.root_volume_uuid,
                                             platform_uuid=args.platform_uuid,
-                                            native_gop_display=gop_enabled, touch_node=touch_node)
+                                            native_gop_display=gop_enabled, touch_node=touch_node, adsp_node=adsp_node)
             transport_title = 'FULL' if full_contract else 'UFS+ISC' if args.isc_overlay else 'UFS'
             if log_qualification:
                 transport_title += '+LOG'
@@ -942,7 +983,7 @@ def main():
                 macoslog=log_qualification,
                 recovery_ui=ui_qualification, native_gop_display=gop_enabled,
                 display_diagnostic=display_qualification, button_keys=button_keys, panel_size=panel_size,
-                touch=touch, cpufreq=cpufreq,
+                touch=touch, cpufreq=cpufreq, adsp=adsp,
                 display_qualification_waived=bool(args.display_waiver),
                 qualification_reuse=reuse,
                 owned_platform_uuid=str(args.platform_uuid) if args.platform_uuid else None,
