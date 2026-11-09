@@ -3,7 +3,7 @@
 @@ -30,10 +30,18 @@
  volatile uint32_t armdt_platform_device_count = 0;
  }
-
+ 
 +// The wall clock handed over by the NativeRtc companion (sheng-rtc=2, hardware only): Unix seconds and the uptime
 +// they were taken at. Zero keeps the platform expert's default, no clock.
 +extern "C" {
@@ -22,7 +22,7 @@
 @@ -56,6 +64,19 @@
    return "()";
  }
-
+ 
 +long ArmDTPlatform::getGMTTimeOfDay (void)
 +{
 +  const long base = __atomic_load_n (&sheng_platform_rtc_seconds, __ATOMIC_ACQUIRE);
@@ -39,3 +39,16 @@
  bool ArmDTPlatform::hasNVRAMProxy (IOService *provider)
  {
    IORegistryEntry *chosen = provider->childFromPath ("chosen", gIODTPlane);
+@@ -202,6 +223,12 @@
+   if (platformProbe != 0 || platformStage == 4) {
+     platformStageReset ();
+   }
++  // bsd_init waits up to 30 s for IORTC and then reads the calendar. On sheng-rtc=2 no driver is due to publish it in time,
++  // so it is published here; NativeRtc moves the calendar forward when it runs.
++  uint32_t rtcMode = 0;
++  if (PE_vmm_present == 0 && PE_parse_boot_argn ("sheng-rtc", &rtcMode, sizeof (rtcMode)) && rtcMode == 2) {
++    publishResource ("IORTC");
++  }
+   registerService ();
+   if (platformStage == 5) {
+     platformStageReset ();

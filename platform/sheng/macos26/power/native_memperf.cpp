@@ -3,8 +3,13 @@
 //
 // Default off: sheng-memperf=1, hardware only (PE_vmm_present == 0). It issues no register writes at all. It reports the EPSS L3
 // vote and table, the AOP command database records of the bus resources, the last commands programmed in the apps RSC's TCSes,
-// and three rounds of a small memory benchmark on its own buffer through a cached, an uncached (Device) and a write-combined
-// mapping, so the numbers show directly whether DDR and the Device mapping are the bottleneck.
+// and three rounds of a memory benchmark on its own buffers: a 64 MiB cached one (larger than the L3, so it reaches DDR) and 4 MiB
+// through Device and write-combined mappings.
+//
+// The Device and write-combined views are ml_io_map mappings of the buffer's physical address, the way the boot console maps the
+// framebuffer. Mapping the IOBufferMemoryDescriptor again does not work: in kernel_task XNU returns the existing cached address
+// (IOMemoryDescriptor doMap, "mapping source == dest"), which is what boot 05 measured, and kIOMapUnique would change the cache
+// mode of the buffer's whole VM object.
 //
 // Physical regions (sheng device tree, offline check): apps RSC DRV2 0x17a20000 (TCS block at +0xd00, 8 TCSes: 3 active, 2 sleep,
 // 2 wake, 1 fast path), L3 0x17d90000, AOP cmd-db 0x81c60000 (0x20000). rpmh_readout.h has the formats and their sources.
@@ -18,6 +23,11 @@
 #include <string.h>
 #include "rpmh_readout.h"
 
+extern "C" {
+vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+}
+
 namespace {
 
 using namespace sheng_memperf;
@@ -27,9 +37,9 @@ constexpr uint64_t kL3Physical = 0x17d90000, kL3Bytes = 0x1000;
 constexpr uint64_t kCmdDbPhysical = 0x81c60000, kCmdDbBytes = 0x20000;
 constexpr uint32_t kTcsBlock = 0xd00;
 constexpr unsigned kTcsCount = 8, kCommandsPerTcs = 16;
-constexpr size_t kBenchBytes = 4u << 20;
-// The first round comes early: once WindowServer owns the screen the boot text is no longer visible.
-constexpr unsigned kBenchRepeats = 3, kRounds = 3, kFirstRoundSeconds = 10, kRoundGapSeconds = 30;
+constexpr size_t kBenchBytes = 4u << 20, kLargeBytes = 64u << 20;
+// All rounds come early: once WindowServer owns the screen the boot text is no longer visible.
+constexpr unsigned kBenchRepeats = 3, kRounds = 3, kFirstRoundSeconds = 3, kRoundGapSeconds = 5;
 
 const char *const kResources[] = {"MC0", "SH0", "ACV", "CN0", "MM0"};
 constexpr unsigned kResourceCount = sizeof kResources / sizeof kResources[0];
@@ -101,8 +111,8 @@ class NativeMemPerf : public IOService {
   OSDeclareDefaultStructors(NativeMemPerf)
 
   Window fRsc, fL3, fCmdDb;
-  IOBufferMemoryDescriptor *fBuffer = nullptr;
-  IOMemoryMap *fUncached = nullptr, *fWriteCombined = nullptr;
+  IOBufferMemoryDescriptor *fBuffer = nullptr, *fLarge = nullptr;
+  volatile uint32_t *fDevice = nullptr, *fCombined = nullptr;
 
   void reportL3();
   void reportResources(Resource *found);
@@ -184,18 +194,22 @@ void NativeMemPerf::reportTcs(const Resource *found)
 
 void NativeMemPerf::benchRound(unsigned round)
 {
-  volatile uint32_t *cached = reinterpret_cast<volatile uint32_t *>(fBuffer->getBytesNoCopy());
-  const uint32_t cachedWrite = writeSpeed(cached, kBenchBytes), cachedRead = readSpeed(cached, kBenchBytes);
-  uint32_t deviceWrite = 0, deviceRead = 0, combinedWrite = 0;
-  if (fUncached) {
-    volatile uint32_t *device = reinterpret_cast<volatile uint32_t *>(fUncached->getVirtualAddress());
-    deviceWrite = writeSpeed(device, kBenchBytes);
-    deviceRead = readSpeed(device, kBenchBytes);
+  uint32_t cachedWrite = 0, cachedRead = 0, deviceWrite = 0, deviceRead = 0, combinedWrite = 0, combinedRead = 0;
+  if (fLarge) {
+    volatile uint32_t *large = reinterpret_cast<volatile uint32_t *>(fLarge->getBytesNoCopy());
+    cachedWrite = writeSpeed(large, kLargeBytes);
+    cachedRead = readSpeed(large, kLargeBytes);
   }
-  if (fWriteCombined)
-    combinedWrite = writeSpeed(reinterpret_cast<volatile uint32_t *>(fWriteCombined->getVirtualAddress()), kBenchBytes);
-  IOLog("NativeMemPerf: round %u MiB/s: cached write %u read %u, device write %u read %u, write-combined %u\n", round, cachedWrite, cachedRead,
-        deviceWrite, deviceRead, combinedWrite);
+  if (fDevice) {
+    deviceWrite = writeSpeed(fDevice, kBenchBytes);
+    deviceRead = readSpeed(fDevice, kBenchBytes);
+  }
+  if (fCombined) {
+    combinedWrite = writeSpeed(fCombined, kBenchBytes);
+    combinedRead = readSpeed(fCombined, kBenchBytes);
+  }
+  IOLog("NativeMemPerf: round %u MiB/s: cached 64M write %u read %u, device write %u read %u, combined write %u read %u\n", round, cachedWrite,
+        cachedRead, deviceWrite, deviceRead, combinedWrite, combinedRead);
 }
 
 void NativeMemPerf::reportThread(void *self, wait_result_t)
@@ -228,14 +242,17 @@ bool NativeMemPerf::start(IOService *provider)
   reportResources(found);
   reportTcs(found);
 
-  fBuffer = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, static_cast<IOOptionBits>(kIODirectionInOut) | kIOMemoryPhysicallyContiguous, kBenchBytes, 0x4000);
-  if (!fBuffer) {
-    IOLog("NativeMemPerf: no benchmark buffer\n");
-  } else {
-    fUncached = fBuffer->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapInhibitCache);
-    fWriteCombined = fBuffer->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapWriteCombineCache);
-    IOLog("NativeMemPerf: buffer %zu bytes, uncached map %s, write-combined map %s\n", kBenchBytes, fUncached ? "ok" : "failed",
-          fWriteCombined ? "ok" : "failed");
+  fLarge = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, kIODirectionInOut, kLargeBytes, 0x4000);
+  fBuffer = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, static_cast<IOOptionBits>(kIODirectionInOut) | kIOMemoryPhysicallyContiguous,
+                                                        kBenchBytes, 0x4000);
+  const addr64_t physical = fBuffer ? fBuffer->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone) : 0;
+  if (physical) {
+    fDevice = reinterpret_cast<volatile uint32_t *>(ml_io_map(static_cast<vm_offset_t>(physical), kBenchBytes));
+    fCombined = reinterpret_cast<volatile uint32_t *>(ml_io_map_wcomb(static_cast<vm_offset_t>(physical), kBenchBytes));
+  }
+  IOLog("NativeMemPerf: cached 64M buffer %s, 4M device map %s, write-combined map %s\n", fLarge ? "ok" : "failed", fDevice ? "ok" : "failed",
+        fCombined ? "ok" : "failed");
+  if (fLarge || fDevice || fCombined) {
     retain();
     thread_t thread;
     if (kernel_thread_start(reportThread, this, &thread) == KERN_SUCCESS)

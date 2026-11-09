@@ -773,7 +773,8 @@ def main():
     parser.add_argument('--rtc-mode', type=int, choices=(1, 2),
                         help='start the compiled PMIC RTC companion (sheng-rtc=N): 1 read-only, 2 also sets the calendar and IORTC')
     parser.add_argument('--rtc-offset', type=int, help='sheng-rtc-offset: wall clock minus the raw RTC count, measured from Android')
-    parser.add_argument('--rtc-floor', type=int, help='sheng-rtc-floor: earliest allowed calendar time in Unix seconds (the packaging time)')
+    parser.add_argument('--rtc-floor', type=int, help='sheng-rtc-floor: earliest allowed calendar time in Unix seconds; '
+                                                      'with --rtc-mode 2 it defaults to the packaging time')
     parser.add_argument('--backlight-stage', type=int, choices=(1, 2, 3, 4),
                         help='start the compiled backlight companion (sheng-backlight=N): 1 read-only, 2 reads the chips, 3 sets a level, 4 macOS control')
     parser.add_argument('--backlight-level', type=int, help='sheng-backlight-level for stage 3 or 4 (64..2047)')
@@ -1049,8 +1050,10 @@ def main():
     rtc = None
     if args.rtc_mode:
         import native_rtc
-        rtc = dict(qualify_rtc(args.kernel_build), mode=args.rtc_mode, offset=args.rtc_offset, floor=args.rtc_floor)
-        boot_args += ' ' + native_rtc.boot_arguments(args.rtc_mode, args.rtc_offset, args.rtc_floor)
+        import time
+        rtc_floor = int(time.time()) if args.rtc_mode == 2 and args.rtc_floor is None else args.rtc_floor
+        rtc = dict(qualify_rtc(args.kernel_build), mode=args.rtc_mode, offset=args.rtc_offset, floor=rtc_floor)
+        boot_args += ' ' + native_rtc.boot_arguments(args.rtc_mode, args.rtc_offset, rtc_floor)
     elif args.rtc_offset is not None or args.rtc_floor is not None:
         raise ValueError('--rtc-offset and --rtc-floor require --rtc-mode')
     backlight = None
