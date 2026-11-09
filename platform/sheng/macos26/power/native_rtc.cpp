@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // NativeRtc: start the XNU calendar from the PMK8550 RTC on the sheng tablet instead of 1970.
 //
-// Default off: sheng-rtc=1 only reads the RTC and logs it; sheng-rtc=2 also gives the calendar a time and publishes the IORTC
-// resource. Hardware only (PE_vmm_present == 0). See native_rtc.h for the register sources; only reads are issued.
+// Default off: sheng-rtc=1 only reads the RTC and logs it; sheng-rtc=2 also sets the calendar. Hardware only (PE_vmm_present == 0).
+// See native_rtc.h for the register sources; only reads are issued.
 //
 // bsd_init calls IOKitInitializeTime, which waits up to 30 s for the IORTC resource and then asks the platform expert for the
-// time (clock_initialize_calendar -> PEGetUTCTimeOfDay -> ArmDTPlatform::getGMTTimeOfDay). Mode 2 stores the time for that call,
-// with the moment it was taken, and only then publishes IORTC. Data, not a function pointer, crosses from this module to the
-// kernel, and nothing is written back: PESetUTCTimeOfDay stays the platform expert's no-op.
+// time. On the tablet (boot 05) this driver started only after that, so in mode 2 the platform expert publishes IORTC itself to
+// skip the wait, and this driver moves the calendar forward when it runs. It also stores the time for
+// ArmDTPlatform::getGMTTimeOfDay, which covers the case that it runs first. The calendar only ever moves forward here. Data, not
+// a function pointer, crosses from this module to the kernel, and nothing is written back: PESetUTCTimeOfDay stays the platform
+// expert's no-op.
 //
 // Boot arguments, both optional and 32-bit: sheng-rtc-offset=<wall clock minus raw counter>, sheng-rtc-floor=<Unix seconds>.
 // Physical regions (sheng DT /soc/qcom,spmi@c42d000, read-only use): core 0x0c400000 (0x3000), cnfg 0x0c42d000 (0x4000),
@@ -23,6 +25,7 @@
 extern "C" {
 extern volatile long sheng_platform_rtc_seconds;
 extern volatile uint64_t sheng_platform_rtc_stamp;
+void clock_set_calendar_microtime(clock_sec_t secs, clock_usec_t microsecs);
 }
 
 namespace {
@@ -146,10 +149,17 @@ bool NativeRtc::start(IOService *provider)
       clock_get_uptime(&now);
       sheng_platform_rtc_stamp = now;
       __atomic_store_n(&sheng_platform_rtc_seconds, static_cast<long>(wall.seconds), __ATOMIC_RELEASE);
+      clock_sec_t current = 0;
+      clock_usec_t microseconds = 0;
+      clock_get_calendar_microtime(&current, &microseconds);
+      const bool forward = static_cast<int64_t>(current) < wall.seconds;
+      if (forward)
+        clock_set_calendar_microtime(static_cast<clock_sec_t>(wall.seconds), 0);
+      IOLog("NativeRtc: calendar source %s, %ld s, %s (was %ld s)\n", sheng_rtc::sourceName(wall.source),
+            static_cast<long>(wall.seconds), forward ? "moved forward" : "left alone", static_cast<long>(current));
+    } else {
+      IOLog("NativeRtc: no time source, calendar left alone\n");
     }
-    publishResource("IORTC");
-    IOLog("NativeRtc: calendar source %s, %ld s, IORTC published\n", sheng_rtc::sourceName(wall.source),
-          static_cast<long>(wall.seconds));
   } else {
     IOLog("NativeRtc: read-only, calendar untouched (would use %s, %ld s)\n", sheng_rtc::sourceName(wall.source),
           static_cast<long>(wall.seconds));

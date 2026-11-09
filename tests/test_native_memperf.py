@@ -59,7 +59,14 @@ class NativeMemPerfTests(unittest.TestCase):
         # Writes in the benchmark go only through the driver's own buffer mappings.
         self.assertEqual(front.count('p[i] ='), 1)
         for caller in re.findall(r'writeSpeed\(([^,]+),', front):
-            self.assertRegex(caller, 'cached|device|fWriteCombined|volatile uint32_t \\*p')
+            self.assertRegex(caller, 'large|fDevice|fCombined|volatile uint32_t \\*p')
+        # The uncached views come from the buffer's physical address: a second mapping of the buffer returned the cached
+        # address on boot 05, and kIOMapUnique would change the cache mode of its whole VM object.
+        self.assertNotIn('kIOMapUnique |', front)
+        self.assertIn('ml_io_map(static_cast<vm_offset_t>(physical), kBenchBytes)', front)
+        self.assertIn('ml_io_map_wcomb(static_cast<vm_offset_t>(physical), kBenchBytes)', front)
+        self.assertIn('fBuffer->getPhysicalSegment(0, nullptr, kIOMemoryMapperNone)', front)
+        self.assertEqual(front.count('createMappingInTask'), 1)  # only the read-only register windows
 
     def test_packager_accepts_only_the_read_only_mode(self):
         import package_macos26_ufs as packager

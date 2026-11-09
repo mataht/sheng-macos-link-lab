@@ -11,6 +11,8 @@ import re
 
 PAGE = 16384
 SCHEMA = 'sheng-recovery-ui-pages-v1'
+# The full-system pages that switch Metal off (policy name prefixes). sheng-full-ui=2 leaves exactly these unchanged.
+METAL_BLOCKING = ('native-no-metal-', 'software-pool-bgra', 'native-bgra-framebuffer')
 
 
 def validate(document: dict) -> list[dict]:
@@ -91,11 +93,24 @@ def render(document: dict, name: str = 'sheng_ui_pages', preamble: bool = True) 
     return '\n'.join(lines)
 
 
+def metal_blocking_mask(full: dict) -> int:
+    """Bit i is set when page i of the full-system table is one of the pages a Metal boot must leave alone."""
+    mask = 0
+    for index, page in enumerate(validate(full)):
+        if any(edit.get('policy', '').startswith(METAL_BLOCKING) for edit in page['edits']):
+            mask |= 1 << index
+    if bin(mask).count('1') != len(METAL_BLOCKING):
+        raise ValueError('The full-system table must hold each Metal-blocking page once')
+    return mask
+
+
 def render_sets(recovery: dict, full: dict) -> str:
     """Both pinned page sets in one header; the kernel applies exactly one, chosen by boot argument
-    (sheng-recovery-ui=1: BaseSystem cache pages, sheng-full-ui=1: full-system SystemOS cache pages)."""
+    (sheng-recovery-ui=1: BaseSystem cache pages, sheng-full-ui=1: full-system SystemOS cache pages,
+    sheng-full-ui=2: the same table without the Metal-blocking pages)."""
     return (render(recovery) + '// Generated from the pinned full-system UI page manifest.\n'
-            + render(full, 'sheng_full_ui_pages', preamble=False))
+            + render(full, 'sheng_full_ui_pages', preamble=False)
+            + f'#define SHENG_FULL_UI_METAL_BLOCKING_MASK 0x{metal_blocking_mask(full):x}u\n')
 
 
 def main() -> None:

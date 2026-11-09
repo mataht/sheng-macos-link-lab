@@ -12,9 +12,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import sys
 import time
 import urllib.request
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 PLATFORM_DIR = 'platform/sheng/macos26/gpu'
@@ -51,6 +53,13 @@ ACCELERATOR_PERSONALITY = dict(IOClass='AGXAccelerator', IOProviderClass='Native
 FIRMWARE = (('sqe-firmware', 'qcom/a740_sqe.fw'), ('gmu-firmware', 'qcom/gmu_gen70200.bin'),
             ('zap-firmware', 'qcom/sm8550/sheng/a740_zap.mbn'))
 NODE_NAME = 'native-gpu'
+# A locally built Metal plugin (default off, stage 9 only). DarwinBoot refuses a device tree over 16 MiB, so the files are compressed.
+PLUGIN_NODE = 'native-gpu-plugin'
+PLUGIN_NAME = 'NativeAdrenoMetal'
+PLUGIN_TURNIP = 'libvulkan_freedreno.dylib'
+METAL_ARGUMENT = 'sheng-gpu-metal=1'
+PLUGIN_LP_SIP0 = 0x2   # CSR_ALLOW_UNRESTRICTED_FS: the trust path for /Library/GPUBundles passes through csr_check(0x2)
+PLUGIN_DEVICE_TREE_ROOM = 15 << 20
 LINUX_RAW = 'https://raw.githubusercontent.com/ianchb/sm8550-mainline/{commit}/{name}'
 
 
@@ -159,6 +168,77 @@ def validate(record: dict, root: Path = ROOT) -> None:
             or record.get('hardware_qualified') is not False or record.get('firmware') != firmware_pins(root)
             or record.get('source_sha256') != source_hashes(root)):
         raise ValueError('Adreno stack differs from the reviewed default-off contract')
+
+
+def plugin_files(bundle: Path) -> tuple:
+    contents = Path(bundle) / 'Contents'
+    return contents / 'Info.plist', contents / 'MacOS' / PLUGIN_NAME, contents / 'MacOS' / PLUGIN_TURNIP
+
+
+def packed_file(data: bytes) -> bytes:
+    """The file's length (64-bit little endian), then its zlib stream, as the driver unpacks it."""
+    return struct.pack('<Q', len(data)) + zlib.compress(data, 9)
+
+
+def plugin_node(bundle: Path) -> dict:
+    """ADT properties for /arm-io/native-gpu-plugin. Local packages only: the plugin contains metal2vulkan (GPL/LGPL question open)."""
+    info, executable, turnip = plugin_files(bundle)
+    node = {'compatible': b'sheng,gpu-plugin\0', 'info-plist': packed_file(info.read_bytes()),
+            'executable': packed_file(executable.read_bytes()), 'turnip': packed_file(turnip.read_bytes())}
+    if sum(map(len, node.values())) > PLUGIN_DEVICE_TREE_ROOM:
+        raise ValueError('the plugin bundle does not fit the device tree limit even compressed')
+    return node
+
+
+def cdhash(executable: bytes) -> bytes:
+    """CDHash of a thin arm64e Mach-O: the first 20 bytes of the SHA-256 of its primary CodeDirectory."""
+    magic, cpu, subtype, _, count, size = struct.unpack_from('<6I', executable)
+    if magic != 0xfeedfacf or cpu != 0x0100000c or subtype & 0xff != 2:
+        raise ValueError('requires a thin arm64e Mach-O')
+    offset, end = 32, 32 + size
+    signature = None
+    for _ in range(count):
+        command, length = struct.unpack_from('<II', executable, offset)
+        if command == 0x1d:
+            signature = struct.unpack_from('<II', executable, offset + 8)
+        offset += length
+        if offset > end:
+            raise ValueError('load commands exceed their declared size')
+    if signature is None:
+        raise ValueError('plugin has no code signature')
+    blob_at, blob_size = signature
+    superblob, _, slots = struct.unpack_from('>III', executable, blob_at)
+    if superblob != 0xfade0cc0 or blob_at + blob_size > len(executable):
+        raise ValueError('malformed code signature')
+    for index in range(slots):
+        kind, relative = struct.unpack_from('>II', executable, blob_at + 12 + index * 8)
+        if kind != 0:
+            continue
+        at = blob_at + relative
+        directory, length = struct.unpack_from('>II', executable, at)
+        if directory != 0xfade0c02 or executable[at + 37] != 2:
+            raise ValueError('expected a SHA-256 CodeDirectory')
+        return hashlib.sha256(executable[at:at + length]).digest()[:20]
+    raise ValueError('code signature has no CodeDirectory')
+
+
+def plugin_cdhashes(bundle: Path) -> tuple:
+    """The CDHashes a trust cache must name for this bundle, as hex."""
+    _, executable, turnip = plugin_files(bundle)
+    return tuple(cdhash(path.read_bytes()).hex() for path in (executable, turnip))
+
+
+def plugin_trust_cache(original: Path, extended: Path, cdhashes: tuple) -> dict:
+    """The extended bundle must be the original entries, unchanged, plus exactly the plugin's CDHashes."""
+    from system_trust_cache import check_bundle, module_entries
+    base, ours = Path(original).read_bytes(), Path(extended).read_bytes()
+    check_bundle(base)
+    check_bundle(ours)
+    before, after = set(module_entries(base[8:])[1]), set(module_entries(ours[8:])[1])
+    if before - after or sorted(entry[:20].hex() for entry in after - before) != sorted(cdhashes):
+        raise ValueError('the extended trust cache must add exactly the plugin CDHashes and change nothing else')
+    return dict(sha256=hashlib.sha256(ours).hexdigest(), entries=len(after), owner_cdhashes=list(cdhashes),
+                own_entries_added=True)
 
 
 def checked_firmware(directory: Path, root: Path = ROOT) -> dict:

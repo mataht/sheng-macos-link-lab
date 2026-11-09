@@ -263,7 +263,7 @@ def qualify_full_sibling(kernel_build, sibling):
                 ufs_runtime_qualified=False)
 
 
-def qualify_full_display(kernel_build, driver, observed):
+def qualify_full_display(kernel_build, driver, observed, metal=False):
     """GOP display plus the compiled full-system page table; the display itself is verified on the tablet."""
     manifest = hashlib.sha256((ROOT / 'config/macos26-full-ui-pages.json').read_bytes()).hexdigest()
     compiled = json.loads((kernel_build / 'build.json').read_text()).get('full_ui_policy', {})
@@ -272,7 +272,9 @@ def qualify_full_display(kernel_build, driver, observed):
     if (not driver['build'].get('native_gop_display') or compiled.get('manifest_sha256') != manifest
             or seen.get('manifest_sha256') != manifest or seen.get('boot_argument_enabled') is not True or pages < 1):
         raise ValueError('requires the compiled GOP display and the full-system page table applied in the QEMU run')
-    return dict(display_hardware_verification(), boot_argument='native-gop-display=1 sheng-full-ui=1',
+    if metal and compiled.get('metal_selection', {}).get('boot_argument') != 'sheng-full-ui=2':
+        raise ValueError('this kernel has no page selection for a Metal boot')
+    return dict(display_hardware_verification(), boot_argument='native-gop-display=1 sheng-full-ui=' + ('2' if metal else '1'),
                 full_ui_manifest_sha256=manifest, qemu_pages_applied=pages)
 
 
@@ -771,7 +773,8 @@ def main():
     parser.add_argument('--rtc-mode', type=int, choices=(1, 2),
                         help='start the compiled PMIC RTC companion (sheng-rtc=N): 1 read-only, 2 also sets the calendar and IORTC')
     parser.add_argument('--rtc-offset', type=int, help='sheng-rtc-offset: wall clock minus the raw RTC count, measured from Android')
-    parser.add_argument('--rtc-floor', type=int, help='sheng-rtc-floor: earliest allowed calendar time in Unix seconds (the packaging time)')
+    parser.add_argument('--rtc-floor', type=int, help='sheng-rtc-floor: earliest allowed calendar time in Unix seconds; '
+                                                      'with --rtc-mode 2 it defaults to the packaging time')
     parser.add_argument('--backlight-stage', type=int, choices=(1, 2, 3, 4),
                         help='start the compiled backlight companion (sheng-backlight=N): 1 read-only, 2 reads the chips, 3 sets a level, 4 macOS control')
     parser.add_argument('--backlight-level', type=int, help='sheng-backlight-level for stage 3 or 4 (64..2047)')
@@ -808,6 +811,11 @@ def main():
     parser.add_argument('--gpu-firmware', type=Path,
                         help='local directory with the pinned GPU firmware for /arm-io/native-gpu (the package then contains vendor '
                              'firmware and must stay local)')
+    parser.add_argument('--gpu-plugin', type=Path,
+                        help='local NativeAdrenoMetal.bundle placed in /arm-io/native-gpu-plugin; needs --gpu-stage 9 and a full-system '
+                             'display package, which must then stay local (metal2vulkan)')
+    parser.add_argument('--gpu-plugin-trust-cache', type=Path,
+                        help="system_trust_cache.py bundle: the image's original entries plus exactly the plugin's two CDHashes")
     parser.add_argument('--keyboard-stage', type=int, choices=(1, 2, 3, 4, 5),
                         help='enable the compiled keyboard cover bring-up up to this stage (sheng-kbd=N); 1 is read-only; 4 and 5 need --keyboard-firmware')
     parser.add_argument('--keyboard-firmware', type=Path,
@@ -847,6 +855,10 @@ def main():
         parser.error('--touch-stage 4 downloads firmware: give --touch-firmware')
     if bool(args.gpu_firmware) != bool(args.gpu_stage and args.gpu_stage >= 7):
         parser.error('--gpu-firmware is required for --gpu-stage 7 and up, and only for those')
+    if bool(args.gpu_plugin) != bool(args.gpu_plugin_trust_cache):
+        parser.error('--gpu-plugin and --gpu-plugin-trust-cache go together')
+    if args.gpu_plugin and (args.gpu_stage != 9 or not args.full_system or not args.full_system_display):
+        parser.error('--gpu-plugin needs --gpu-stage 9 on a --full-system package with --full-system-display')
     recovery_inputs =('root_deployment', 'partition_plan', 'root_build', 'root_hash', 'root_volume_uuid')
     if args.full_system:
         missing = [n for n in ('full_system_plan', 'full_system_package', 'full_system_install')
@@ -1021,7 +1033,7 @@ def main():
         display_qualification = display_hardware_verification()
         boot_args += ' ' + display_qualification['boot_argument']
     elif args.full_system_display:
-        display_qualification = qualify_full_display(args.kernel_build, full_driver, full_observed)
+        display_qualification = qualify_full_display(args.kernel_build, full_driver, full_observed, metal=bool(args.gpu_plugin))
         boot_args += ' ' + display_qualification['boot_argument']
     gop_enabled = bool(ui_qualification or display_qualification)
     cpufreq = None
@@ -1038,8 +1050,10 @@ def main():
     rtc = None
     if args.rtc_mode:
         import native_rtc
-        rtc = dict(qualify_rtc(args.kernel_build), mode=args.rtc_mode, offset=args.rtc_offset, floor=args.rtc_floor)
-        boot_args += ' ' + native_rtc.boot_arguments(args.rtc_mode, args.rtc_offset, args.rtc_floor)
+        import time
+        rtc_floor = int(time.time()) if args.rtc_mode == 2 and args.rtc_floor is None else args.rtc_floor
+        rtc = dict(qualify_rtc(args.kernel_build), mode=args.rtc_mode, offset=args.rtc_offset, floor=rtc_floor)
+        boot_args += ' ' + native_rtc.boot_arguments(args.rtc_mode, args.rtc_offset, rtc_floor)
     elif args.rtc_offset is not None or args.rtc_floor is not None:
         raise ValueError('--rtc-offset and --rtc-floor require --rtc-mode')
     backlight = None
@@ -1107,6 +1121,14 @@ def main():
                    firmware_included=gpu_node is not None, package_contains_vendor_firmware=gpu_node is not None)
     button_keys = None
     extra_arm_io_nodes = {}
+    if args.gpu_plugin:
+        import native_adreno
+        plugin_hashes = native_adreno.plugin_cdhashes(args.gpu_plugin)
+        plugin_trust = native_adreno.plugin_trust_cache(args.full_system_trust_cache, args.gpu_plugin_trust_cache, plugin_hashes)
+        extra_arm_io_nodes[native_adreno.PLUGIN_NODE] = native_adreno.plugin_node(args.gpu_plugin)
+        boot_args += ' ' + native_adreno.METAL_ARGUMENT
+        gpu.update(plugin=dict(cdhashes=list(plugin_hashes), trust_cache=plugin_trust, lp_sip0=native_adreno.PLUGIN_LP_SIP0),
+                   package_contains_metal2vulkan=True)
     if args.button_keys:
         button_keys = qualify_button_keys(args.kernel_build)
         boot_args += ' ' + button_keys['boot_argument']
@@ -1161,7 +1183,7 @@ def main():
             files.mkdir(parents=True)
             shutil.copy2(kernel, files / 'kernel.macho')
             if full_contract:
-                shutil.copy2(args.full_system_trust_cache, files / 'kernel.macho.trustcache')
+                shutil.copy2(args.gpu_plugin_trust_cache or args.full_system_trust_cache, files / 'kernel.macho.trustcache')
             subprocess.run(['python3', ROOT / 'UniXNU-sheng/scripts/make-sheng-adt.py',
                 '--output', files / 'kernel.macho.adt', '--dram-size', '0x200000000',
                 '--owned-memory-size', hex(OWNED_MEMORY), '--panic-log', '--cpu-regs', ','.join(cpu_regs),
@@ -1179,6 +1201,7 @@ def main():
                     usb_node=usb_node,
                     trust_cache_slot=True,
                     addon_slot=adsp_images is not None,
+                    full_system_lp_sip0=0x2 if args.gpu_plugin else 0,   # native_adreno.PLUGIN_LP_SIP0
                     # Full system: idle sleep panics on this kernel (Stage16, sched_override_available_cores_for_sleep).
                     qemu_disable_sleep=True)
             else:

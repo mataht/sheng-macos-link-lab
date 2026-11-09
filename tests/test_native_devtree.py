@@ -264,5 +264,14 @@ class NativeTree(unittest.TestCase):
         self.assertEqual(tree[('device-tree', 'product')]['model'], b'xiaomi,sheng\0')
 
 
+class PluginBootPolicyTests(unittest.TestCase):
+    def test_sip_value_needs_a_full_system_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'adt'
+            path.write_bytes(b'')
+            with self.assertRaisesRegex(ValueError, 'full-system experiment'):
+                configure_native_text_state(path, development_root=True, full_system_lp_sip0=2)
+
+
 if __name__ == '__main__':
     unittest.main()

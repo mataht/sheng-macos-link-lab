@@ -13,7 +13,8 @@ extern void vnode_putname(const char *);
 
 TUNABLE(uint32_t, sheng_recovery_ui_enabled, "sheng-recovery-ui", 0);
 // Same engine for the installed full system: its SystemOS cache has different pages, so it gets its own pinned
-// table. Exactly one table may be enabled; both or a value other than 1 stop at the first matching page.
+// table. Exactly one table may be enabled; both or any other value stop at the first matching page. sheng-full-ui=2 is the
+// same table without the pages that switch Metal off (SHENG_FULL_UI_METAL_BLOCKING_MASK), for a boot with the GPU plugin.
 TUNABLE(uint32_t, sheng_full_ui_enabled, "sheng-full-ui", 0);
 volatile uint32_t sheng_recovery_ui_pages_applied;
 volatile uint32_t sheng_recovery_ui_page_mask;
@@ -40,7 +41,7 @@ sheng_recovery_ui_page(vm_page_t page, struct vnode *vnode, uint64_t offset, boo
     const struct sheng_ui_page *pages = full ? sheng_full_ui_pages : sheng_ui_pages;
     const size_t count = full ? sizeof(sheng_full_ui_pages) / sizeof(sheng_full_ui_pages[0])
                               : sizeof(sheng_ui_pages) / sizeof(sheng_ui_pages[0]);
-    const bool one_table = full ? sheng_full_ui_enabled == 1 && !sheng_recovery_ui_enabled
+    const bool one_table = full ? (sheng_full_ui_enabled == 1 || sheng_full_ui_enabled == 2) && !sheng_recovery_ui_enabled
                                 : sheng_recovery_ui_enabled == 1;
     bool candidate = false;
     for (size_t i = 0; i < count; i++)
@@ -55,6 +56,9 @@ sheng_recovery_ui_page(vm_page_t page, struct vnode *vnode, uint64_t offset, boo
         if (offset != rule->file_offset || strcmp(name, rule->file))
             continue;
         vnode_putname(name);
+        // A Metal boot keeps these pages exactly as the signed image has them.
+        if (full && sheng_full_ui_enabled == 2 && (SHENG_FULL_UI_METAL_BLOCKING_MASK & ((uint32_t)1 << i)))
+            return;
         // Never turn a failed signature, writable page, or production boot into an accepted image.
         if (!one_table || PAGE_SIZE != SHENG_UI_PAGE_BYTES ||
             csr_check(CSR_ALLOW_UNAUTHENTICATED_ROOT) != 0 || !original_validated ||
