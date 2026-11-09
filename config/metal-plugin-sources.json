@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "sources": [
+    {
+      "path": "sources/metal-plugin/macOS-DroidVM",
+      "url": "https://github.com/Droid-VM/macOS-DroidVM.git",
+      "commit": "428a62be9eb5bb209de33c4f2b5168765ed98b33",
+      "group": "graphics",
+      "sparse": ["overlay/metal"]
+    },
+    {
+      "path": "sources/metal-plugin/AdrenoMetal",
+      "url": "https://github.com/UniXNU/AdrenoMetal.git",
+      "commit": "da7aedd827dfdb581eac041615c45cc1cd5e71db",
+      "group": "graphics"
+    }
+  ]
+}
