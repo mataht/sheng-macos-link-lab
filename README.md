@@ -11,9 +11,10 @@
 | 自编译内核在平板上启动，8 个 CPU 核心上线 | 实机，2026-11-07 |
 | 进入 macOS Recovery 的图形界面 | 实机，2026-11-07 |
 | 电源键、音量键当键盘用；触摸屏可用（单指） | 实机，2026-11-08 |
-| **完整系统在平板上进入桌面**（约 2 分钟，CPU 软件绘制） | 实机，2026-11-09 |
+| 完整系统在平板上进入 CPU 软件绘制的桌面 | 实机，2026-11-09 |
+| **第一次在平板上显示出经 GPU 合成的界面**（壁纸、菜单栏、设置助理，触摸可用，每秒约 6 帧） | 实机，2026-11-10 |
 
-还没有的：GPU 加速（内核栈在平板上跑到了第 9 级，Metal 插件也启动过一次，但画面是黑的，没有任何由 GPU 渲染的画面）、流畅操作（触摸到画面的延迟很大，原因没查清）、Wi-Fi、蓝牙、USB、声音、电池状态、亮度调节、睡眠、持久写盘。最新的第二版集成内核没有一次完整的 QEMU 完整系统运行，当晚的上机是在用户逐包放弃这一条的前提下进行的（见[验证上的缺口](docs/status.md#5-验证上的缺口)）。全部状态、证据和限制见[移植状态](docs/status.md)。
+还没有的：可用的 GPU 加速（虽已出画面，但还很慢，每秒约 6 帧，显示等待与内核 fence 等待大量超时，而且带插件启动偶尔会变慢，原因未查清）、流畅操作（每帧显示拷贝花 0.1 到 0.4 秒，帧缓冲为 Device 映射写速约 79 MiB/s；CPU 软件绘制下画面读取和合成也很慢）、Wi-Fi（只跑到芯片引导阶段，后面没有无线协议栈）、蓝牙、USB、键盘保护套（第 3 级电压投票未收到完成信号）、声音、电池状态、亮度调节、睡眠、持久写盘。全部状态、证据和限制见[移植状态](docs/status.md)。
 
 ## 文档
 
@@ -34,4 +35,4 @@
 
 ## English summary
 
-An experimental port of macOS 26.5 (25F71) to the Xiaomi Pad 6S Pro (sheng, Snapdragon 8 Gen 2 / SM8550), started from CrossDarwin/macOS-ForSheng and built on UniXNU. As of 2026-11-09 the full system boots to the desktop on the tablet in about two minutes using CPU software rendering; touch and the hardware keys work. There is no GPU acceleration (the GPU kernel stack runs through stage 9 on the tablet and one Metal plug-in boot reached the real A740, but the screen stayed black), the desktop is very laggy, and Wi-Fi, Bluetooth, USB, audio and battery reporting are not working. The repository contains source, tests and documentation only: no Apple software, vendor firmware or system images, and no instructions for producing a system image. The latest integrated kernel has no complete full-system QEMU run; its tablet boots were made under per-package user waivers of that one gate (see docs/status.md, section 5). Every boot is a RAM-only `fastboot boot`; nothing is flashed. Status and evidence by area: [docs/status.md](docs/status.md). Licensing: GPL-3.0-or-later for original work, upstream licenses retained; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
+An experimental port of macOS 26.5 (25F71) to the Xiaomi Pad 6S Pro (sheng, Snapdragon 8 Gen 2 / SM8550), started from CrossDarwin/macOS-ForSheng and built on UniXNU. The full system boots to the desktop on the tablet using CPU software rendering, and with the Metal plug-in stack (WindowServer → Metal plug-in → metal2vulkan → Turnip → Adreno 740 kernel driver) it has for the first time displayed a GPU-composited interface on the tablet (wallpaper, menu bar and post-login Setup Assistant pages, with working touch) at about 6 frames per second. GPU acceleration is not yet usable: most 50 ms display waits and 1517 of 2274 kernel fence waits time out, plug-in boots are intermittently slow for undetermined reasons, and per-frame display copy takes 0.1 to 0.4 seconds (the framebuffer is mapped as Device memory at about 79 MiB/s write). Wi-Fi (no wireless stack behind the chip boot stages), Bluetooth, USB, the keyboard cover (stage 3 voltage vote did not receive completion), audio, battery reporting, brightness control, sleep and persistent disk writes are not working. The repository contains source, tests and documentation only: no Apple software, vendor firmware or system images, no instructions for producing a system image, and the plug-in bundle containing metal2vulkan is not distributed. Every boot is a RAM-only `fastboot boot`; nothing is flashed. Status and evidence by area: [docs/status.md](docs/status.md). Licensing: GPL-3.0-or-later for original work, upstream licenses retained; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
